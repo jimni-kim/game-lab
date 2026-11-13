@@ -94,6 +94,7 @@ class Screen:
         self.seen_board = None
         # what the model says a site no profile registers shows (vision.discover)
         self.discovered = None
+        self.recovering, self.recover_calls = [], []
 
     # ── the surface ───────────────────────────────────────────────────
 
@@ -182,8 +183,13 @@ class Screen:
     # ── the model ─────────────────────────────────────────────────────
 
     async def complete(self, request):
-        self.model_calls.append(request)
         context = json.loads(request.messages[0].content[0]["text"])
+        if "tried" in context:
+            # play stopped on this screen: what the model does about it (recovery), each in turn, then gives up
+            self.recover_calls.append(context)
+            action = self.recovering.pop(0) if self.recovering else {"kind": "give_up"}
+            return TurnResult(text=json.dumps({"situation": "as drawn", "action": action}))
+        self.model_calls.append(request)
         evidence = {key: context[key] for key in ("observation_id", "image_sha256")}
         if set(context) == {"observation_id", "image_sha256", "family"}:
             # the look at a game no profile registers: a cover first while there is one

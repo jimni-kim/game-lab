@@ -51,6 +51,7 @@ from .contracts import (
     StateEstimate,
 )
 from .errors import Denied, Interrupted
+from .recovery import MAX_TRIES
 
 log = logging.getLogger("gamelab.session")
 
@@ -94,8 +95,12 @@ CONSENT_DECLINED = "consent_declined"
 # a look at a board read whole that took a delivered move without effect: what stops play is asked of the
 # whole screen once (a win notice beside the board, a notice taking the keys)
 STALLED = "stalled"
-# covers closed in one session before giving up: a page that keeps covering its board is not played on
+# covers closed in a row, with no move confirmed between them, before giving up: a page that keeps covering
+# its board is not played on, while a game that shows a notice now and then is
 MAX_COVERS = 3
+# why a game would end that a look by a model may get past (`_recover`): the screen, not the game, stopped it
+STUCK = frozenset({"board_covered", "unreadable", "surface_unsettled", TRIAL_FAILED, BUTTON_UNSEEN,
+                   str(Effect.ABSENT), str(Effect.INCONSISTENT), str(Effect.UNKNOWN)})
 
 # a session calibrates until a look first reads the board (the environment measures it there, a model
 # may say where it is, a cover may be closed), then runs: no move is ever planned while calibrating
@@ -157,6 +162,8 @@ class GameSession:
         self.carried: tuple[StateEstimate, Observation] | None = None
         # when the pixels the last settled look showed were first seen (the move's animation over)
         self.rested_at: float | None = None
+        # the last board read, told to whoever is asked about a screen play stopped on
+        self.seen_state: dict[str, Any] | None = None
         # the settling the trial moves measured, kept in the record so a restart waits the same
         if isinstance(record.get("settling"), dict):
             self.settling = SettlingPolicy(**record["settling"])
@@ -173,7 +180,7 @@ class GameSession:
                   "goal": goal.to_json(), "budget": budget.to_json(), "policy": policy, "target": target,
                   "started_at": clock(), "next_action": 1, "actions_used": 0, "confirmed_actions": 0,
                   "intent": None, "cleanup": CLEANUP_NONE, "unreadable": 0, "recoveries": 0, "discarded": 0,
-                  "discarded_plans": 0, "covers": 0, "refused": 0, "trial": trial, "history": []}
+                  "discarded_plans": 0, "covers": 0, "covered_run": 0, "refused": 0, "trial": trial, "history": []}
         return cls(family, environment, record, clock=clock, save=save, guards=guards, settling=settling, wait=wait)
 
     # ── the loop ──────────────────────────────────────────────────────
@@ -186,7 +193,15 @@ class GameSession:
             if self.record["intent"] is not None:
                 await self._reconcile_in_flight()
             while True:
-                await self._step()
+                # a game the screen stopped is not ended while a model's look at it gets play going again
+                try:
+                    await self._step()
+                except _End as end:
+                    if not await self._recover(end.outcome, end.reason):
+                        raise
+                except EnvironmentUnavailable as error:
+                    if not await self._recover(None, str(error)):
+                        raise
         except _End as end:
             return await self._end(end.outcome, end.reason)
         except EnvironmentUnavailable as error:
@@ -208,6 +223,7 @@ class GameSession:
             if seen.public_facts.get("covered"):
                 await self._uncover(seen)
             return
+        self.seen_state = before.payload
         if self.record["phase"] == CALIBRATING:
             self.record["phase"] = RUNNING
             await self.save(self.record)
@@ -325,7 +341,7 @@ class GameSession:
         (`press`): a notice closed, a consent request refused or, offering no refusal, agreed to once the
         person allows it, the game's start screen started while no board was read yet. Its effect is the next
         look's to show: a board read again, or the next cover, until MAX_COVERS."""
-        if self.record["covers"] >= MAX_COVERS:
+        if self.record.get("covered_run", 0) >= MAX_COVERS:
             raise _End(Outcome.NEEDS_RECOVERY, "board_covered")
         kind = seen.public_facts.get("press", CLOSE_COVER)
         if kind == START_GAME and self.record["phase"] != CALIBRATING:
@@ -347,6 +363,7 @@ class GameSession:
             return
         await self._check_stops()
         self.record["covers"] += 1
+        self.record["covered_run"] = self.record.get("covered_run", 0) + 1
         plan = ActionPlan(id=f"cover-{seen.id}", based_on_state=seen.id, rule_revision=0, policy_revision=kind,
                           steps=({"kind": kind},), verify_every=1)
         receipt = await self._deliver(plan, seen, None)
@@ -359,6 +376,7 @@ class GameSession:
         if receipt.delivery is Delivery.REJECTED and receipt.delivered_steps == 0:
             # refused before any of it was sent (the page changed under it): the cover was not tried
             self.record["covers"] -= 1
+            self.record["covered_run"] -= 1
         if self.record["cleanup"] != CLEANUP_PENDING:
             self.record["intent"] = None
         await self.save(self.record)
@@ -430,6 +448,8 @@ class GameSession:
             self.record["recoveries"] = 0
             self.record["ineffective"] = None
             self.carried = after, seen
+            self.seen_state = after.payload
+            self._going()
         elif not refused:
             if assessment.effect is Effect.ABSENT and receipt.delivery is Delivery.DELIVERED:
                 # the game did not take it; from this same state the next plan picks another move
@@ -478,6 +498,38 @@ class GameSession:
                                state_schema="", rule_revision=plan.rule_revision, payload=intent["before"],
                                unknown_fields=(), evidence="intent")
         await self._settle(before, plan, receipt, released=True)
+
+    # ── a screen that stopped play ────────────────────────────────────
+
+    def _going(self) -> None:
+        """A move was confirmed: whatever stopped play before it is behind."""
+        self.record["covered_run"] = 0
+        if self.record.get("recovery"):
+            self.record["recovery"]["tries"] = 0
+        if (recovered := getattr(self.env, "recovered", None)) is not None:
+            recovered()
+
+    async def _recover(self, outcome: Outcome | None, reason: str) -> bool:
+        """Play is about to end for something on the screen (`STUCK`, or a board the environment never found):
+        the environment has a model look at it and send one input of its own (PLAN §8). True when it did, and
+        the loop goes on from a fresh look; MAX_TRIES of them in a row with no move confirmed end the game as
+        it would have ended. Nothing is tried while an input is in flight or held."""
+        recover = getattr(self.env, "recover", None)
+        if recover is None or (outcome is not None and reason not in STUCK) or self.record.get("intent") is not None \
+                or self.record["cleanup"] == CLEANUP_PENDING or self.record["actions_used"] >= self.budget.max_actions:
+            return False
+        kept = self.record.setdefault("recovery", {"tries": 0, "total": 0})
+        if kept["tries"] >= MAX_TRIES:
+            return False
+        await self._check_stops(check_actions=False)
+        if not await recover(reason, {"state": self.seen_state, "recent": self.record["history"]}):
+            return False
+        kept["tries"] += 1
+        kept["total"] += 1
+        self.record.update(unreadable=0, recoveries=0, discarded=0, covered_run=0, refused=0, ineffective=None)
+        self.carried = None
+        await self.save(self.record)
+        return True
 
     # ── what ends a session ───────────────────────────────────────────
 

@@ -120,6 +120,9 @@ def measure(run: Run, recorder: Recorder, final: dict[str, Any] | None) -> dict[
     latency = [i["done_s"] - i["observed_s"] for i in recorder.inputs if i["observed_s"] is not None]
     return {"moves": {"recorded": len(moves), **count}, "resent": resent,
             "decisions_checked": len(judged), "decisions_misread": misread,
+            "recovery": {"stuck": len(run.recoveries), "inputs": sum(r["changed"] is not None for r in run.recoveries),
+                         "replayed": sum(r["source"] == "replay" for r in run.recoveries),
+                         "restored": sum(bool(r.get("restored")) for r in run.recoveries)},
             "shots": recorder.shots, "shots_per_move": round(recorder.shots / max(len(recorder.inputs), 1), 2),
             "png_kib_per_shot": round(recorder.shot_bytes / max(recorder.shots, 1) / 1024, 1),
             "seconds_per_move": _spread(cycles), "seconds_observed_to_input": _spread(latency), "final": final}
@@ -148,7 +151,7 @@ def write_game(out: Path, name: str, summary: dict[str, Any], request: dict[str,
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{name}.json").write_text(json.dumps({
         "result": summary, "request": request, "record": run.record, "made_profile": run.made_profile,
-        "geometry": run.geometry, "vision": run.vision, "model_answers": answers, "moves": run.moves,
+        "geometry": run.geometry, "vision": run.vision, "recoveries": run.recoveries, "model_answers": answers, "moves": run.moves,
         "inputs": recorder.inputs}, indent=2, default=str) + "\n", encoding="utf-8")
     if screen is not None:
         (out / f"{name}-final.png").write_bytes(screen)

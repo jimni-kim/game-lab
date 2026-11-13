@@ -32,7 +32,15 @@ class Author:
         if "examples" in context:
             self.asked.append(("write", context, images))
             return TurnResult(text=self.modules.pop(0))
+        if "tried" in context:
+            # play stopped on a screen with no board: the model closes what covers it
+            self.asked.append(("recover", context, images))
+            left, top, width, height = self.fake.button
+            return TurnResult(text=json.dumps({"situation": "a notice", "action": {
+                "kind": "tap", "at": [left + width / 2, top + height / 2]}}))
         self.asked.append(("label", context, images))
+        if self.fake.covered:
+            return TurnResult(text=json.dumps({"screen": "other", "board": None, "rules": None, "state": None}))
         grid = [list(row) for row in self.fake.board["grid"]]
         labels = sum(kind == "label" for kind, _, _ in self.asked)
         if self.misread and labels > 1:       # never the first look: nothing yet says a first reading is wrong

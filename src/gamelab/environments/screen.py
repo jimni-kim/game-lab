@@ -129,6 +129,8 @@ class ScreenEnvironment:
         self.stopped: dict[str, Any] | None = None
         self.control: list[int] | None = None
         self.looks = 0
+        # the model asked what to do about a screen play stopped on (`recovery.Recovery`), when there is one
+        self.recovery = None
 
     @property
     def still(self) -> bool:
@@ -408,6 +410,26 @@ class ScreenEnvironment:
             observation, public_facts={"state": {**state.payload, "scene": answer["screen"]}},
             geometry_ref=self.adapter.geometry_ref))
         return observation, (state if isinstance(stopped, NeedObservation) else stopped)
+
+    async def recover(self, reason: str, context: dict[str, Any]) -> bool:
+        """Play stopped on this screen for `reason`: the model looks at it whole and sends one input of its own.
+        Whether it did; the next look then starts afresh, as if no board had been missed before it."""
+        if self.recovery is None or self.unsupported() is not None:
+            return False
+        remaining = self._remaining()
+        if remaining is not None and remaining <= 0:
+            return False
+        if not await self.recovery.attempt(self.surface, reason, context, timeout_s=remaining):
+            return False
+        self.adapter.moved(None)
+        self.last, self.state, self.control = None, None, None
+        self.unmeasured, self.unseen, self.unread_since, self.stopped = 0, None, None, None
+        self.remeasure = self.adapter.measured
+        return True
+
+    def recovered(self) -> None:
+        if self.recovery is not None:
+            self.recovery.succeeded()
 
     def _cover(self, observation: Observation, png: bytes, elements: Any, press: tuple[str, list[int]]) -> Observation:
         """A look whose board a cover hides: the session's input there (`press`) and the button it presses."""

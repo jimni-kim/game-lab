@@ -30,6 +30,7 @@ from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check
 from .contracts import NeedObservation, Observation
 from .environments.screen import Surface
 from .model import Model, Msg, TurnRequest
+from .recovery import MAX_TRIES, Recovery
 from .sandbox import Sandbox, SandboxError
 
 # moves played while the model reads every screen: enough transitions to write the adapter from and to
@@ -138,8 +139,11 @@ def _shape(family: Any, state: dict[str, Any]) -> tuple[int, int] | None:
 
 
 class Adaptation:
-    def __init__(self, model: Model, family_id: str, *, policy: str | None = None, compute: int = 200) -> None:
+    def __init__(self, model: Model, family_id: str, *, policy: str | None = None, compute: int = 200,
+                 recovery: Recovery | None = None) -> None:
         self.model, self.family_id = model, family_id
+        # the model's way past a screen that shows no board (a notice over it), and the last board read
+        self.recovery, self.last_state = recovery, None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -168,6 +172,25 @@ class Adaptation:
 
     async def _read(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
                     accept: Any = None) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
+        """One screen read by the model (`_label`). A screen that shows no board is not the end of it: something
+        may be in the way, which the model gets past with inputs of its own (PLAN §8) before it is read again."""
+        tries = 0
+        while True:
+            try:
+                read = await self._label(surface, board, rules, accept)
+            except AdaptationFailed as error:
+                if error.detail != "no_board" or self.recovery is None or tries >= MAX_TRIES or not await \
+                        self.recovery.attempt(surface, error.reason, {"state": self.last_state, "recent": []}):
+                    raise
+                tries += 1
+                continue
+            if tries:
+                self.recovery.succeeded()
+            self.last_state = read[1]
+            return read
+
+    async def _label(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
+                     accept: Any = None) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
         """One screen read by the model into a state the rule model accepts whole (and `accept`, when given,
         takes as the last move's result); asked again on a fresh capture when it is not."""
         problem = "no_board"
@@ -470,6 +493,16 @@ class Store:
             (path / f"look-{index}.png").write_bytes(look.png)
         return path
 
+    def recoveries(self, site: str, family_id: str) -> list[dict[str, Any]]:
+        """The inputs that got past this site's screens before (`Recovery.known`)."""
+        path = self._path(site, family_id) / "recoveries.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+
+    def save_recoveries(self, site: str, family_id: str, known: list[dict[str, Any]]) -> None:
+        path = self._path(site, family_id)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "recoveries.json").write_text(json.dumps(known) + "\n", encoding="utf-8")
+
 
 class Adaptive:
     """One site's game read by generated code for as long as it is played: the adapter kept for the site or
@@ -477,9 +510,12 @@ class Adaptive:
     game had not shown yet)."""
 
     def __init__(self, surface: Surface, model: Model, family_id: str, *, store: Store | None = None,
-                 policy: str | None = None, compute: int = 200, fresh: bool = False) -> None:
+                 policy: str | None = None, compute: int = 200, fresh: bool = False,
+                 accept_consent: bool = False) -> None:
         self.surface, self.family_id, self.store, self.fresh = surface, family_id, store, fresh
-        self.adaptation = Adaptation(model, family_id, policy=policy, compute=compute)
+        # one way past the site's screens for the whole game: while exploring, playing and learning again
+        self.recovery = Recovery(model, family_id, accept_consent=accept_consent)
+        self.adaptation = Adaptation(model, family_id, policy=policy, compute=compute, recovery=self.recovery)
         self.trace: Trace | None = None
         self.made: Made | None = None
         self.adapter: GeneratedAdapter | None = None
@@ -496,6 +532,8 @@ class Adaptive:
         """The adapter to play by. Making one plays the game's first moves on the surface."""
         started = time.monotonic()
         site = await self.surface.address()
+        if self.store is not None:
+            self.recovery.known = self.store.recoveries(site, self.family_id)
         kept = None if self.store is None or self.fresh else self.store.load(site, self.family_id)
         if kept is not None:
             source, meta, self.trace = kept
@@ -533,12 +571,15 @@ class Adaptive:
         return {"reused": self.made.reused if self.made else None, "generations": self.made.generations if self.made else 0,
                 "relearned": self.relearned, "looks": len(self.trace.looks) if self.trace else 0,
                 "questions": self.adaptation.questions, "seconds": round(self.seconds, 1),
+                "recovery": self.recovery.summary(),
                 "digest": self.adapter.digest if self.adapter else None,
                 "calls": self.adapter.calls if self.adapter else None}
 
     def close(self) -> None:
         if self.adapter is not None:
             self.adapter.close()
+        if self.store is not None and self.trace is not None and self.recovery.known:
+            self.store.save_recoveries(self.trace.site, self.family_id, self.recovery.known)
 
 
 async def adapter_for(surface: Surface, model: Model, family_id: str, *, store: Store | None = None,
@@ -569,7 +610,8 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal:
     from .play import Run, play
     from .session import ended
 
-    adaptive = Adaptive(surface, model, family_id, store=store, policy=policy, compute=budget.compute, fresh=fresh)
+    adaptive = Adaptive(surface, model, family_id, store=store, policy=policy, compute=budget.compute, fresh=fresh,
+                        accept_consent=options.get("accept_consent", False))
     started = time.monotonic()
     whole = Run(record={})
     used = confirmed = 0
@@ -578,12 +620,13 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal:
             adapter = await adaptive.start()
         except AdaptationFailed as error:
             whole.record = ended(Outcome.UNSUPPORTED, f"adaptation_{error.reason}", family_id=family_id)
+            whole.recoveries = list(adaptive.recovery.log)
             return whole, {**adaptive.summary(), "failed": error.reason, "detail": error.detail[:2000]}
         stalled = 0
         while True:
             left = None if budget.max_seconds is None else budget.max_seconds - (time.monotonic() - started)
             target = goal.target_value - confirmed if goal.objective == "actions" else goal.target_value
-            run = await play(surface, adapter=adapter, policy=policy, model=model,
+            run = await play(surface, adapter=adapter, policy=policy, model=model, recovery=adaptive.recovery,
                              goal=GoalSpec(goal.objective, target, goal.scope, goal.stop_conditions, goal.allowed_meta_actions),
                              budget=Budget(budget.max_actions - used, budget.compute, left), **options)
             record = run.record
@@ -591,6 +634,7 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal:
             confirmed += record.get("confirmed_actions", 0)
             whole.moves += [{**move, "round": adaptive.relearned} for move in run.moves]
             whole.looks += run.looks
+            whole.recoveries = list(adaptive.recovery.log)
             whole.geometry, whole.vision, whole.last_screen = run.geometry, run.vision, run.last_screen
             whole.record = {**record, "actions_used": used, "confirmed_actions": confirmed}
             stalled = 0 if record.get("confirmed_actions") else stalled + 1

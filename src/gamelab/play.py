@@ -21,6 +21,7 @@ from .adapters.reference import ReferenceAdapter
 from .contracts import Budget, GoalSpec, Outcome
 from .environments.screen import ScreenEnvironment, Surface, Watch
 from .model import Model
+from .recovery import Recovery
 from .session import GameSession, SettlingPolicy, ended
 from .vision import DEFAULT_VISION, CorrectionReader, VisionBudget
 
@@ -39,6 +40,8 @@ class Run:
     vision: dict[str, Any] | None = None
     looks: int = 0
     last_screen: bytes | None = None
+    # each time play stopped on a screen and what a model did about it (`recovery.Recovery.log`)
+    recoveries: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _Guards:
@@ -69,9 +72,11 @@ async def play(surface: Surface, *, profile: profiles.Profile | None = None, fam
                goal: GoalSpec, budget: Budget, policy: str | None = None, model: Model | None = None,
                vision: dict[str, Any] | None = None, cancel: asyncio.Event | None = None,
                watch: Watch | None = None, accept_consent: bool = False, run_id: str | None = None,
-               adapter: SiteAdapter | None = None) -> Run:
+               adapter: SiteAdapter | None = None, recovery: Recovery | None = None) -> Run:
     """`adapter`: the site adapter to play by (a generated one), in place of the reference adapter a profile or
-    a family's look gives; its first moves are trial moves, as any reading made in the run."""
+    a family's look gives; its first moves are trial moves, as any reading made in the run.
+    `recovery`: the model's way past screens play stops on, when the caller keeps one across runs; else one is
+    made for this run whenever there is a model."""
     if adapter is not None:
         if profile is not None or family_id not in (None, adapter.family_id):
             raise ValueError("an adapter names its own game")
@@ -110,6 +115,10 @@ async def play(surface: Surface, *, profile: profiles.Profile | None = None, fam
                                           budget=VisionBudget(**(vision or DEFAULT_VISION)), save=save_vision,
                                           current=environment.latest, cancelled=cancel.is_set, family_id=family_id)
     run.vision = environment.reader.record
+    if recovery is None and model is not None:
+        recovery = Recovery(model, family_id, accept_consent=accept_consent)
+    environment.recovery = recovery
+    logged = len(recovery.log) if recovery is not None else 0
     family = adapter.family() if adapter is not None else catalog.family(family_id).bind(profile.data if profile else None)
     session = GameSession.start(family, environment, goal=goal, budget=budget, policy=policy,
                                 target=environment.target, clock=time.monotonic, save=save, guards=_Guards(cancel),
@@ -129,4 +138,5 @@ async def play(surface: Surface, *, profile: profiles.Profile | None = None, fam
     environment.save_profile = save_profile
     run.record = await session.run()
     run.moves, run.looks, run.last_screen = list(moves.values()), environment.looks, environment.evidence
+    run.recoveries = recovery.log[logged:] if recovery is not None else []
     return run
