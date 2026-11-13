@@ -25,6 +25,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
+import logging
 from . import catalog, resources
 from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check_layout
 from .contracts import NeedObservation, Observation
@@ -32,6 +33,8 @@ from .environments.screen import Surface
 from .model import Model, Msg, TurnRequest
 from .recovery import MAX_TRIES, Recovery
 from .sandbox import Sandbox, SandboxError
+
+log = logging.getLogger("gamelab.adaptation")
 
 # moves played while the model reads every screen: enough transitions to write the adapter from and to
 # keep some back; each costs one model question
@@ -618,7 +621,11 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal:
     try:
         try:
             adapter = await adaptive.start()
-        except AdaptationFailed as error:
+        except Exception as error:
+            # a model that could not be reached while the adapter was made ends the game too, with its record
+            if not isinstance(error, AdaptationFailed):
+                log.exception("adaptation failed")
+                error = AdaptationFailed("model_failed", f"{type(error).__name__}: {error}")
             whole.record = ended(Outcome.UNSUPPORTED, f"adaptation_{error.reason}", family_id=family_id)
             whole.recoveries = list(adaptive.recovery.log)
             return whole, {**adaptive.summary(), "failed": error.reason, "detail": error.detail[:2000]}

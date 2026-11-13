@@ -54,3 +54,22 @@ async def test_a_recorder_keeps_each_answer_and_a_failure():
         await recorded.complete(QUESTION)
     assert recorded.answers[0]["prompt"] == "other" and "no network" in recorded.answers[0]["error"]
     assert recorded.tokens() == {"input": 0, "output": 0}
+
+
+async def test_a_gateway_that_timed_out_is_asked_again_and_a_refusal_is_not(monkeypatch):
+    """Regression: one 504 from the proxy while the adapter's code was being written ended a game with no record."""
+    from gamelab import model
+    monkeypatch.setattr(model, "RETRY_WAIT_S", 0.0)
+    seen = []
+
+    def reply(request):
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(504)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+    client = ChatClient("m", "k", base="https://models.test/v1", transport=httpx.MockTransport(reply))
+    request = TurnRequest(system_stable="s", messages=[Msg("user", [{"type": "text", "text": "q"}])], max_tokens=5, timeout_s=5)
+    assert (await client.complete(request)).text == "ok" and len(seen) == 2
+    refused = ChatClient("m", "k", base="https://models.test/v1", transport=httpx.MockTransport(lambda r: httpx.Response(400)))
+    with pytest.raises(httpx.HTTPStatusError):
+        await refused.complete(request)

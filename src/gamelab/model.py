@@ -7,6 +7,7 @@ can stand in for it (a test's canned answers, `Recorded` around a client).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -21,6 +22,10 @@ DEFAULT_BASE = "https://litellm.agenticfw.dev/v1"
 # the environment's names for the key, the API's base URL and the model, as ARMY names them
 KEY_VARIABLE, BASE_VARIABLE, MODEL_VARIABLE = "AGENTIC_OPENAI_KEY", "AGENTIC_OPENAI_BASE", "AGENTIC_OPENAI_MODEL"
 # a whole answer in one Markdown code fence, as some models wrap JSON
+# answers of a gateway, not of the model, after which a question is sent again, and how often
+RETRIED = frozenset({429, 502, 503, 504})
+RETRIES = 2
+RETRY_WAIT_S = 2.0
 _FENCED = re.compile(r"\A\s*```[a-zA-Z]*\n(.*?)\n?```\s*\Z", re.DOTALL)
 
 
@@ -88,10 +93,19 @@ class ChatClient:
         self._http = httpx.AsyncClient(headers={"Authorization": f"Bearer {key}"}, transport=transport)
 
     async def complete(self, request: TurnRequest) -> TurnResult:
-        response = await self._http.post(f"{self.base}/chat/completions", json=self.body(request),
-                                         timeout=request.timeout_s)
-        response.raise_for_status()
-        return answer(response.json())
+        # a gateway that timed out or is busy is asked again: a long question (code to write) must not end a game
+        for attempt in range(1 + RETRIES):
+            try:
+                response = await self._http.post(f"{self.base}/chat/completions", json=self.body(request),
+                                                 timeout=request.timeout_s)
+            except httpx.TransportError:
+                if attempt == RETRIES:
+                    raise
+            else:
+                if response.status_code not in RETRIED or attempt == RETRIES:
+                    response.raise_for_status()
+                    return answer(response.json())
+            await asyncio.sleep(RETRY_WAIT_S * (attempt + 1))
 
     def body(self, request: TurnRequest) -> dict[str, Any]:
         messages = [{"role": "system", "content": request.system_stable},
