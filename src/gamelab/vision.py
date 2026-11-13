@@ -14,12 +14,9 @@ import json
 import math
 from typing import Any
 
-from kernel.agent import ModelTier
-from models.choice import BROWSER, acting_for
-from models.spec import Msg, TurnRequest
-
 from . import catalog, perception, profiles
 from .contracts import NeedObservation, Observation, StateEstimate
+from .model import Msg, TurnRequest
 
 MAX_RESPONSE_BYTES = 65_536
 # 2: the record keeps what each screen was judged to show (`screens`), so a restart does not ask again
@@ -30,6 +27,10 @@ RECORD_VERSION = 4
 # reuse what recent screens were judged to show, small enough for the task's state however long the game
 ATTEMPTS_KEPT = 64
 SCREENS_KEPT = 64
+# each question's output and time when a run names no budget of its own; no cap on a game's count of them
+# (user decision, 2026-11-13): a game is never stopped for the questions it needed, and one capture is never
+# asked about twice
+DEFAULT_VISION = {"max_calls": None, "max_output_tokens": None, "tokens_per_call": 2000, "timeout_s": 30}
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class VisionBudget:
 
 
 class CorrectionReader:
-    def __init__(self, profile: profiles.Profile | None, router: Any, *, tenant_id: str, user_id: str, task_id: str,
+    def __init__(self, profile: profiles.Profile | None, router: Any, *, run_id: str,
                  budget: VisionBudget, save: Callable[[dict], Awaitable[None]],
                  current: Callable[[Observation], bool | Awaitable[bool]], cancelled: Callable[[], bool],
                  record: dict | None = None) -> None:
@@ -60,15 +61,15 @@ class CorrectionReader:
         if self.profile != profile:
             raise ValueError("profile_changed")
         self.router = router
-        if any(not isinstance(value, str) or not value for value in (tenant_id, user_id, task_id)):
+        if not isinstance(run_id, str) or not run_id:
             raise ValueError("invalid_vision_scope")
-        self.tenant_id, self.user_id, self.task_id = tenant_id, user_id, task_id
+        self.run_id = run_id
         self.budget, self.save, self.current, self.cancelled = budget, save, current, cancelled
         self._lock = asyncio.Lock()
         self._record = self._restore(record)
 
     def _restore(self, record: dict | None) -> dict:
-        scope = {"tenant_id": self.tenant_id, "user_id": self.user_id, "task_id": self.task_id}
+        scope = {"run_id": self.run_id}
         if record is None:
             return {"version": RECORD_VERSION, "scope": scope, "budget": asdict(self.budget), "asked": 0, "attempts": [],
                     "screens": {}}
@@ -226,9 +227,8 @@ class CorrectionReader:
         if stopped := await self._stopped(observation):
             return stopped
         try:
-            with acting_for(self.tenant_id, self.user_id):
-                async with asyncio.timeout(self.budget.timeout_s):
-                    result = await self.router.complete_private(request)
+            async with asyncio.timeout(self.budget.timeout_s):
+                result = await self.router.complete(request)
             if result.tool_calls or not isinstance(result.text, str) \
                     or len(result.text) > MAX_RESPONSE_BYTES \
                     or len(result.text.encode("utf-8")) > MAX_RESPONSE_BYTES:
@@ -255,12 +255,10 @@ class CorrectionReader:
 
     def _turn(self, prompt_file: str, context: dict[str, Any], png: bytes) -> TurnRequest:
         prompt = (catalog.FRAGMENT / "prompts" / prompt_file).read_text(encoding="utf-8")
-        return TurnRequest(tier=ModelTier.OPERATOR, system_stable=prompt, tools=[], answer_only=True,
+        return TurnRequest(system_stable=prompt, timeout_s=self.budget.timeout_s, max_tokens=self.budget.tokens_per_call,
                            messages=[Msg(role="user", content=[{"type": "text", "text": json.dumps(context)},
                                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                                           "data": base64.b64encode(png).decode("ascii")}}])],
-                           max_steps=1, timeout_s=self.budget.timeout_s, stream=False, purpose=BROWSER,
-                           max_tokens=self.budget.tokens_per_call)
+                                                           "data": base64.b64encode(png).decode("ascii")}}])])
 
 
 def _digest(value: Any) -> bool:

@@ -12,7 +12,7 @@ import pytest
 from gamelab import geometry, perception, profiles
 from gamelab.contracts import NeedObservation, Observation, StateEstimate
 from gamelab.vision import CorrectionReader, VisionBudget
-from models.spec import TurnResult
+from gamelab.model import TurnResult
 
 SCREENS = Path(__file__).parent / "fixtures/game/screens"
 
@@ -35,14 +35,14 @@ class Harness:
             self.proposal["state"]["tray"][0] = [[0, 0], [1, 0], [1, 1]]
         self.result = None
         self.after = lambda: None
-        self.reader = CorrectionReader(self.profile, self, tenant_id="tenant", user_id="user", task_id="task",
+        self.reader = CorrectionReader(self.profile, self, run_id="run",
             budget=budget or VisionBudget(2, 128, 64, 2), save=self.save,
             current=lambda seen: self.fresh, cancelled=lambda: self.cancelled, record=record)
 
     async def save(self, record):
         self.saved.append(deepcopy(record))
 
-    async def complete_private(self, request):
+    async def complete(self, request):
         assert self.saved
         self.requests.append(request)
         self.after()
@@ -207,7 +207,7 @@ async def test_timeout_and_task_cancellation_keep_the_consumed_attempt(timeout):
     async def wait(request):
         started.set()
         await never.wait()
-    harness.reader.router = SimpleNamespace(complete_private=wait)
+    harness.reader.router = SimpleNamespace(complete=wait)
     task = asyncio.create_task(harness.read())
     await started.wait()
     if timeout:
@@ -249,7 +249,7 @@ async def test_profile_remeasurement_does_not_refund_the_tasks_budget():
     data = deepcopy(harness.profile.data)
     data["revision"] += 1
     revised = profiles.validate(data)
-    reader = CorrectionReader(revised, harness, tenant_id="tenant", user_id="user", task_id="task",
+    reader = CorrectionReader(revised, harness, run_id="run",
         budget=harness.reader.budget, save=harness.save, current=lambda seen: True, cancelled=lambda: False,
         record=harness.reader.record)
     remeasured = geometry.measure((SCREENS / "slide_playing.png").read_bytes(), revised)
@@ -326,7 +326,7 @@ async def test_a_screen_question_spends_the_same_budget_once_per_capture():
     assert await harness.reader.classify(harness.seen, harness.png, pixels) == answer
     later = replace(harness.seen, id="later")
     assert await harness.reader.classify(later, harness.png, pixels) == answer
-    restarted = CorrectionReader(harness.profile, harness, tenant_id="tenant", user_id="user", task_id="task",
+    restarted = CorrectionReader(harness.profile, harness, run_id="run",
         budget=harness.reader.budget, save=harness.save, current=lambda seen: True, cancelled=lambda: False,
         record=harness.saved[-1])
     assert restarted.judged(pixels) == answer and restarted.judged("b" * 64) is None
@@ -341,8 +341,7 @@ async def test_a_game_is_never_stopped_for_how_many_questions_it_needed():
     never asked twice, and the record kept in the task's state stays small however long the game runs, its
     count of questions kept across a restart. Regression: a game stopped as unreadable once five questions
     had gone to reading tiles, with the board still in play."""
-    from gamelab.task import DEFAULT_VISION
-    from gamelab.vision import ATTEMPTS_KEPT
+    from gamelab.vision import ATTEMPTS_KEPT, DEFAULT_VISION
     harness = Harness(budget=VisionBudget(**DEFAULT_VISION))
     harness.result = TurnResult(text=json.dumps({"observation_id": "o", "image_sha256": "x", "screen": "over"}))
     questions = ATTEMPTS_KEPT + 6
@@ -353,7 +352,7 @@ async def test_a_game_is_never_stopped_for_how_many_questions_it_needed():
     assert await harness.reader.classify(seen, harness.png, f"{number:064x}") == NeedObservation("correction_already_attempted")
     record = harness.saved[-1]
     assert record["asked"] == questions and len(record["attempts"]) == ATTEMPTS_KEPT
-    restarted = CorrectionReader(harness.profile, harness, tenant_id="tenant", user_id="user", task_id="task",
+    restarted = CorrectionReader(harness.profile, harness, run_id="run",
         budget=harness.reader.budget, save=harness.save, current=lambda seen: True, cancelled=lambda: False,
         record=record)
     assert restarted.record["asked"] == questions
