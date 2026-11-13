@@ -47,6 +47,10 @@ LABEL_RETRIES = 2
 MAX_GENERATIONS = 5
 # how long a played move is left to finish before its result is looked at
 SETTLE_S = 0.8
+# more captures of each screen read, taken with no question asked: an adapter must read them as it reads the
+# screen itself, so code that leans on what changes from frame to frame (a tile that animates while the game
+# waits) is not adopted. A capture that looks like another screen (a notice come up meanwhile) is not kept
+FRAMES, FRAME_GAP_S, FRAME_DISTANCE = 2, 0.3, 10.0
 LABEL_TOKENS, GENERATE_TOKENS = 4000, 16000
 LABEL_TIMEOUT_S, GENERATE_TIMEOUT_S = 90.0, 300.0
 # the board region as the model is shown it for reading cells: this many pixels on its longer side
@@ -74,6 +78,8 @@ class Look:
     sent: dict[str, Any] | None = None
     # kept back from the writer: an adapter must read it right unseen
     held: bool = False
+    # more captures of the same screen moments later (FRAMES), to be read the same
+    frames: list[bytes] = field(default_factory=list)
 
 
 @dataclass
@@ -147,6 +153,8 @@ class Adaptation:
         self.model, self.family_id = model, family_id
         # the model's way past a screen that shows no board (a notice over it), and the last board read
         self.recovery, self.last_state = recovery, None
+        # the other captures of the screen last read (FRAMES)
+        self.frames: list[bytes] = []
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -190,7 +198,20 @@ class Adaptation:
             if tries:
                 self.recovery.succeeded()
             self.last_state = read[1]
+            self.frames = await self._frames(surface, read[0])
             return read
+
+    async def _frames(self, surface: Surface, png: bytes) -> list[bytes]:
+        """FRAMES more captures of the screen just read, those that still look like it."""
+        from .recovery import _distance, signature
+
+        seen, frames = signature(png), []
+        for _ in range(FRAMES):
+            await asyncio.sleep(FRAME_GAP_S)
+            frame = await surface.capture()
+            if frame != png and _distance(seen, signature(frame)) <= FRAME_DISTANCE:
+                frames.append(frame)
+        return frames
 
     async def _label(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
                      accept: Any = None) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
@@ -252,14 +273,14 @@ class Adaptation:
             if action is None or action["kind"] in family.meta_actions:
                 break
             sent = {"kind": "key", "key": self.controls["keys"][action["direction"]]}
-            trace.looks.append(Look(png, state, board, action, sent))
+            trace.looks.append(Look(png, state, board, action, sent, frames=self.frames))
             await surface.key(sent["key"])
             await asyncio.sleep(SETTLE_S)
             before = state
             # the move's result must be one the rules allow from the state read before it
             png, state, _, _ = await self._read(surface, board, rules, accept=lambda after: family.model.assess(
                 before, action, after, family.rules)["effect"] == "confirmed")
-        trace.looks.append(Look(png, state, board))
+        trace.looks.append(Look(png, state, board, frames=self.frames))
         if len(trace.looks) <= HELD_BACK + 2:
             raise AdaptationFailed("game_too_short")
         for look in trace.looks[-HELD_BACK:]:
@@ -275,7 +296,7 @@ class Adaptation:
                 accept=None if partial is None else lambda read: _agrees(_board(partial), _board(read)))
         except AdaptationFailed:
             return None
-        return Look(png, state, board)
+        return Look(png, state, board, frames=self.frames)
 
     # ── generate and adopt ────────────────────────────────────────────
 
@@ -423,6 +444,17 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
             states.append(read.payload)
             if _board(read.payload) != _board(look.state):
                 fail("state", index, f"read() gave {json.dumps(_board(read.payload))}, expected {json.dumps(_board(look.state))}")
+            for frame in look.frames:
+                again = adapter.read(Observation(f"look-{index}-frame", index, "adopt", 0, 0.0, "adopt"), frame) \
+                    if not isinstance(adapter.measure(frame), NeedObservation) else None
+                if again is None or isinstance(again, NeedObservation) or _board(again.payload) != _board(look.state):
+                    got = "no board" if again is None else (
+                        f"cells unread {json.dumps(_board(adapter.partial))}" if isinstance(again, NeedObservation)
+                        else json.dumps(_board(again.payload)))
+                    adapter.last_error = None
+                    fail("frames", index, f"on another capture of the same screen {FRAME_GAP_S}s later (nothing played "
+                                          f"between) the code gave {got}: read what stays the same while the screen animates")
+                    break
             if look.action is not None:
                 try:
                     asked = adapter.sandbox.call("target", action=look.action, state=read.payload, layout=adapter.layout)
@@ -479,7 +511,9 @@ class Store:
         if not (path / "adapter.py").is_file():
             return None
         meta = json.loads((path / "adapter.json").read_text(encoding="utf-8"))
-        looks = [Look((path / f"look-{index}.png").read_bytes(), **look) for index, look in enumerate(meta["trace"])]
+        looks = [Look((path / f"look-{index}.png").read_bytes(), **{**look, "frames": [
+                     (path / f"look-{index}-frame-{number}.png").read_bytes() for number in range(look.get("frames", 0))]})
+                 for index, look in enumerate(meta["trace"])]
         return (path / "adapter.py").read_text(encoding="utf-8"), meta, Trace(family_id, meta["rules"], meta["site"], looks)
 
     def save(self, trace: Trace, made: Made) -> Path:
@@ -491,9 +525,12 @@ class Store:
             "digest": hashlib.sha256(made.source.encode()).hexdigest(), "generations": made.generations,
             "report": {key: value for key, value in made.report.items() if key != "source"},
             "trace": [{"state": look.state, "board": look.board, "action": look.action, "sent": look.sent,
-                       "held": look.held} for look in trace.looks]}, indent=2) + "\n", encoding="utf-8")
+                       "held": look.held, "frames": len(look.frames)} for look in trace.looks]}, indent=2) + "\n",
+            encoding="utf-8")
         for index, look in enumerate(trace.looks):
             (path / f"look-{index}.png").write_bytes(look.png)
+            for number, frame in enumerate(look.frames):
+                (path / f"look-{index}-frame-{number}.png").write_bytes(frame)
         return path
 
     def recoveries(self, site: str, family_id: str) -> list[dict[str, Any]]:

@@ -17,6 +17,7 @@ from test_screen import Screen, screen_reading  # noqa: F401
 @pytest.fixture(autouse=True)
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
+    monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
 
 
 class Author:
@@ -169,3 +170,62 @@ async def test_a_value_the_game_had_not_shown_is_learned_from_one_more_look_and_
     # what was learned is kept: the next game starts from the second adapter
     kept = Store(tmp_path).load("https://unregistered.example/", "slide_merge")
     assert kept[0] == source(fake).strip() and len(kept[2].looks) == adaptation.EXPLORE_MOVES + 2 and not kept[2].looks[-1].held
+
+
+def patched(png, fake, colour=(30, 30, 30)):
+    """The screen with a small spot at each cell's sampling point: a frame of a site whose tiles animate."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+    image = Image.open(BytesIO(png)).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    left, top, width, height = fake.measured.layout["board"]["rect"]
+    for row in range(4):
+        for col in range(4):
+            x, y = left + (col + 0.5) * width / 4, top + (row + 0.3) * height / 4
+            draw.rectangle((x - 3, y - 3, x + 3, y + 3), fill=colour)
+    out = BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue()
+
+
+async def test_an_adapter_must_read_other_frames_of_each_screen_as_it_reads_the_screen():
+    """A site that animates while it waits shows each screen a little differently from one capture to the next.
+    Code that reads one pixel per cell reads the recorded captures right and the other frames wrong: it is not
+    adopted, and the writer is told why. Code that reads a broad area passes. Regression: an adapter adopted on
+    one capture per screen read a 16 as an 8 a few frames later, again after it was written anew."""
+    fake = Screen()
+    trace = await Adaptation(Author(fake, []), "slide_merge").explore(fake)
+    assert all(not look.frames for look in trace.looks)          # a still screen: no other frame differs
+    for look in trace.looks:
+        look.frames = [patched(look.png, fake)]
+    fragile = adopt(source(fake), trace)
+    assert fragile["failed_check"] == "frames" and "another capture of the same screen" in fragile["problems"][0]
+    broad = source(fake, cell="value, far = nearest(picture.common([int(x) - 25, int(y) - 12, 50, 24])[0][0], PALETTE); "
+                              "cells.append(int(value) if far <= 12 else None)")
+    assert adopt(broad, trace)["passed"]
+
+
+async def test_frames_that_look_like_the_screen_are_kept_and_one_showing_something_else_is_not(tmp_path):
+    fake = Screen()
+    capture, count = fake.capture, [0]
+
+    async def animated(region=None):
+        count[0] += 1
+        png = await capture(region)
+        # every other capture shimmers; now and then a notice has come up over the board meanwhile
+        if count[0] % 7 == 0:
+            fake.covered = True
+            png = await capture(region)
+            fake.covered = False
+            return png
+        return patched(png, fake) if count[0] % 2 else png
+    fake.capture = animated
+    trace = await Adaptation(Author(fake, []), "slide_merge").explore(fake)
+    kept = [frame for look in trace.looks for frame in look.frames]
+    assert kept and all(frame != look.png for look in trace.looks for frame in look.frames)
+    assert sum(len(look.frames) for look in trace.looks) < adaptation.FRAMES * len(trace.looks)
+    # kept with the adapter and loaded back
+    made = adaptation.Made(source(fake), 1, False, {"passed": True})
+    Store(tmp_path).save(trace, made)
+    loaded = Store(tmp_path).load(trace.site, "slide_merge")[2]
+    assert [look.frames for look in loaded.looks] == [look.frames for look in trace.looks]

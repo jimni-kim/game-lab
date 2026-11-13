@@ -322,14 +322,16 @@ class GameSession:
                 stable_since = self.clock()
             # the same state under pixels that keep moving: an animation that never ends is not waited out
             if key is None or key[:-1] != read:
-                read_since = self.clock()
+                read_since = looked
             read = key[:-1] if key is not None else None
             restless = still and usable and self.clock() - read_since >= RESTLESS_S
             # a predicted result is taken from its first look, or, when the game must be still, its second
             settled = not still or observation.image_ref is None or observation.image_ref == pictured
             if observation.image_ref is None or observation.image_ref != pictured:
                 rested = looked                  # when this look began: a capture takes a while itself
-            previous, pictured, self.rested_at = key, observation.image_ref, rested
+            previous, pictured = key, observation.image_ref
+            # a move whose pixels never rest came to rest when its state did: that is what trial moves time
+            self.rested_at = read_since if restless else rested
             if usable and acceptable is not None and acceptable(estimate) and (settled or restless):
                 return estimate, observation
             stable = usable and (policy is None or self.clock() - stable_since >= policy.stable_s or restless)

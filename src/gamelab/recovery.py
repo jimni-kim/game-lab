@@ -37,10 +37,14 @@ SETTLE_S = 0.8
 SWIPE_MS = 150
 MAX_WAIT_MS = 5000
 # a screen's small picture: this many grey levels a side, and how far two may differ on average (of 255)
-# and still be the same screen. Measured on a dark site (2026-11-13): a notice and the board behind it differ
-# by about 21 to 29, as two notices do, so only a screen all but the same is answered without asking
+# and still be the same screen. A guess, kept tight: on a dark site (2026-11-13) a notice and the board behind
+# it differed by only 21 to 29. What keeps a replay from landing on a board is less this than REPLAYED_REASONS
 SIGNATURE_SIDE = 16
-REPLAY_DISTANCE = 6.0
+REPLAY_DISTANCE = 8.0
+# why play stopped when the screen showed no board the code could use (something in the way): only there is
+# an input that got past a screen before sent again unasked. Where the board was read whole and the moves made
+# no sense, a look that resembles an old notice may well be the board itself, and a tap on it a move
+REPLAYED_REASONS = frozenset({"label_failed", "board_not_found", "board_covered", "unreadable", "surface_unsettled"})
 # what is told the model of the inputs it already tried on this screen, and kept of those that worked
 TRIED_KEPT, KNOWN_KEPT = 8, 32
 
@@ -123,7 +127,8 @@ class Recovery:
         seen = signature(png)
         entry: dict[str, Any] = {"reason": reason, "source": "model", "situation": None, "action": None, "changed": None}
         self.log.append(entry)
-        action = self._replay(seen)
+        self._forget()
+        action = self._replay(seen) if reason in REPLAYED_REASONS else None
         if action is not None:
             entry["source"] = "replay"
         else:
@@ -139,8 +144,14 @@ class Recovery:
             log.exception("recovery input failed: %s", action)
             return False
         self.tried.append({"action": action, "screen_changed": entry["changed"], "signature": seen,
-                           "replayed": entry["source"] == "replay"})
+                           "replayed": entry["source"] == "replay", "reason": reason})
         return True
+
+    def _forget(self) -> None:
+        """A replayed input after which play is stuck again did not get past its screen: it is not kept."""
+        if self.tried and self.tried[-1]["replayed"]:
+            self.known = [known for known in self.known if known["action"] != self.tried[-1]["action"]
+                          or _distance(known["signature"], self.tried[-1]["signature"]) > REPLAY_DISTANCE]
 
     def _replay(self, seen: list[int]) -> dict[str, Any] | None:
         """The input that got past a screen like this one before; never twice on one screen, so one that
@@ -189,7 +200,7 @@ class Recovery:
             if entry["action"] == last["action"]:
                 entry["restored"] = True
                 break
-        if not last["replayed"] and last["action"]["kind"] != WAIT:
+        if not last["replayed"] and last["action"]["kind"] != WAIT and last["reason"] in REPLAYED_REASONS:
             self.known = [*self.known, {"action": last["action"], "signature": last["signature"]}][-KNOWN_KEPT:]
         self.tried = []
 

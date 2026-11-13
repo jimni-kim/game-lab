@@ -24,6 +24,7 @@ KINDS = frozenset({"keys", "tap", "drag"})
 def quick(monkeypatch):
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
+    monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
 
 
 def middle(box):
@@ -207,3 +208,23 @@ async def test_a_value_the_adapter_takes_for_another_is_learned_again_when_its_m
                                        store=Store(tmp_path))
     assert ending(played) == ("goal_reached", "actions"), (played.record, made)
     assert made["relearned"] >= 1 and made["generations"] == 2 and max(map(max, fake.board["grid"])) >= 32
+
+
+async def test_a_kept_input_is_sent_again_only_where_no_board_showed_and_is_forgotten_once_it_fails():
+    """An input that got past a notice is replayed only when play stops for want of a board: where the board was
+    read whole and the moves made no sense, the screen may be the board itself, and a tap there a move. A replay
+    after which play is stuck again is forgotten. Regression: a kept tap was replayed on a board read whole."""
+    fake = Screen()
+    tap = {"kind": "tap", "at": middle(fake.button)}
+    kept = [{"action": tap, "signature": recovery.signature(await fake.capture())}]
+    asked = Recovery(fake, "slide_merge", known=kept)
+    fake.recovering = [{"kind": "none"}]
+    assert not await asked.attempt(fake, "inconsistent", {"state": None, "recent": []})
+    assert asked.log[-1]["source"] == "model" and not fake.taps
+    replayed = Recovery(fake, "slide_merge", known=kept)
+    fake.recovering = [{"kind": "give_up"}]
+    assert await replayed.attempt(fake, "unreadable", {"state": None, "recent": []})
+    assert replayed.log[-1]["source"] == "replay" and len(fake.taps) == 1
+    # stuck again with nothing confirmed between: the kept input did not work here, and the model is asked
+    assert not await replayed.attempt(fake, "unreadable", {"state": None, "recent": []})
+    assert replayed.log[-1]["source"] == "model" and replayed.known == []

@@ -411,6 +411,18 @@ async def test_a_game_whose_pixels_never_rest_is_played_once_its_state_holds():
     record = await session.run()
     assert record["outcome"] == "goal_reached" and record["confirmed_actions"] == 2
     assert len(looks) <= 3 * (RESTLESS_S / 0.1 + 2)
+    # trial moves time such a move by when its state came to rest, not by how long it took to tell
+    trial = Run(goal=single(2), budget=Budget(max_actions=10, compute=50, max_seconds=60))
+    session = GameSession.start(trial.family, trial.env, goal=trial.goal, budget=trial.budget, policy=trial.policy,
+                                target=TARGET, clock=trial.clock, save=trial.save, guards=trial.guards, trial=1)
+    session.settling = SettlingPolicy(timeout_s=2, interval_s=0.1, stable_s=0.2, still=True)
+    observe, looks = trial.env.observe, []
+
+    async def wait_trial(delay):
+        trial.clock.now += delay
+    session.wait, trial.env.observe = wait_trial, restless
+    record = await session.run()
+    assert record["outcome"] == "goal_reached" and record["rested_s"][0] < RESTLESS_S / 2
 
 
 async def test_trial_moves_time_the_games_animation_and_later_moves_look_once():
