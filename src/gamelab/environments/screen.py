@@ -435,7 +435,10 @@ class ScreenEnvironment:
         remaining = self._remaining()
         if remaining is not None and remaining <= 0:
             return False
-        if not await self.recovery.attempt(self.surface, reason, context, timeout_s=remaining):
+        # where the game's cells lie, as last measured: a game played by taps on them is not tapped there
+        cells = [[left, top, right - left, bottom - top] for left, top, right, bottom in self.adapter.regions()] \
+            if self.adapter.measured else []
+        if not await self.recovery.attempt(self.surface, reason, context, timeout_s=remaining, avoid=cells):
             return False
         self.adapter.moved(None)
         self.last, self.state, self.control = None, None, None
