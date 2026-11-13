@@ -251,5 +251,29 @@
         "wait_ms": 1500
       }
     ]
+  },
+  "minesweeperonline_intermediate": {
+    "url": "https://minesweeperonline.com/#intermediate",
+    "family": "minesweeper",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "A classic clone: 16x16, 40 mines, cells of 16 pixels with one face colour and a raised edge on the covered ones, a count of mines and a clock above the board. Each reload starts a new game. No account; a high score is kept only when a name is typed after a fast win (never typed here). The answer key reads the page's own cells (each a div whose class says what it shows) to score readings afterwards; the harness sees pixels only.",
+    "ending": {
+      "selector": "#face",
+      "attribute": "class",
+      "won": "facewin",
+      "over": "facedead"
+    },
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ],
+    "oracle": "() => { const grid = []; for (let r = 1; document.getElementById(r + '_1') && document.getElementById(r + '_1').offsetParent !== null; r++) { const row = []; for (let c = 1; ; c++) { const cell = document.getElementById(r + '_' + c); if (!cell || cell.offsetParent === null) break; const kind = cell.className.replace('square', '').trim(); const open = /^open(\\d)$/.exec(kind); row.push(open ? +open[1] : kind === 'blank' ? 9 : kind === 'bombflagged' ? 10 : kind === 'bombdeath' ? 12 : 11); } grid.push(row); } const face = document.getElementById('face').className; return {grid, score: null, over: face === 'facedead', won: face === 'facewin'}; }"
   }
 }

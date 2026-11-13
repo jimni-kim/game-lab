@@ -180,7 +180,9 @@ class Game:
     async def page_end(self) -> str | None:
         """The end the page itself states (`won`, `over`), or None while it states neither."""
         ending = self.site["ending"]
-        text = await self.page.locator(ending["selector"]).first.text_content() or ""
+        found = self.page.locator(ending["selector"]).first
+        # the page says it in the element's text, or in one of its attributes (`attribute`: a face's class)
+        text = (await found.get_attribute(ending["attribute"]) if "attribute" in ending else await found.text_content()) or ""
         return next((end for end in ("won", "over") if ending[end] in text), None)
 
     def during(self, number: int) -> None:
