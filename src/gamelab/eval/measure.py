@@ -113,7 +113,8 @@ def measure(run: Run, recorder: Recorder, final: dict[str, Any] | None) -> dict[
     misread = sum(i["planned_on"].get("grid") != i["truth"]["grid"] for i in judged)
     # an intent carried out more than once
     carried = [i["action_id"] for i in recorder.inputs if i["delivery"] in ("delivered", "unknown")]
-    resent = sum(carried.count(action) - 1 for action in set(carried))
+    # (in a row: a game played in rounds, each by a newer adapter, numbers every round's moves from one)
+    resent = sum(one == other for one, other in zip(carried, carried[1:]))
     cycles = [b["done_s"] - a["done_s"] for a, b in zip(recorder.inputs, recorder.inputs[1:])]
     # from the capture the input was decided on to the input completed; the cycle above also holds the
     # wait for the previous move to settle

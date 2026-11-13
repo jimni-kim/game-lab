@@ -602,7 +602,7 @@ async def adapter_for(surface: Surface, model: Model, family_id: str, *, store: 
 RELEARN_REASONS = ("unreadable", "profile_unconfirmed", "board_not_found", "surface_unsettled")
 # moves that did not do what the rules predict on a board read whole: the reading itself may be wrong (a value
 # the adapter takes for another), which one more look read by the model shows
-MISREAD_REASONS = ("inconsistent", "unknown")
+MISREAD_REASONS = ("inconsistent", "unknown", "absent")
 # adapters made again in one game before giving up: a game shows a handful of new looks, not dozens
 MAX_RELEARNS = 16
 
