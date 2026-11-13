@@ -43,8 +43,9 @@ CONTROLS: dict[str, ModuleType] = {"block_placement": block_placement_controls, 
                                     "slide_merge": slide_merge_controls}
 # the families whose games are set up from a look with no registered profile (plan §4.5), each with
 # rules (the rule values a board's size sets) and palette (its colours from the cells' values, or why it
-# cannot be made); their
-# descriptors carry `discovery`
+# cannot be made); their descriptors carry `discovery`. A descriptor may carry `discovery` without a module
+# here: the block also says how a family is explored while an adapter is made for it (`adaptation`), which
+# needs no palette
 DISCOVERY: dict[str, ModuleType] = {"slide_merge": slide_merge_discover}
 
 
@@ -79,8 +80,8 @@ def descriptor(family_id: str) -> dict[str, Any]:
     if set(data["policies"]) != set(solver.POLICIES) \
             or not {data["baseline_policy"], data["default_policy"]} <= set(solver.POLICIES):
         problems.append("policies differ from the solver's")
-    if ("discovery" in data) != (family_id in DISCOVERY):
-        problems.append("discovery differs from the code's")
+    if family_id in DISCOVERY and "discovery" not in data:
+        problems.append("the code sets games up from a look but the descriptor has no discovery")
     elif not set(data.get("discovery", {}).get("rules", {})) <= set(model.DEFAULT_RULES):
         problems.append("discovery sets rules the rule model does not implement")
     if problems:

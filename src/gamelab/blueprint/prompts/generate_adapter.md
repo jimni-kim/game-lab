@@ -15,12 +15,14 @@ The host already has the game's rules (`family` and `rule_model` in the context)
 
     def target(action, state, layout) -> dict
         How one of the rule model's actions is played from `state`: for this game the context's `controls`
-        say which inputs exist. Return {"kind": "key", "key": NAME} for a key.
+        say which inputs exist. Return {"kind": "key", "key": NAME} for a key, or {"kind": "tap", "x": X,
+        "y": Y} for a tap, in whole-screen pixels, at the middle of the cell the action names, computed
+        from the board box and cell sizes your measure() found (never from the example boxes).
 
 `picture` is a helpers.Picture (see `helpers` for its methods). The code runs in a sandbox: no files, no network, no environment, no printing; each call must finish well within a second. Module-level constants (a colour table, measured sizes) are fine.
 
 What you know about the site:
-- `examples`: screens the host recorded, in order, each with the state a careful reader gave for it (`state`), the approximate board box (`board`, a rough estimate, often several pixels off), and `cells`: for each cell, the colour most common around its middle and around its upper part, measured by the host at the approximate box. The images are those screens, in the same order.
+- `examples`: screens the host recorded, in order, each with the state a careful reader gave for it (`state`), the approximate board box (`board`, a rough estimate, often several pixels off), the move played from it (`action`) and the input the host sent for it (`sent`: a key, or the point tapped), and `cells`: for each cell, the colour most common around its middle and around its upper part, measured by the host at the approximate box. The images are those screens, in the same order.
 - `probes`: for the first example, scan lines across the board region as runs of [start, length, [r, g, b]] along x (for `rows`) or y (for `columns`). Use them to find the exact edges, gutters and cell sizes.
 - The host also captures each screen again moments later, with nothing played in between, and your read() must give the same state on those captures. Many sites animate while they wait for a move (tiles that bob, glow or shimmer, a moving background), so base the reading on what stays the same from frame to frame: a tile's fill colour taken over a broad area, a numeral's overall shape, not exact pixel positions or thin details. When a feature in `cells` (a colour that differs by value) is enough, prefer it.
 - A value the examples never show will appear later in the game. Read values in a way that extends to them when you can (the examples' pattern), and return null for a cell whose look you cannot place.

@@ -7,10 +7,12 @@ rest (adaptive perception plan §5, stages 1 to 4; §4.4).
               wrong with each attempt, until one passes or the attempts run out
     adopt     an attempt passes when, run in the sandbox over every recorded look, it finds the board, reads
               each state as recorded, each transition is one the rules allow, and it plays each recorded
-              move with the input that was sent
+              move with the input that was sent (the same key; a tap inside the same cell)
 
 The model never picks a move and its code never sends an input: moves are the solver's, inputs the
-harness's. What is adopted is kept by site (`Store`) and tried again next time before anything is made.
+harness's. A game is explored with its family's starting controls (`discovery.controls`): keys, or taps on
+the cell a move names, placed from the board box the model gave and the grid's shape. What is adopted is
+kept by site (`Store`) and tried again next time before anything is made.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ from . import catalog, resources
 from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check_layout
 from .contracts import NeedObservation, Observation
 from .environments.screen import Surface
+from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 from .recovery import MAX_TRIES, Recovery
 from .sandbox import Sandbox, SandboxError
@@ -58,6 +61,9 @@ OVERLAY_SIDE = 800
 # colours nearer than this are one run of a probe's scan line
 RUN_TOLERANCE = 6
 MAX_RUNS = 120
+# the controls a game can be explored with before any adapter exists: a key per direction, or a tap on the
+# cell a move names (a drag's start and end are the family code's to place: not yet)
+EXPLORED_WITH = ("keys", "tap")
 
 
 class AdaptationFailed(Exception):
@@ -147,6 +153,15 @@ def _shape(family: Any, state: dict[str, Any]) -> tuple[int, int] | None:
     return (len(grid), len(grid[0])) if grid else None
 
 
+def cell_box(board: list[int], shape: tuple[int, int], cell: list[int]) -> list[float]:
+    """The box [left, top, width, height] of one cell of a board box divided evenly into `shape` cells."""
+    left, top, width, height = board
+    rows, cols = shape
+    row, col = cell
+    across, down = width / cols, height / rows
+    return [left + col * across, top + row * down, across, down]
+
+
 class Adaptation:
     def __init__(self, model: Model, family_id: str, *, policy: str | None = None, compute: int = 200,
                  recovery: Recovery | None = None) -> None:
@@ -161,8 +176,8 @@ class Adaptation:
         self.questions = 0
         # what the game is played with while exploring: the family's starting controls
         self.controls = self.descriptor.get("discovery", {}).get("controls")
-        if not self.controls or self.controls["kind"] != "keys":
-            raise AdaptationFailed("family_unsupported", "only games played with keys can be explored yet")
+        if not self.controls or self.controls["kind"] not in EXPLORED_WITH:
+            raise AdaptationFailed("family_unsupported", "only games played with keys or taps can be explored yet")
 
     # ── explore ───────────────────────────────────────────────────────
 
@@ -190,8 +205,10 @@ class Adaptation:
             try:
                 read = await self._label(surface, board, rules, accept)
             except AdaptationFailed as error:
+                # the board box, when known, is where this game's cells lie: no way past a screen taps them
                 if error.detail != "no_board" or self.recovery is None or tries >= MAX_TRIES or not await \
-                        self.recovery.attempt(surface, error.reason, {"state": self.last_state, "recent": []}):
+                        self.recovery.attempt(surface, error.reason, {"state": self.last_state, "recent": []},
+                                              avoid=[board] if board else []):
                     raise
                 tries += 1
                 continue
@@ -264,25 +281,49 @@ class Adaptation:
             return None
         return seen
 
+    def input_for(self, action: dict[str, Any], board: list[int], shape: tuple[int, int]) -> dict[str, Any]:
+        """The input a move is played with before any adapter exists, as a generated adapter's `target()`
+        would give it: the direction's key, or a tap at the middle of the cell the move names, placed on the
+        board box the model gave."""
+        if self.controls["kind"] == "keys":
+            return {"kind": "key", "key": self.controls["keys"][action["direction"]]}
+        left, top, width, height = cell_box(board, shape, action["cell"])
+        return {"kind": "tap", "x": left + width / 2, "y": top + height / 2}
+
+    async def _send(self, surface: Surface, sent: dict[str, Any]) -> None:
+        if sent["kind"] == "key":
+            await surface.key(sent["key"])
+        else:
+            await surface.tap(sent["x"], sent["y"], TAP_MS)
+
     async def explore(self, surface: Surface, moves: int = EXPLORE_MOVES) -> Trace:
+        """The game's first moves, each screen read by the model and each move the solver's. A game that ends
+        meanwhile (a mine under a first guess) ends the exploring: its last screen is a look like the others,
+        and the trace is kept when enough was seen before it; nothing is started anew here."""
         png, state, board, rules = await self._read(surface, None, None)
         trace = Trace(self.family_id, rules, await surface.address())
         family = catalog.family(self.family_id).bind({"rules": rules})
+        over = False
         for _ in range(moves):
+            if not family.model.legal_actions(state, family.rules):
+                over = True
+                break
             action = family.choose(state, self.policy, self.compute)
             if action is None or action["kind"] in family.meta_actions:
                 break
-            sent = {"kind": "key", "key": self.controls["keys"][action["direction"]]}
+            sent = self.input_for(action, board, _shape(family, state))
             trace.looks.append(Look(png, state, board, action, sent, frames=self.frames))
-            await surface.key(sent["key"])
+            await self._send(surface, sent)
             await asyncio.sleep(SETTLE_S)
             before = state
-            # the move's result must be one the rules allow from the state read before it
+            # the move's result must be one the rules allow from the state read before it: for a game whose
+            # moves reveal what was hidden, `assess` is what the rules can say of it (the cells a move may open)
             png, state, _, _ = await self._read(surface, board, rules, accept=lambda after: family.model.assess(
                 before, action, after, family.rules)["effect"] == "confirmed")
         trace.looks.append(Look(png, state, board, frames=self.frames))
         if len(trace.looks) <= HELD_BACK + 2:
-            raise AdaptationFailed("game_too_short")
+            raise AdaptationFailed("game_ended" if over else "game_too_short",
+                                   f"{len(trace.looks) - 1} moves were played before the game ended" if over else "")
         for look in trace.looks[-HELD_BACK:]:
             look.held = True
         return trace
@@ -461,8 +502,9 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                     adapter.checked_input(asked)
                 except (SandboxError, ValueError) as error:
                     asked = f"{type(error).__name__}: {error}"
-                if asked != look.sent:
-                    fail("target", index, f"target() gave {json.dumps(asked)} for {json.dumps(look.action)}, expected {json.dumps(look.sent)}")
+                if not _same_input(asked, look, adapter.layout["board"]):
+                    fail("target", index, f"target() gave {json.dumps(asked)} for {json.dumps(look.action)}, expected {json.dumps(look.sent)}"
+                                          + (" (a tap anywhere inside that cell)" if look.sent["kind"] == "tap" else ""))
         for index, look in enumerate(trace.looks[:-1]):
             before, after = states[index], states[index + 1]
             if before is None or after is None or look.action is None:
@@ -476,6 +518,16 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
         adapter.close()
     report["passed"] = report["failed_check"] is None
     return report
+
+
+def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
+    """Whether the code plays the look's move as it was played: the same key; or a tap inside the cell the move
+    names, on the board as the code measured it (the pixel the harness tapped was one point of that cell, and
+    code that picks another point of it plays the same move)."""
+    if look.sent["kind"] != "tap" or not isinstance(asked, dict) or asked.get("kind") != "tap":
+        return asked == look.sent
+    left, top, width, height = cell_box(board, _shape(None, look.state), look.action["cell"])
+    return left <= asked["x"] < left + width and top <= asked["y"] < top + height
 
 
 def _agrees(partial: Any, whole: Any) -> bool:
