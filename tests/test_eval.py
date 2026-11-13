@@ -17,7 +17,8 @@ ORACLE = """() => { const grid = Array.from({length: 4}, () => Array(4).fill(0))
 
 def arguments(out, **changed):
     return argparse.Namespace(**{"objective": "actions", "target": 2, "policy": None, "compute": 20, "max_actions": 2,
-                                 "max_seconds": 60, "out": out, "perturb": [], "accept_consent": False, **changed})
+                                 "max_seconds": 60, "out": out, "perturb": [], "accept_consent": False, "generate": False,
+                                 "regenerate": False, "adapter_store": out / "adapters", **changed})
 
 
 @pytest.mark.parametrize("perturb", [[], ["cancel@1"]], ids=["undisturbed", "cancelled after the first input"])

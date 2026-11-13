@@ -38,6 +38,7 @@ KEYS = frozenset({"ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "w", "a", "
 # the longest drag it may ask for
 DRAG_MAX_MS = 3000
 ADAPTER_FAILED = "adapter_failed"
+CELLS_UNREAD = "cells_unread"
 # sandbox failures (a hang, a crash) after which the code is not started again in this game
 MAX_FAILURES = 5
 FUNCTIONS = ("measure", "read", "target")
@@ -65,6 +66,8 @@ class GeneratedAdapter:
         # every call's outcome, for whoever measures the adapter
         self.calls = {"ok": 0, "failed": 0}
         self.last_error: str | None = None
+        # the last reading that left cells unread, as the code gave it
+        self.partial: dict[str, Any] | None = None
 
     # ── what the environment asks ─────────────────────────────────────
 
@@ -145,7 +148,13 @@ class GeneratedAdapter:
         payload = self._call("read", png, layout=self.layout)
         if not isinstance(payload, dict):
             return NeedObservation(ADAPTER_FAILED)
-        return self._family.estimate(replace(observation, public_facts={"state": payload}, geometry_ref=self.geometry_ref))
+        state = self._family.estimate(replace(observation, public_facts={"state": payload}, geometry_ref=self.geometry_ref))
+        if isinstance(state, StateEstimate) and state.unknown_fields:
+            # what the code could not place is not a state to play on: the screen is looked at whole (the
+            # game's own notice over the board, or a look of a value the code has not seen yet)
+            self.partial = payload
+            return NeedObservation(CELLS_UNREAD)
+        return state
 
     def target(self, action: dict[str, Any], state: StateEstimate, observation: Observation, png: bytes,
                elements: Any = None) -> MappedAction:

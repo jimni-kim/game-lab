@@ -49,7 +49,10 @@ from dataclasses import dataclass
 from importlib.resources import files
 from typing import Any
 
+from pathlib import Path
+
 from .. import profiles
+from ..adaptation import Store, play_adaptive
 from ..environments.web import WebSurface, browser
 from ..play import play
 from . import measure
@@ -291,24 +294,34 @@ def perturbed(game: Game, recorder: measure.Recorder) -> list[dict[str, Any]]:
 
 async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, url: str,
                    profile: profiles.Profile | None, family_id: str, site: dict[str, Any], model: Any) -> dict[str, Any]:
-    await setup(page, url, site)
     goal, budget = measure.goal_and_budget(args)
     name = f"{name}-{number:02d}"
+    answered = len(model.answers) if model else 0
+    started = time.monotonic()
+    adapted: dict[str, Any] | None = None
+    await setup(page, url, site)
     cancel = asyncio.Event()
     game = Game(page, site, args.perturb, cancel)
     recorder = measure.Recorder(name, truth=game.oracle, after=game.after, during=game.during)
-    answered = len(model.answers) if model else 0
-    started = time.monotonic()
+    options = {"goal": goal, "budget": budget, "policy": args.policy, "model": model, "cancel": cancel, "watch": recorder,
+               "accept_consent": args.accept_consent, "run_id": name}
     try:
-        run = await play(WebSurface(page), **({"profile": profile} if profile is not None else {"family_id": family_id}),
-                         goal=goal, budget=budget, policy=args.policy, model=model, cancel=cancel, watch=recorder,
-                         accept_consent=args.accept_consent, run_id=name)
+        if args.generate:
+            # the game is read by an adapter a model wrote for this site: the one kept for it or one made now
+            # from the game's first moves, and made again whenever play stops at a screen it cannot read
+            reader = options.pop("model")
+            run, adapted = await play_adaptive(WebSurface(page), reader, family_id, store=Store(args.adapter_store),
+                                               fresh=args.regenerate, **options)
+        else:
+            run = await play(WebSurface(page), **options,
+                             **({"profile": profile} if profile is not None else {"family_id": family_id}))
     finally:
         await game.tidy()
     elapsed = time.monotonic() - started
     stated = await game.page_end() if site.get("ending") else None
     summary = measure.result(
         name, run, recorder, model, seconds=elapsed, final=await game.oracle(), perturbed=perturbed(game, recorder),
+        **({"adaptation": adapted} if adapted is not None else {}),
         **({"page_end": stated, "end_agrees": end_agrees(run.record.get("outcome"), stated)} if site.get("ending") else {}))
     request = {"profile_id": profile.id if profile else None, "family": family_id, "url": url,
                "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
@@ -334,6 +347,8 @@ async def main(args: argparse.Namespace) -> int:
     # the profile here only names the page
     profile = None if args.unregistered else registered
     client, model = measure.vision_model(args)
+    if args.generate and model is None:
+        raise SystemExit("--generate needs a model: name one with --vision-model")
     name = args.site or args.profile
     results = []
     try:
@@ -363,3 +378,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--unregistered", action="store_true",
                         help="give the harness no profile: it makes one from a look at the site")
     parser.add_argument("--headed", action="store_true", help="show the browser window")
+    parser.add_argument("--generate", action="store_true",
+                        help="read the game by an adapter a model writes for this site (no profile, no hand-written reader)")
+    parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "adapters",
+                        help="where generated adapters are kept by site and reused")
+    parser.add_argument("--regenerate", action="store_true", help="write a new adapter even when one is kept for the site")
