@@ -636,7 +636,7 @@ async def adapter_for(surface: Surface, model: Model, family_id: str, *, store: 
 
 # a game's endings a new look at the screen may get past: the adapter left the screen unread, or its trial
 # moves did not do what the rules predict
-RELEARN_REASONS = ("unreadable", "profile_unconfirmed", "board_not_found", "surface_unsettled")
+RELEARN_REASONS = ("unreadable", "cells_unread", "profile_unconfirmed", "board_not_found", "surface_unsettled")
 # moves that did not do what the rules predict on a board read whole: the reading itself may be wrong (a value
 # the adapter takes for another), which one more look read by the model shows
 MISREAD_REASONS = ("inconsistent", "unknown", "absent")

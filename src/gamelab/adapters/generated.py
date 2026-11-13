@@ -30,6 +30,7 @@ from ..contracts import NeedObservation, Observation, StateEstimate
 from ..execution import TAP_MS, MappedAction
 from ..families import GridFamily
 from ..sandbox import Sandbox, SandboxError
+from ..session import CELLS_UNREAD
 
 log = logging.getLogger("gamelab.generated")
 
@@ -38,7 +39,6 @@ KEYS = frozenset({"ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "w", "a", "
 # the longest drag it may ask for
 DRAG_MAX_MS = 3000
 ADAPTER_FAILED = "adapter_failed"
-CELLS_UNREAD = "cells_unread"
 # sandbox failures (a hang, a crash) after which the code is not started again in this game
 MAX_FAILURES = 5
 FUNCTIONS = ("measure", "read", "target")

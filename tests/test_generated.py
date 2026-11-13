@@ -54,11 +54,11 @@ OLD = {"cell": "cells.append(int(value) if far <= 12 else None)",
        "read": "    left, top, width, height = layout[\"board\"]\n    size = layout[\"size\"]"}
 
 
-async def run(fake, text, moves=TRIAL_MOVES + 1):
+async def run(fake, text, moves=TRIAL_MOVES + 1, model=None):
     adapter = GeneratedAdapter("slide_merge", text, site="https://example.test/", call_timeout_s=1.0,
                                settling={"timeout_s": 0.6, "interval_s": 0.05, "stable_s": 0.1})   # a short wait for a screen to settle
     try:
-        played = await play(fake, adapter=adapter, goal=GoalSpec("actions", moves), budget=Budget(8, 20, 60))
+        played = await play(fake, adapter=adapter, goal=GoalSpec("actions", moves), budget=Budget(8, 20, 60), model=model)
     finally:
         adapter.close()
     return played, adapter
@@ -76,7 +76,7 @@ async def test_a_game_is_read_and_played_by_generated_code_in_the_sandbox():
 @pytest.mark.parametrize(("fault", "sent", "ending"), [
     ({"cell": "cells.append(3)"}, 0, ("unsupported", "unreadable")),
     ({"read": "    return [1, 2, 3]"}, 0, ("unsupported", "unreadable")),
-    ({"cell": "cells.append(None if (row, col) == (0, 0) else (int(value) if far <= 12 else None))"}, 0, ("unsupported", "unreadable")),
+    ({"cell": "cells.append(None if (row, col) == (0, 0) else (int(value) if far <= 12 else None))"}, 0, ("unsupported", "cells_unread")),
     ({"cell": "cells.append((int(value) if far <= 12 else None) if (row, col) != (0, 0) else 2)"}, 1, ("unsupported", "profile_unconfirmed")),
     ({"read": "    while True:\n        pass"}, 0, ("unsupported", "unreadable")),
     ({"read": "    import os\n    os._exit(1)"}, 0, ("unsupported", "unreadable")),

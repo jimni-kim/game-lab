@@ -35,7 +35,8 @@ from ..contracts import (
 )
 from ..errors import Denied
 from ..execution import MappedAction, map_action, tap
-from ..session import ACCEPT_CONSENT, CLOSE_COVER, DECLINE_CONSENT, INPUT_VALID_S, STALLED, START_GAME, UNCOVERING
+from ..session import (ACCEPT_CONSENT, CELLS_UNREAD, CLOSE_COVER, DECLINE_CONSENT, INPUT_VALID_S, STALLED, START_GAME,
+                       UNCOVERING)
 
 log = logging.getLogger("gamelab.screen")
 
@@ -127,6 +128,9 @@ class ScreenEnvironment:
         # scene that stops play a model saw in them: moving pixels over it are not asked about again
         self.unread_since: float | None = None
         self.stopped: dict[str, Any] | None = None
+        # a model said the board shows in these looks and the code could make nothing of where: asking again
+        # while no board reads would only say the same of moving pixels
+        self.board_told = False
         self.control: list[int] | None = None
         self.looks = 0
         # the model asked what to do about a screen play stopped on (`recovery.Recovery`), when there is one
@@ -264,6 +268,10 @@ class ScreenEnvironment:
                 observation, state = await self._judge_stalled(observation, png, digest, elements, state)
                 if state is None:
                     return observation
+        if isinstance(state, NeedObservation) and state.reason == CELLS_UNREAD:
+            # the board was found and some of its cells are a look the code does not know (a value not seen
+            # yet): nothing is in the way, so no model is asked what the screen shows; the reading is learned
+            return replace(observation, public_facts={CELLS_UNREAD: True})
         if isinstance(state, NeedObservation) and not self.adapter.reads_dom:
             return await self._unread_screen(observation, png, digest, elements, purpose)
         if state is None or isinstance(state, NeedObservation):
@@ -271,6 +279,7 @@ class ScreenEnvironment:
         observation = replace(observation, public_facts={"state": state.payload}, geometry_ref=self.adapter.geometry_ref,
                               image_ref=self.adapter.picture(png) if self.still else None)
         self.last, self.state, self.unread_since, self.stopped = (observation, png, elements), state, None, None
+        self.board_told = False
         return observation
 
     async def _discover(self, observation: Observation, png: bytes, elements: Any) -> Observation:
@@ -334,6 +343,8 @@ class ScreenEnvironment:
         # were judged to show it
         judged = self.reader.judged(digest)
         answer = judged or self.stopped
+        if answer is None and self.board_told:
+            return observation
         if answer is None:
             # the same pixels twice, or no board for longer than any animation however the pixels move,
             # or the last look before a board never found ends the game
@@ -357,12 +368,13 @@ class ScreenEnvironment:
             self.control = answer["control"] if judged is answer else None
         if answer["screen"] == perception.BOARD:
             # a move's effect is judged on the geometry it was played on: only a look before a move adopts one
-            if purpose != "verify":
-                changed = self.adapter.locate(png, answer["board"])
-                if changed is not None:
-                    if changed:
-                        await self._adopted()
-                    self.remeasure = False
+            changed = self.adapter.locate(png, answer["board"]) if purpose != "verify" else None
+            if changed is not None:
+                if changed:
+                    await self._adopted()
+                self.remeasure = False
+            # a board the code found no new place for: the next looks are not asked about again
+            self.board_told = not changed
             return observation
         press = _press(answer)
         if answer["screen"] == perception.COVERED and press is None:
@@ -428,6 +440,7 @@ class ScreenEnvironment:
         self.adapter.moved(None)
         self.last, self.state, self.control = None, None, None
         self.unmeasured, self.unseen, self.unread_since, self.stopped = 0, None, None, None
+        self.board_told = False
         self.remeasure = self.adapter.measured
         return True
 

@@ -228,3 +228,30 @@ async def test_a_kept_input_is_sent_again_only_where_no_board_showed_and_is_forg
     # stuck again with nothing confirmed between: the kept input did not work here, and the model is asked
     assert not await replayed.attempt(fake, "unreadable", {"state": None, "recent": []})
     assert replayed.log[-1]["source"] == "model" and replayed.known == []
+
+
+async def test_a_board_found_with_cells_the_code_does_not_know_is_learned_not_asked_about():
+    """Generated code that finds the board but leaves a cell unread (a value it has not seen) ends play for the
+    reading to be learned again: no model is asked what the screen shows or what is in the way. Regression: each
+    new tile value on a site cost eight questions about the screen and one about getting past it."""
+    from test_generated import run as play_generated
+    fake = Screen()
+    fake.recovering = [{"kind": "give_up"}]
+    unread = source(fake, cell="cells.append(None if (row, col) == (0, 0) else (int(value) if far <= 12 else None))")
+    played, _ = await play_generated(fake, unread, model=fake)
+    assert ending(played) == ("unsupported", "cells_unread"), played.record
+    assert not fake.model_calls and not fake.recover_calls
+
+
+async def test_a_board_the_model_sees_and_the_code_cannot_place_is_asked_about_once(monkeypatch):
+    """Play has begun; then the code reads no board on a screen whose pixels keep moving, a new picture at every
+    look. Once the model said it shows a board and the code found nothing to read there, the looks after it are
+    not asked about again until a board reads. Regression: one such stop on a site cost eight questions."""
+    from gamelab.environments import screen
+    monkeypatch.setattr(screen, "UNREAD_ASK_S", 0.0)       # every look with new pixels may be asked about
+    fake = Screen()
+    fake.animated, fake.screen, fake.seen_board = True, "board", [10, 10, 100, 100]
+    covering(fake, after={1})
+    played = await run(fake, moves=3)
+    assert ending(played) == ("needs_recovery", "unreadable"), played.record
+    assert len(fake.model_calls) == 1 and len(fake.recover_calls) == 1

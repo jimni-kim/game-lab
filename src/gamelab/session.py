@@ -71,6 +71,9 @@ INPUT_REFUSED = "input_refused"
 ANIMATION_MARGIN_S = 0.1
 # why a game ends on a scene whose button (keep playing) could not be found on its screen
 BUTTON_UNSEEN = "button_unseen"
+# why a game ends when its board is found but some of its cells are a look the reading does not know: nothing
+# is in the way (no model is asked about the screen), the reading itself must learn them
+CELLS_UNREAD = "cells_unread"
 # why a game that reached its goal ends on the game's own win message
 WON = "won"
 # why a game ends when a trial move does not do what the rules predict
@@ -276,6 +279,9 @@ class GameSession:
         estimate, observation = await self._observe_settled(purpose)
         if estimate is None and observation.public_facts.get("blocked"):
             raise _End(Outcome.NEEDS_RECOVERY, "board_covered")
+        if estimate is None and observation.public_facts.get(CELLS_UNREAD):
+            self._unreadable(CELLS_UNREAD, ending=CELLS_UNREAD)
+            return estimate, observation
         if estimate is None and not observation.public_facts.get("covered"):
             self._unreadable("surface_unsettled")
         return estimate, observation
@@ -592,10 +598,10 @@ class GameSession:
                 await self.save(self.record)
             await self.env.allow_meta(kind)
 
-    def _unreadable(self, reason: str) -> None:
+    def _unreadable(self, reason: str, *, ending: str = "unreadable") -> None:
         self.record["unreadable"] += 1
         if self.record["unreadable"] >= MAX_UNREADABLE:
-            raise _End(Outcome.NEEDS_RECOVERY, "unreadable")
+            raise _End(Outcome.NEEDS_RECOVERY, ending)
 
     def _discard(self) -> None:
         self.record["discarded"] += 1
