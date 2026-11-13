@@ -225,12 +225,11 @@
       "properties": {
         "rules": {
           "type": "object",
-          "description": "each rule parameter a look may set, with the range the family's code plays",
+          "description": "each rule parameter a look may set, with the least value the family's code plays (and the most, where its code has one: a board's size has none)",
           "additionalProperties": {
             "type": "object",
             "required": [
-              "minimum",
-              "maximum"
+              "minimum"
             ],
             "additionalProperties": false,
             "properties": {

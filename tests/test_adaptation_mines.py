@@ -142,9 +142,11 @@ class Reader:
     """The model: it reads the screen as the fake draws it, writes each of `modules` in turn, and answers each
     of `recovering` when asked what is in the way (then gives up)."""
 
-    def __init__(self, fake, modules=(), recovering=()):
+    def __init__(self, fake, modules=(), recovering=(), mines=lambda look: 10):
         self.fake, self.modules, self.recovering = fake, list(modules), list(recovering)
         self.asked = []
+        # the count of mines it says each screen shows, by the number of the reading; None: the screen shows none
+        self.mines = mines
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
@@ -163,9 +165,11 @@ class Reader:
         grid = [list(row) for row in self.fake.grid]
         lost = any(cell == EXPLODED for row in grid for cell in row)
         scene = "over" if lost else ("won" if self.fake.over() else "playing")
+        told = self.mines(sum(kind == "label" for kind, _, _ in self.asked) - 1)
         return TurnResult(text=json.dumps({
             "screen": "board", "board": [left - 3, top + 2, width + 4, height - 3],
-            "rules": {"rows": 9, "cols": 9, "mines": 10}, "state": {"grid": grid, "score": None, "scene": scene}}))
+            "rules": {"rows": 9, "cols": 9, **({} if told is None else {"mines": told})},
+            "state": {"grid": grid, "score": None, "scene": scene}}))
 
 
 ADAPTER = """
@@ -359,3 +363,31 @@ async def test_a_notice_during_play_of_a_tap_game_is_got_past_and_the_game_playe
     # could not be confirmed
     assert fake.taps.count(tuple(middle(fake.button))) == 1
     assert len(fake.taps) == 1 + fake.played == 1 + adaptation.EXPLORE_MOVES + played.record["confirmed_actions"] + 1
+
+
+@pytest.mark.parametrize(("mines", "kept"), [
+    (lambda look: None, None),              # the screen shows no count
+    (lambda look: look, None),              # a number that changes from screen to screen is a clock, not the count
+    (lambda look: 10 if look else None, None),
+    (lambda look: 0, None),                 # a value the family does not take
+    (lambda look: 12, 12),                  # the same on every screen: taken, right or wrong
+])
+async def test_the_count_of_mines_is_unknown_unless_every_screen_read_says_the_same(mines, kept):
+    """PLAN §10: a rule value the game may be played without knowing starts unknown, and the first moves are
+    chosen without it; a value every screen of the exploring agrees on is kept for the play that follows."""
+    fake = Mines()
+    trace = await Adaptation(Reader(fake, mines=mines), "minesweeper", compute=COMPUTE).explore(fake)
+    assert trace.rules == {"rows": 9, "cols": 9, "mines": kept}
+    assert len(trace.looks) == adaptation.EXPLORE_MOVES + 1 and adopt(source(), trace)["passed"]
+
+
+@pytest.mark.parametrize("mines", [lambda look: None, lambda look: 12, lambda look: 8])
+async def test_a_tap_game_is_played_to_its_end_with_the_count_of_mines_unknown_or_wrong(mines, tmp_path):
+    """The game has ten mines. Told none, two more or two fewer, play by generated code still opens every safe
+    cell and ends as the game won, judged from the screen."""
+    fake = Mines()
+    played, made = await play_adaptive(fake, Reader(fake, [source()], mines=mines), "minesweeper",
+                                       goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300), store=Store(tmp_path))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "play_until_end"), (played.record, made)
+    assert fake.over() and not any(cell == EXPLODED for row in fake.grid for cell in row)
+    assert json.loads(next(tmp_path.rglob("adapter.json")).read_text())["rules"]["mines"] == mines(0)

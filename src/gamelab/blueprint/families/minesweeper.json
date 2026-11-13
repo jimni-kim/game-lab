@@ -65,24 +65,24 @@
       "description": "rows on the grid",
       "values": {
         "type": "integer",
-        "minimum": 2,
-        "maximum": 16
+        "minimum": 2
       }
     },
     "cols": {
       "description": "columns on the grid",
       "values": {
         "type": "integer",
-        "minimum": 2,
-        "maximum": 16
+        "minimum": 2
       }
     },
     "mines": {
-      "description": "mines hidden on the grid, fewer than its cells",
+      "description": "mines hidden on the grid, fewer than its cells; null when the screen does not say (the game is then played and judged by its numbers alone)",
       "values": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 255
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 1
       }
     },
     "flags": {
@@ -104,16 +104,13 @@
   "discovery": {
     "rules": {
       "rows": {
-        "minimum": 2,
-        "maximum": 16
+        "minimum": 2
       },
       "cols": {
-        "minimum": 2,
-        "maximum": 16
+        "minimum": 2
       },
       "mines": {
-        "minimum": 1,
-        "maximum": 255
+        "minimum": 1
       }
     },
     "controls": {

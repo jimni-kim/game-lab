@@ -336,6 +336,271 @@
     },
     "certain": true
    }
+  },
+  {
+   "name": "unknown count: a cell a number proves safe is opened",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      4
+     ]
+    },
+    "certain": true
+   }
+  },
+  {
+   "name": "unknown count: a cell beside no number is likelier safe than one of three around a 1",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       1,
+       9,
+       9,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    "certain": false
+   }
+  },
+  {
+   "name": "unknown count: the baseline plays without it too",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       1,
+       9,
+       9,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "baseline",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    "certain": false
+   }
+  },
+  {
+   "name": "a count too low for the mines the numbers prove is left out of the move",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 2,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      4
+     ]
+    },
+    "certain": true
+   }
+  },
+  {
+   "name": "a count too high for what a number shows is left out of the move",
+   "input": {
+    "rules": {
+     "rows": 2,
+     "cols": 2,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       1,
+       9
+      ],
+      [
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      1
+     ]
+    },
+    "certain": false
+   }
   }
  ]
 }

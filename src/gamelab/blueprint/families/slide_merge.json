@@ -62,8 +62,7 @@
       "description": "cells on each side of the square grid",
       "values": {
         "type": "integer",
-        "minimum": 2,
-        "maximum": 8
+        "minimum": 2
       }
     },
     "target": {
@@ -123,8 +122,7 @@
   "discovery": {
     "rules": {
       "size": {
-        "minimum": 3,
-        "maximum": 8
+        "minimum": 3
       }
     },
     "controls": {

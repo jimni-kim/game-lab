@@ -13,6 +13,10 @@ score. Action: {"kind": "open", "cell": [row, col]} or {"kind": "new_game"}.
 
 The replay game's state also holds `mines` (where they lie, null until the first cell is opened), which no
 screen shows: `shown` leaves it out, so a policy never sees it.
+
+The rule `mines` (how many there are) may be null: a screen need not say, and a count taken wrongly is worse
+than none. Then a game is won by what the screen shows alone (`_won`), and only the replay game, which must
+place them, needs the number.
 """
 from __future__ import annotations
 
@@ -48,7 +52,22 @@ def _lost(grid) -> bool:
 
 
 def _won(grid, rules: dict) -> bool:
-    return sum(is_open(cell) for row in grid for cell in row) == rules["rows"] * rules["cols"] - rules["mines"]
+    """Every cell without a mine is open. With the count known: as many cells are open as hold no mine, and
+    each number counts every unopened cell around it (a count too high would otherwise call a game won with
+    safe cells left). Whatever the count: no cell is left covered (the game marked them all), or every
+    unopened cell lies beside a number that counts all its unopened neighbours, which proves it a mine."""
+    rows, cols = rules["rows"], rules["cols"]
+    opened = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row) if is_open(cell)]
+    if not opened:
+        return False
+    full = {(r, c) for r, c in opened
+            if grid[r][c] == sum(not is_open(grid[y][x]) for y, x in neighbours(r, c, rows, cols))}
+    if rules["mines"] is not None and len(opened) == rows * cols - rules["mines"] and len(full) == len(opened):
+        return True
+    rest = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row) if not is_open(cell)]
+    if all(grid[r][c] != COVERED for r, c in rest):
+        return True
+    return all(any(near in full for near in neighbours(r, c, rows, cols)) for r, c in rest)
 
 
 def neighbours(r: int, c: int, rows: int, cols: int) -> list[tuple[int, int]]:
@@ -71,7 +90,7 @@ def shown(state: dict) -> dict:
 def validate(state: dict, rules: dict) -> list[str]:
     grid, rows, cols = state.get("grid"), rules["rows"], rules["cols"]
     problems = []
-    if rules["mines"] >= rows * cols:
+    if rules["mines"] is not None and rules["mines"] >= rows * cols:
         problems.append("rules")
     if not isinstance(grid, list) or len(grid) != rows or any(not isinstance(row, list) or len(row) != cols for row in grid):
         problems.append("grid_shape")
@@ -108,7 +127,7 @@ def legal_actions(state: dict, rules: dict) -> list[dict]:
 
 def status(state: dict, rules: dict, goal: dict) -> dict:
     """Won when every cell without a mine is open, lost when a mine was opened. `reach_value` counts the
-    cells opened."""
+    cells opened; with no target it is every cell without a mine, which is the game won."""
     scene, grid = state.get("scene", "playing"), state["grid"]
     if scene != "playing":
         return {"terminal": True, "goal": "reached" if scene == "won" else "not_reached"}
@@ -117,8 +136,8 @@ def status(state: dict, rules: dict, goal: dict) -> dict:
     _require_known(grid)
     won = _won(grid, rules)
     if goal.get("objective") == "reach_value":
-        target = goal.get("target_value") or rules["rows"] * rules["cols"] - rules["mines"]
-        reached = won or sum(is_open(cell) for row in grid for cell in row) >= target
+        target = goal.get("target_value")
+        reached = won or (target is not None and sum(is_open(cell) for row in grid for cell in row) >= target)
     else:
         reached = goal.get("objective") == "play_until_end" and won
     return {"terminal": won, "goal": "reached" if reached else "not_reached"}
@@ -195,6 +214,8 @@ def _place(rules: dict, draw: int, clear: list[tuple[int, int]]) -> list[list[in
     """The mines, drawn once the first cell is opened: never on it, nor around it while there is room (the
     replay game's own guarantee; games differ in what their first move promises)."""
     rows, cols = rules["rows"], rules["cols"]
+    if rules["mines"] is None:
+        raise ValueError("mines_unknown")       # a game played needs its mines placed: only a screen's may be unknown
     if rows * cols - len(clear) < rules["mines"]:
         clear = clear[:1]
     cells = [(r, c) for r in range(rows) for c in range(cols) if (r, c) not in clear]

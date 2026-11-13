@@ -261,6 +261,318 @@
     "terminal": true,
     "goal": "reached"
    }
+  },
+  {
+   "name": "unknown count: every unopened cell is proved a mine by a number, which wins",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "unknown count: a cell no number proves a mine leaves the game going",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "unknown count: no cell left covered wins (the game marked them all)",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       10,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       10,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       10
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "unknown count: a mine no number touches is not proved, and the game goes on",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       9,
+       2,
+       0,
+       0
+      ],
+      [
+       9,
+       9,
+       2,
+       0,
+       0
+      ],
+      [
+       2,
+       2,
+       1,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "a count too high does not call a game won while a number leaves a cell undecided",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 4,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "unknown count: reach_value with no target is reached by the game won",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "reach_value"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
   }
  ]
 }

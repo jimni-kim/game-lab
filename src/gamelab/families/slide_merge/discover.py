@@ -15,7 +15,7 @@ def rules(rows: int, cols: int, ranges: dict[str, dict[str, int]]) -> dict[str, 
     """The rule values a board of `rows` by `cols` cells sets, or None: a grid that is not square or a size
     the code does not play."""
     size = ranges["size"]
-    if rows != cols or not size["minimum"] <= rows <= size["maximum"]:
+    if rows != cols or not size["minimum"] <= rows <= size.get("maximum", rows):
         return None
     return {"size": rows}
 

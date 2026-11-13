@@ -63,3 +63,9 @@ def test_policies_are_compared_on_the_same_seeds_and_a_hidden_game_by_wins():
     slide = policies.play("slide_merge", "expectimax", 50, 0, 30)
     assert policies.play("slide_merge", "expectimax", 50, 0, 30)["score"] == slide["score"] and slide["ended"] == "capped"
     assert policies.summarize([game, game])["win_rate"] == float(game["won"])
+
+
+def test_a_policy_told_nothing_of_a_rule_value_plays_the_same_game_by_the_real_one():
+    """`--hide`: the game keeps its mines; only the policy is told no count. It ends when the game does."""
+    blind = policies.play("minesweeper", "solver", 20000, 0, 200, ("mines",))
+    assert blind["won"] in (True, False) and blind["ended"] == "no_move" and blind["moves"] > 0

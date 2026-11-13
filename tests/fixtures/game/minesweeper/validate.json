@@ -190,6 +190,52 @@
    "expected": [
     "grid_cell"
    ]
+  },
+  {
+   "name": "an unknown count of mines is a rule value",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": []
   }
  ]
 }

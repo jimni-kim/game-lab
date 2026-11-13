@@ -6,11 +6,16 @@ and ported with it. Cells are tried row by row and a tie keeps the first.
 """
 from __future__ import annotations
 
+from fractions import Fraction
 from math import comb
 
 from ..rules.minesweeper import COVERED, MARKED, is_open, legal_actions, neighbours
 
 POLICIES = ("baseline", "solver")
+# with the count of mines unknown, how likely a cell nothing is known of holds one, as mine : safe odds
+# (one cell in six: between the usual small and large games' one in eight and one in five). A guess: on the
+# replay game it wins as often as knowing the count (PLAN §10)
+UNKNOWN_ODDS = (1, 5)
 
 
 class _OverBudget(Exception):
@@ -44,10 +49,12 @@ def _constraints(grid, rows: int, cols: int, safe: set, mines: set) -> list[tupl
 
 def _deduce(grid, rules: dict, thorough: bool) -> tuple[set, set] | None:
     """The covered cells the numbers prove safe and those they prove mines: each number alone, and, when
-    `thorough`, one number's cells inside another's and the count of mines left. None for a misread board."""
+    `thorough`, one number's cells inside another's and the count of mines left (when the rules give the
+    count). None for a misread board."""
     rows, cols = rules["rows"], rules["cols"]
     covered = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row) if cell == COVERED]
-    left_total = rules["mines"] - sum(cell in MARKED for row in grid for cell in row)
+    counted = rules["mines"] is not None
+    left_total = rules["mines"] - sum(cell in MARKED for row in grid for cell in row) if counted else None
     safe: set = set()
     mines: set = set()
     while True:
@@ -70,11 +77,11 @@ def _deduce(grid, rules: dict, thorough: bool) -> tuple[set, set] | None:
                         elif more - left == len(rest):
                             mines |= rest
             undecided = [cell for cell in covered if cell not in safe | mines]
-            if left_total - len(mines) == 0:
+            if counted and left_total - len(mines) == 0:
                 safe |= set(undecided)
-            elif left_total - len(mines) == len(undecided):
+            elif counted and left_total - len(mines) == len(undecided):
                 mines |= set(undecided)
-        if safe & mines or len(mines) > left_total:
+        if safe & mines or (counted and len(mines) > left_total):
             return None
         if len(safe) + len(mines) == before:
             return safe, mines
@@ -188,6 +195,35 @@ def _odds(grid, rules: dict, safe: set, mines: set, budget: int) -> tuple[dict, 
     return odds, total
 
 
+def _odds_uncounted(grid, rules: dict, safe: set, mines: set, budget: int) -> tuple[dict, int] | None:
+    """`_odds` with the count of mines unknown: each cell's chance of a mine among the layouts of its own
+    group of numbers, a layout weighted by UNKNOWN_ODDS for each mine it lays (cells beside no number have
+    that chance itself). Exact fractions; the total is 1, or 0 when a group has no layout."""
+    rows, cols = rules["rows"], rules["cols"]
+    found = _constraints(grid, rows, cols, safe, mines)
+    covered = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row)
+               if cell == COVERED and (r, c) not in safe | mines]
+    edge = set().union(*(cells for cells, _ in found)) if found else set()
+    nodes = [0]
+    try:
+        groups = [_layouts(members, nodes, budget) for members in _components(found or [])]
+    except _OverBudget:
+        return None
+    mine, clear = UNKNOWN_ODDS
+    odds = {cell: Fraction(0) for cell in safe}
+    odds.update({cell: Fraction(1) for cell in mines})
+    for cells, ways in groups:
+        most = max(ways, default=0)
+        weights = {k: mine ** k * clear ** (most - k) for k in ways}
+        total = sum(tally[0] * weights[k] for k, tally in ways.items())
+        if total == 0:
+            return odds, 0
+        for position, cell in enumerate(cells):
+            odds[cell] = Fraction(sum(tally[1][position] * weights[k] for k, tally in ways.items()), total)
+    odds.update({cell: Fraction(mine, mine + clear) for cell in covered if cell not in edge})
+    return odds, 1
+
+
 def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[dict] = ()) -> dict:
     """The cell a policy opens: {"action": action | None, "certain": whether the screen proves it safe}.
     `excluded` moves are not picked (moves the screen showed had no effect from this state).
@@ -195,12 +231,22 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
     baseline: a cell each number alone proves safe, else the free cell nearest the middle. solver: also what
     numbers prove together and the count of mines left, then the cell with the fewest layouts that put a mine
     on it, counting at most `budget` steps (past it, the baseline's guess). None when no layout agrees with
-    the screen: the board was misread, and no cell is opened on it."""
+    the screen: the board was misread, and no cell is opened on it.
+
+    The rules' count of mines may be unknown (null): the numbers alone then decide. A count that leaves no
+    cell to open in a game the screen does not show won is a wrong count, and that move is chosen without it."""
     if policy not in POLICIES:
         raise ValueError("unknown_policy")
     legal = [action for action in legal_actions(state, rules) if action not in excluded]
     if not legal:
         return {"action": None, "certain": False}
+    chosen = _choose(state, rules, policy, budget, legal)
+    if chosen["action"] is None and rules["mines"] is not None:
+        chosen = _choose(state, {**rules, "mines": None}, policy, budget, legal)
+    return chosen
+
+
+def _choose(state: dict, rules: dict, policy: str, budget: int, legal: list[dict]) -> dict:
     grid, rows, cols = state["grid"], rules["rows"], rules["cols"]
     open_cells = sorted((tuple(action["cell"]) for action in legal), key=lambda cell: _preference(cell, rows, cols))
     decided = _deduce(grid, rules, policy == "solver")
@@ -213,7 +259,8 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
     free = [cell for cell in open_cells if cell not in mines]
     if not free:
         return {"action": None, "certain": False}
-    if policy == "solver" and (counted := _odds(grid, rules, safe, mines, budget)) is not None:
+    count = _odds if rules["mines"] is not None else _odds_uncounted
+    if policy == "solver" and (counted := count(grid, rules, safe, mines, budget)) is not None:
         odds, total = counted
         if total == 0:
             return {"action": None, "certain": False}

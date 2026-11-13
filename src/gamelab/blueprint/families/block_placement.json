@@ -54,16 +54,14 @@
       "description": "rows on the board",
       "values": {
         "type": "integer",
-        "minimum": 1,
-        "maximum": 16
+        "minimum": 1
       }
     },
     "cols": {
       "description": "columns on the board",
       "values": {
         "type": "integer",
-        "minimum": 1,
-        "maximum": 16
+        "minimum": 1
       }
     },
     "clear_rows": {

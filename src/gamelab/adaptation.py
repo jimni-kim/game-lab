@@ -54,10 +54,12 @@ SETTLE_S = 0.8
 # screen itself, so code that leans on what changes from frame to frame (a tile that animates while the game
 # waits) is not adopted. A capture that looks like another screen (a notice come up meanwhile) is not kept
 FRAMES, FRAME_GAP_S, FRAME_DISTANCE = 2, 0.3, 10.0
-LABEL_TOKENS, GENERATE_TOKENS = 4000, 16000
+# a reading's answer holds every cell of the board: room for a large one (2,500 cells are about 8,000 tokens)
+LABEL_TOKENS, GENERATE_TOKENS = 16000, 16000
 LABEL_TIMEOUT_S, GENERATE_TIMEOUT_S = 90.0, 300.0
-# the board region as the model is shown it for reading cells: this many pixels on its longer side
-OVERLAY_SIDE = 800
+# the board region as the model is shown it for reading cells: this many pixels on its longer side, more when
+# its cells would be smaller than OVERLAY_CELL (each carries a label of 27 by 13 pixels), up to OVERLAY_MOST
+OVERLAY_SIDE, OVERLAY_CELL, OVERLAY_MOST = 800, 56, 2400
 # colours nearer than this are one run of a probe's scan line
 RUN_TOLERANCE = 6
 MAX_RUNS = 120
@@ -133,7 +135,9 @@ def overlay(png: bytes, board: list[int], rows: int, cols: int) -> bytes:
     left, top, width, height = board
     with Image.open(BytesIO(png)) as image:
         region = image.convert("RGB").crop((left, top, left + width, top + height))
-    scale = OVERLAY_SIDE / max(width, height)
+    # the side with the smallest cells sets the size: a cell is at least OVERLAY_CELL across while that fits
+    scale = max(OVERLAY_SIDE / max(width, height), min(OVERLAY_CELL * cols / width, OVERLAY_CELL * rows / height,
+                                                        OVERLAY_MOST / max(width, height)))
     region = region.resize((round(width * scale), round(height * scale)))
     draw = ImageDraw.Draw(region)
     for row in range(rows):
@@ -170,6 +174,8 @@ class Adaptation:
         self.recovery, self.last_state = recovery, None
         # the other captures of the screen last read (FRAMES)
         self.frames: list[bytes] = []
+        # what each screen read said of the rule values a game may be played without knowing (`_told`)
+        self.told: list[dict[str, Any]] = []
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -265,19 +271,38 @@ class Adaptation:
                 problem = "transition_refused"
                 await asyncio.sleep(SETTLE_S)
                 continue
+            self.told.append(self._told(answer.get("rules")))
             return png, state.payload, found, chosen
         raise AdaptationFailed("label_failed", problem)
 
+    def _unknowable(self) -> list[str]:
+        """The rule values a game may be played without knowing: those the family lets be null."""
+        return [name for name, parameter in self.descriptor["rule_parameters"].items()
+                if not resources.validate(None, parameter["values"])]
+
     def _rules(self, seen: Any) -> dict[str, Any] | None:
-        """The rule values the model saw, when they are ones the family may be played with."""
+        """The rule values the model saw, when they are ones the family may be played with. A value the game
+        may be played without knowing starts unknown whatever one screen says of it (`_told`)."""
         allowed = self.descriptor.get("discovery", {}).get("rules", {})
+        unknowable = self._unknowable()
         # only what a screen can show of the rules (a board's size); anything else it names is left standard
-        seen = {name: value for name, value in (seen if isinstance(seen, dict) else {}).items() if name in allowed}
+        seen = {name: value for name, value in (seen if isinstance(seen, dict) else {}).items()
+                if name in allowed and name not in unknowable}
         if resources.validate(seen, catalog.rules_schema(self.descriptor)):
             return None
         if resources.validate(seen, {"type": "object", "properties": allowed}):
             return None
-        return seen
+        return {**seen, **{name: None for name in unknowable}}
+
+    def _told(self, seen: Any) -> dict[str, Any]:
+        """What one screen read said of each rule value a game may be played without knowing: the value, or
+        None when it gave none the family takes."""
+        allowed = self.descriptor.get("discovery", {}).get("rules", {})
+        seen = seen if isinstance(seen, dict) else {}
+        return {name: seen[name] if name in seen and not resources.validate(
+                    {name: seen[name]}, catalog.rules_schema(self.descriptor)) and not resources.validate(
+                    seen[name], allowed[name]) else None
+                for name in self._unknowable() if name in allowed}
 
     def input_for(self, action: dict[str, Any], board: list[int], shape: tuple[int, int]) -> dict[str, Any]:
         """The input a move is played with before any adapter exists, as a generated adapter's `target()`
@@ -298,6 +323,7 @@ class Adaptation:
         """The game's first moves, each screen read by the model and each move the solver's. A game that ends
         meanwhile (a mine under a first guess) ends the exploring: its last screen is a look like the others,
         and the trace is kept when enough was seen before it; nothing is started anew here."""
+        self.told = []
         png, state, board, rules = await self._read(surface, None, None)
         trace = Trace(self.family_id, rules, await surface.address())
         family = catalog.family(self.family_id).bind({"rules": rules})
@@ -324,6 +350,12 @@ class Adaptation:
                                    f"{len(trace.looks) - 1} moves were played before the game ended" if over else "")
         for look in trace.looks[-HELD_BACK:]:
             look.held = True
+        # a value the game may be played without knowing is taken from the screen only when every screen read
+        # said the same (a count beside the board, not a clock): a wrong value is worse than none
+        for name in self._unknowable():
+            said = {told.get(name) for told in self.told}
+            if len(said) == 1 and None not in said:
+                trace.rules[name] = said.pop()
         return trace
 
     async def relabel(self, surface: Surface, trace: Trace, partial: dict[str, Any] | None) -> Look | None:

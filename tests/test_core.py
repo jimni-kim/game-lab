@@ -133,6 +133,58 @@ def test_the_minesweeper_solver_wins_more_games_than_the_baseline_on_the_same_bu
     assert wins["solver"] > wins["baseline"] and wins["solver"] >= 36, wins
 
 
+def test_games_played_with_the_count_of_mines_known_are_the_ones_recorded_before_it_could_be_unknown():
+    """PLAN §10: letting the count be unknown changes nothing where it is known. Whole games recorded before
+    the change (three sizes, both policies) are played again cell for cell."""
+    recorded = json.loads((FIXTURES / "minesweeper_games.json").read_text(encoding="utf-8"))["games"]
+    for game in recorded:
+        _, played = _play("minesweeper", game["rules"], game["policy"], game["budget"], game["seed"], 500)
+        assert [action["cell"] for action in played] == game["cells"], (game["rules"], game["policy"], game["seed"])
+
+
+def _play_believing(rules, believed, seed):
+    """A replay game by `rules` whose solver is told `believed`: how it ended, as the game itself judges it."""
+    draws = _draws(seed)
+    state = minesweeper.initial_state(rules, next(draws))
+    goal = {"objective": "play_until_end"}
+    for _ in range(rules["rows"] * rules["cols"]):
+        if minesweeper.status(minesweeper.shown(state), rules, goal)["terminal"]:
+            break                   # a real game takes no move once it is won or lost
+        chosen = SOLVERS["minesweeper"].choose(minesweeper.shown(state), believed, "solver", 20000)["action"]
+        if chosen is None:
+            return "stuck"
+        state = minesweeper.next_state(state, rules, chosen, next(draws))
+    seen = minesweeper.status(minesweeper.shown(state), rules, goal)
+    judged = minesweeper.status(minesweeper.shown(state), believed, goal)
+    if seen["goal"] != "reached":
+        return "lost" if seen["terminal"] else "stuck"
+    return "won" if judged["goal"] == "reached" else "won_unjudged"
+
+
+def test_the_minesweeper_solver_wins_about_as_often_without_the_count_of_mines():
+    """PLAN §10: a screen need not say how many mines there are. The numbers alone win nearly as many games
+    (measured 380 of 400 against 379 with the count), and a game won is judged won from the screen."""
+    rules = minesweeper.DEFAULT_RULES
+    ends = [_play_believing(rules, {**rules, "mines": None}, seed) for seed in range(40)]
+    assert ends.count("won") >= 35 and "stuck" not in ends, ends
+
+
+@pytest.mark.parametrize("believed", [8, 12])
+def test_a_wrong_count_of_mines_does_not_stop_the_game(believed):
+    """A count read wrongly used to leave nearly every game stuck or called won too early (no cell the count
+    allowed, or as many cells open as it expected). The move is now chosen without a count that leaves none,
+    and a game is not won while a number leaves a cell undecided."""
+    rules = minesweeper.DEFAULT_RULES
+    ends = [_play_believing(rules, {**rules, "mines": believed}, seed) for seed in range(40)]
+    assert ends.count("won") >= 30 and "stuck" not in ends, ends
+
+
+def test_the_replay_game_needs_its_count_of_mines():
+    rules = {**minesweeper.DEFAULT_RULES, "mines": None}
+    with pytest.raises(ValueError, match="mines_unknown"):
+        minesweeper.next_state(minesweeper.initial_state(rules, 1), rules, {"kind": "open", "cell": [4, 4]}, 1)
+
+
 def test_a_block_score_goal_without_a_target_is_not_judged_reached_or_missed():
     """A score goal that names no value cannot be decided from the board: the goal is unknown,
     rather than the judgement failing and ending the game as an error."""

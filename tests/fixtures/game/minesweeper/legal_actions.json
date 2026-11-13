@@ -330,6 +330,127 @@
     }
    },
    "error": "unknown_cells"
+  },
+  {
+   "name": "unknown count: the covered cells of a game not yet proved won",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      4
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      3,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "unknown count: none once every unopened cell is proved a mine",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": null,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": []
   }
  ]
 }
