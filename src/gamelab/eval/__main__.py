@@ -4,11 +4,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import inspect
+import os
+from pathlib import Path
 
-from . import android, policies, web
+from . import android, measure, policies, web
+
+
+def load_env(path: Path) -> None:
+    """Set the variables a `.env` file names (`NAME=value` lines) that the environment does not already have."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        name, found, value = line.strip().removeprefix("export ").partition("=")
+        if found and name.strip() and not name.startswith("#"):
+            os.environ.setdefault(name.strip(), value.strip().strip("'\""))
 
 
 def main() -> int:
+    load_env(measure.ROOT / ".env")
     parser = argparse.ArgumentParser(prog="python -m gamelab.eval", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name, module in (("policies", policies), ("web", web), ("android", android)):
