@@ -26,7 +26,7 @@ async def test_a_question_is_sent_as_one_chat_completion_with_its_image_and_key(
     body = json.loads(request.content)
     assert str(request.url) == "https://models.test/v1/chat/completions"
     assert request.headers["authorization"] == "Bearer secret"
-    assert body["model"] == "vendor/model" and body["max_tokens"] == 64 and "tools" not in body
+    assert body["model"] == "vendor/model" and body["max_completion_tokens"] == 64 and "tools" not in body
     assert body["messages"][0] == {"role": "system", "content": "Say what the screen shows."}
     assert body["messages"][1]["content"][1] == {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
     assert result.text == '{"screen": "over"}' and not result.tool_calls

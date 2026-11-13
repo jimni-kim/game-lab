@@ -97,7 +97,7 @@ class ChatClient:
         messages = [{"role": "system", "content": request.system_stable},
                     *({"role": message.role, "content": [_part(part) for part in message.content]}
                       for message in request.messages)]
-        return {"model": self.model, "messages": messages, "max_tokens": request.max_tokens, "stream": False}
+        return {"model": self.model, "messages": messages, "max_completion_tokens": request.max_tokens, "stream": False}
 
     async def close(self) -> None:
         await self._http.aclose()
