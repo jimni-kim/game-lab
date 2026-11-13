@@ -56,7 +56,7 @@ def dom_queries(reading: dict) -> list[dict]:
 
 
 def read_dom(elements: dict, layout: dict, scene: str, score: int | None, image: Any) -> dict | None:
-    """The grid from tile elements' classes (kernel.observation_scope), checked as pixels are: every
+    """The grid from tile elements' classes (`environments.screen.Surface.elements`), checked as pixels are: every
     tile names one value and one cell in range; a cell several elements claim is known only when one
     of them is the declared merge result and the rest add up to it (the game keeps the merged tiles
     until the next move). The board's pixels in the same observation must not show another value.

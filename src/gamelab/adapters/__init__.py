@@ -56,7 +56,7 @@ class SiteAdapter(Protocol):
         """The rule model under the rule values this site plays."""
 
     def scope(self, measuring: bool) -> dict[str, Any]:
-        """What a look captures (`kernel.observation_scope`): page elements and, once measured, the board alone."""
+        """What a look captures (`environments.screen.Surface.elements`): page elements and, once measured, the board alone."""
 
     def measure(self, png: bytes) -> bool | NeedObservation:
         """Find the board on a whole screen: whether the layout every check confirms changed."""

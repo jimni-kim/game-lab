@@ -41,7 +41,7 @@ def reads_dom(profile: profiles.Profile) -> bool:
 
 
 def dom_scope(profile: profiles.Profile) -> dict[str, Any]:
-    """The browser_shot arguments (kernel.observation_scope) a page-reading profile observes with:
+    """The browser_shot arguments (`environments.screen.Surface.elements`) a page-reading profile observes with:
     its elements, and, once measured, a picture of the board alone as the input's evidence (until
     then the whole screen, to measure the board on)."""
     reading = profile.data["reading"]
