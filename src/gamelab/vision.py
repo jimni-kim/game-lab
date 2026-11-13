@@ -55,11 +55,13 @@ class CorrectionReader:
     def __init__(self, profile: profiles.Profile | None, router: Any, *, run_id: str,
                  budget: VisionBudget, save: Callable[[dict], Awaitable[None]],
                  current: Callable[[Observation], bool | Awaitable[bool]], cancelled: Callable[[], bool],
-                 record: dict | None = None) -> None:
+                 record: dict | None = None, family_id: str | None = None) -> None:
         # no profile yet: a game no profile registers, whose one question is what the screen shows (`discover`)
         self.profile = profiles.validate(profile.data) if profile is not None else None
         if self.profile != profile:
             raise ValueError("profile_changed")
+        # the game's family when no profile names it (a generated adapter's game)
+        self._family_id = family_id
         self.router = router
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("invalid_vision_scope")
@@ -67,6 +69,10 @@ class CorrectionReader:
         self.budget, self.save, self.current, self.cancelled = budget, save, current, cancelled
         self._lock = asyncio.Lock()
         self._record = self._restore(record)
+
+    @property
+    def family_id(self) -> str:
+        return self.profile.family_id if self.profile is not None else self._family_id
 
     def _restore(self, record: dict | None) -> dict:
         scope = {"run_id": self.run_id}
@@ -152,14 +158,14 @@ class CorrectionReader:
             if stopped := await self._stopped(observation):
                 return stopped
             context = {"observation_id": observation.id, "image_sha256": hashlib.sha256(png).hexdigest(),
-                       "family": catalog.descriptor(self.profile.family_id),
-                       "screens": perception.screens(self.profile.family_id), "board_read": board_read,
-                       "buttons": sorted(set(catalog.family(self.profile.family_id).buttons.values()))}
+                       "family": catalog.descriptor(self.family_id),
+                       "screens": perception.screens(self.family_id), "board_read": board_read,
+                       "buttons": sorted(set(catalog.family(self.family_id).buttons.values()))}
             answer = await self._ask(observation, png, {"question": "stalled" if board_read else "screen"},
                                      self._turn("classify_screen.md", context, png))
             if isinstance(answer, NeedObservation):
                 return answer
-            checked = perception.screen(answer, observation, png, self.profile.family_id)
+            checked = perception.screen(answer, observation, png, self.family_id)
             if checked is None:
                 return NeedObservation("invalid_screen_answer")
             screens = self._record["screens"]

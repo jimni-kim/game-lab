@@ -16,6 +16,7 @@ from typing import Any
 import uuid
 
 from . import catalog, profiles
+from .adapters import SiteAdapter
 from .adapters.reference import ReferenceAdapter
 from .contracts import Budget, GoalSpec, Outcome
 from .environments.screen import ScreenEnvironment, Surface, Watch
@@ -67,20 +68,27 @@ def check(goal: GoalSpec, budget: Budget, family_id: str, policy: str | None) ->
 async def play(surface: Surface, *, profile: profiles.Profile | None = None, family_id: str | None = None,
                goal: GoalSpec, budget: Budget, policy: str | None = None, model: Model | None = None,
                vision: dict[str, Any] | None = None, cancel: asyncio.Event | None = None,
-               watch: Watch | None = None, accept_consent: bool = False, run_id: str | None = None) -> Run:
-    if (profile is None) == (family_id is None):
+               watch: Watch | None = None, accept_consent: bool = False, run_id: str | None = None,
+               adapter: SiteAdapter | None = None) -> Run:
+    """`adapter`: the site adapter to play by (a generated one), in place of the reference adapter a profile or
+    a family's look gives; its first moves are trial moves, as any reading made in the run."""
+    if adapter is not None:
+        if profile is not None or family_id not in (None, adapter.family_id):
+            raise ValueError("an adapter names its own game")
+        family_id = adapter.family_id
+    elif (profile is None) == (family_id is None):
         raise ValueError("give a profile or a family")
     unregistered = profile is None
     family_id = family_id or profile.family_id
-    if unregistered and family_id not in catalog.DISCOVERY:
+    if adapter is None and unregistered and family_id not in catalog.DISCOVERY:
         raise ValueError("family_not_discoverable")
     if not unregistered and (profile.data["fixture_only"] or "controls" not in profile.data):
         raise ValueError("profile_not_registered")
     policy = check(goal, budget, family_id, policy)
     cancel = cancel or asyncio.Event()
     run = Run(record={})
-    site = await surface.address() if unregistered else None
-    environment = ScreenEnvironment(surface, ReferenceAdapter(profile, family_id=family_id, site=site),
+    site = await surface.address() if unregistered and adapter is None else None
+    environment = ScreenEnvironment(surface, adapter or ReferenceAdapter(profile, family_id=family_id, site=site),
                                     watch=watch, accept_consent=accept_consent)
     if (reason := environment.unsupported()) is not None:
         run.record = ended(Outcome.UNSUPPORTED, reason, family_id=family_id)
@@ -100,9 +108,9 @@ async def play(surface: Surface, *, profile: profiles.Profile | None = None, fam
     environment.save_geometry = save_geometry
     environment.reader = CorrectionReader(profile, model, run_id=run_id or uuid.uuid4().hex,
                                           budget=VisionBudget(**(vision or DEFAULT_VISION)), save=save_vision,
-                                          current=environment.latest, cancelled=cancel.is_set)
+                                          current=environment.latest, cancelled=cancel.is_set, family_id=family_id)
     run.vision = environment.reader.record
-    family = catalog.family(family_id).bind(profile.data if profile else None)
+    family = adapter.family() if adapter is not None else catalog.family(family_id).bind(profile.data if profile else None)
     session = GameSession.start(family, environment, goal=goal, budget=budget, policy=policy,
                                 target=environment.target, clock=time.monotonic, save=save, guards=_Guards(cancel),
                                 trial=TRIAL_MOVES if unregistered else 0)
