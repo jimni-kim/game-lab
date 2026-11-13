@@ -16,8 +16,8 @@ from io import BytesIO
 import warnings
 from typing import Any
 
-from .profiles import MAX_IMAGE_PIXELS
-
+# the most pixels a capture may have (a profile's viewport is held to the same)
+MAX_IMAGE_PIXELS = 8_000_000
 MAX_IMAGE_BYTES = 4_000_000
 SAMPLE_FRACTIONS = (0.22, 0.78)
 SAMPLE_RADIUS = 1

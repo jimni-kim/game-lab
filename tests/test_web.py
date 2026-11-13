@@ -80,14 +80,14 @@ document.addEventListener('keydown',e=>{window.keys.push(e.key);if(e.key===KEY)f
         assert [[int(value) for value in drag] for drag in await page.evaluate("window.drags")] == [expected]
 
 
-async def test_a_page_reading_game_reads_its_elements_and_pictures_only_its_board(page, tmp_path):
-    """A page-reading game reads its elements and pictures only its board, and a move's confirmed result is
-    the next move's only look."""
+def page_game(tmp_path, moves=2):
+    """The registered 2048 site's markup as a local page that plays the `moves` the default policy will
+    choose; its profile as registered (it reads the page), the keys those moves are, and the board's box."""
     game = Screen()                      # measured as the screen reads it; the run plays the page-reading profile
     profile, family = LOAD("ovolve_2048"), game.family
     assert "reading" in profile.data
     states, keys = [{"grid": [[2, 0, 0, 0], [0, 0, 0, 0], [0, 0, 2, 0], [0, 0, 0, 4]], "score": 0, "scene": "playing"}], []
-    for _ in range(2):
+    for _ in range(moves):
         action = family.solver.choose(states[-1], family.rules, family.descriptor["default_policy"], 20)["action"]
         keys.append(profile.data["controls"]["keys"][action["direction"]])
         states.append(family.next_state(states[-1], action, 0))
@@ -115,6 +115,13 @@ show(pages[0]);
 document.addEventListener('keydown',e=>{{window.keys.push(e.key);
   if(e.key===keys[at]){{at+=1;setTimeout(()=>show(pages[at]),100)}}}});
 </script></body></html>""")
+    return profile, keys, [left, top, width, height]
+
+
+async def test_a_page_reading_game_reads_its_elements_and_pictures_only_its_board(page, tmp_path):
+    """A page-reading game reads its elements and pictures only its board, and a move's confirmed result is
+    the next move's only look."""
+    profile, keys, (left, top, width, height) = page_game(tmp_path)
     await page.goto((tmp_path / "game.html").as_uri())
     surface = WebSurface(page)
     shots, capture = [], surface.capture

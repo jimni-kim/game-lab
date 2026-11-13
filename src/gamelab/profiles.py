@@ -15,9 +15,9 @@ import math
 from typing import Any
 
 from . import catalog, resources
+from .pixels import MAX_IMAGE_PIXELS
 
 MIN_CELL_PIXELS = 12
-MAX_IMAGE_PIXELS = 8_000_000
 # the id every profile made in a session starts with (plan §4.5); no registered profile's does
 SESSION = "session_"
 

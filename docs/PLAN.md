@@ -1,6 +1,6 @@
 # game-lab 분리 계획
 
-작성: 2026-11-13. 상태: 진행 중.
+작성: 2026-11-13. 상태: **분리 완료(2026-11-13).** 실측과 실험 계획의 남은 단계는 사용자와 정한 뒤 시작.
 
 ARMY 게임 플러그인(`codex/game-adaptive-perception`, `92ccefe5f`)에서 게임 에이전트만 떼어 낸 독립 하네스다.
 혼자 개발하며 성능을 보는 것이 목적이고, ARMY와의 결합은 나중 문제다. ARMY 저장소는 읽기만 한다.
@@ -77,13 +77,13 @@ key(key) / tap(x, y, ms) / drag(x0, y0, x1, y1, ms)
 
 | # | 단계 | 완료 조건 | 크기 |
 |---|---|---|---|
-| 0 | 저장소와 환경 | `git init`, `.venv`(3.14), 의존 설치, 이 문서 | S |
-| 1 | 순수 로직과 판독 | 규칙, 풀이기, 계열, 어댑터, 판독 도우미, 세션, replay를 옮김. `test_core`, `test_session`, `test_perception`, `test_sites`, `test_geometry`, `test_discovery` 통과 | M |
-| 2 | 모델 클라이언트와 VLM 질문 | `model.py`, `vision.py`. `test_vision` 통과, 모델 응답 변환 시험 | S |
-| 3 | 화면 환경과 웹 | `screen.py`, `web.py`, `play.py`. 가짜 Surface 시험(측정, 입력, 덮개, 끝 화면, 알아보기)과 로컬 페이지를 Chromium으로 여는 시험 | M |
-| 4 | Android | `android.py`. 가짜 adb 시험(캡처, 탭, 스와이프, 키). 에뮬레이터가 켜져 있으면 캡처·입력 연기 시험 | S |
-| 5 | 평가 CLI | `policies`(replay), `web`(사이트 설정, 정답키, `--perturb`), `android`. 결과 JSON과 마지막 화면 저장 | M |
-| 6 | 마무리 | README, 이 문서 갱신, 전체 시험 1회, 분리 완료 보고 | S |
+| 0 (완료) | 저장소와 환경 | `git init`, `.venv`(3.14), 의존 설치, 이 문서 | S |
+| 1 (완료) | 순수 로직과 판독 | 규칙, 풀이기, 계열, 어댑터, 판독 도우미, 세션, replay를 옮김. `test_core`, `test_session`, `test_perception`, `test_sites`, `test_geometry`, `test_discovery` 통과 | M |
+| 2 (완료) | 모델 클라이언트와 VLM 질문 | `model.py`, `vision.py`. `test_vision` 통과, 모델 응답 변환 시험 | S |
+| 3 (완료) | 화면 환경과 웹 | `screen.py`, `web.py`, `play.py`. 가짜 Surface 시험(측정, 입력, 덮개, 끝 화면, 알아보기)과 로컬 페이지를 Chromium으로 여는 시험 | M |
+| 4 (완료, 실기기 미확인) | Android | `android.py`. 가짜 adb 시험(캡처, 탭, 스와이프, 키). 에뮬레이터가 켜져 있으면 캡처·입력 연기 시험 | S |
+| 5 (완료) | 평가 CLI | `policies`(replay), `web`(사이트 설정, 정답키, `--perturb`), `android`. 결과 JSON과 마지막 화면 저장 | M |
+| 6 (완료) | 마무리 | README, 이 문서 갱신, 전체 시험 1회, 분리 완료 보고 | S |
 
 분리 뒤에는 실험 계획(`docs/origin/`)의 남은 단계를 이어 간다: 3 범용 풀이기 → 4 격리 실행기와 어댑터 생성·채택 → 5 지뢰찾기·블록 → 6 규칙 변형 → 7 평가.
 시작은 분리 완료 보고 뒤 사용자와 정한다. 단계 4의 생성 코드는 제한한 subprocess에서 돌린다(환경 변수 비움, 임시 폴더만, 시간·메모리 제한, JSON만 주고받음).
@@ -101,3 +101,22 @@ key(key) / tap(x, y, ms) / drag(x0, y0, x1, y1, ms)
 - 지표: 끝 종류와 이유, 확인된 수, 수별 효과(확인·없음·불일치), 오독(정답키가 있는 사이트), 재전송, 한 수 시간, 캡처 수, 모델 질문 수와 토큰, 페이지가 말하는 끝과의 일치.
 - `--perturb`: `resize`, `cover`, `cover_bare`, `consent`, `consent_agree`, `tab`, `navigate`, `user`, `cancel`, `filter`. `disconnect`(task 재시작)는 task 저장을 뺐으므로 없다.
 - 모델: OpenAI 호환 API. 기본은 OpenRouter, 키는 환경 변수 `AGENTIC_OPENROUTER_KEY`(또는 `OPENROUTER_API_KEY`).
+
+## 6. 분리 결과 (2026-11-13)
+
+- 시험 490개 통과: 옮긴 시험 441개(공유 fixture, 세션, 판독, 저장 캡처, 알아보기, VLM 질문)와 새 시험 49개(모델 클라이언트, 화면 환경, Chromium, adb, 평가 CLI).
+- 원본과 달라진 동작
+  - 스키마 검사가 jsonschema다. 등록 계열과 프로필은 그대로 통과한다.
+  - 프로필 주소(`source.url`)가 `https://` 말고 `http://`, `android://`, `file://`도 받는다.
+  - 화면 환경은 어댑터가 입력을 만들지 못하면(조각이 사라짐, 화면 밖 드롭) 그 이유로 판을 끝낸다. 원본은 이유 없이 `error`였다.
+  - 동의 버튼만 있는 약관 요청은 `--accept-consent`일 때만 누른다. 게임의 계속하기 버튼은 묻지 않고 누른다.
+  - 정책 평가에 지뢰찾기가 들어갔다(승률). 원본 도구는 지뢰찾기에서 오류가 났다.
+- 확인하지 못한 것
+  - **실사이트와 실제 모델 호출.** 웹 평가는 로컬 페이지로만 끝까지 돌렸다. OpenRouter 호출은 가짜 응답으로만 시험했다.
+  - **실제 Android 기기.** adb 명령은 가짜 adb로만 시험했다. 에뮬레이터 `army-game`은 켜지 않았다.
+  - `--scale`(devicePixelRatio)과 `tab`·`navigate`·`filter`·`resize` 교란은 옮겼지만 돌려 보지 않았다.
+- 알려진 한계
+  - Android에 맞는 등록 프로필이 없다. 지금 프로필은 웹 사이트의 화면 크기와 색에 맞춰져 있다. 프로필 없이 시작할 수 있는 계열은 `slide_merge`뿐이다.
+  - Android 드래그는 `input swipe`다. 길게 눌러 집는 게임(블록 배치)에 맞는지는 실기기에서 봐야 한다.
+  - 웹 DOM 읽기와 캡처가 한 관측으로 묶이지 않는다(ARMY는 묶었다). 어긋나면 판독이 그 칸을 모름으로 두고 다시 본다.
+  - 재시작 뒤 이어 하기(task 저장)가 없다. 세션 기록의 의도·영수증 필드는 남아 있지만 한 프로세스 안에서만 쓴다.
