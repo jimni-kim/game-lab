@@ -37,9 +37,10 @@ SETTLE_S = 0.8
 SWIPE_MS = 150
 MAX_WAIT_MS = 5000
 # a screen's small picture: this many grey levels a side, and how far two may differ on average (of 255)
-# and still be the same kind of screen (a notice whose picture differs each time it is shown)
+# and still be the same screen. Measured on a dark site (2026-11-13): a notice and the board behind it differ
+# by about 21 to 29, as two notices do, so only a screen all but the same is answered without asking
 SIGNATURE_SIDE = 16
-REPLAY_DISTANCE = 24.0
+REPLAY_DISTANCE = 6.0
 # what is told the model of the inputs it already tried on this screen, and kept of those that worked
 TRIED_KEPT, KNOWN_KEPT = 8, 32
 

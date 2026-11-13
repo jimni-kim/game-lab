@@ -365,7 +365,11 @@ class ScreenEnvironment:
                     self.remeasure = False
             return observation
         press = _press(answer)
-        if answer["screen"] == perception.UNKNOWN_SCREEN or (answer["screen"] == perception.COVERED and press is None):
+        if answer["screen"] == perception.COVERED and press is None:
+            # a cover with no button to close it (a card closed by a tap anywhere): nothing more to wait for,
+            # the session has what else can be done about it tried at once
+            return replace(observation, public_facts={"blocked": True})
+        if answer["screen"] == perception.UNKNOWN_SCREEN:
             return observation
         # a screen the model accounts for is not a failed measurement of a board it hides
         self.unmeasured = 0

@@ -76,6 +76,9 @@ WON = "won"
 # why a game ends when a trial move does not do what the rules predict
 TRIAL_FAILED = "profile_unconfirmed"
 ANIMATION_MAX_S = 2.0
+# a game that must be still but whose pixels never rest (tiles that keep animating while it waits for a move)
+# is taken as settled once its state has read the same for this long
+RESTLESS_S = 1.0
 # moves kept in the record: enough to explain how it ended, small enough for the task's state
 HISTORY_KEPT = 8
 # how long a prepared input stays valid, on the surface's clock
@@ -271,6 +274,8 @@ class GameSession:
 
     async def _read(self, purpose: str) -> tuple[StateEstimate | None, Observation]:
         estimate, observation = await self._observe_settled(purpose)
+        if estimate is None and observation.public_facts.get("blocked"):
+            raise _End(Outcome.NEEDS_RECOVERY, "board_covered")
         if estimate is None and not observation.public_facts.get("covered"):
             self._unreadable("surface_unsettled")
         return estimate, observation
@@ -284,6 +289,7 @@ class GameSession:
         previous, stable_since = None, self.clock()
         still = policy is not None and policy.still
         pictured, rested = None, self.clock()
+        read, read_since = None, self.clock()
         last = None
         while True:
             # Verification still runs for the last allowed input, but never extends the time budget.
@@ -306,7 +312,7 @@ class GameSession:
             await self._check_stops(check_actions=False)
             if observation.target != self.record["target"]:
                 raise _End(Outcome.NEEDS_RECOVERY, "target_changed")
-            if observation.public_facts.get("covered"):
+            if observation.public_facts.get("covered") or observation.public_facts.get("blocked"):
                 return None, observation         # nothing to wait for under a cover: it is closed first
             estimate = self.family.estimate(observation)
             usable = not isinstance(estimate, NeedObservation) and not estimate.unknown_fields
@@ -314,14 +320,19 @@ class GameSession:
                    observation.image_ref if still else None) if usable else None
             if key is None or key != previous:
                 stable_since = self.clock()
+            # the same state under pixels that keep moving: an animation that never ends is not waited out
+            if key is None or key[:-1] != read:
+                read_since = self.clock()
+            read = key[:-1] if key is not None else None
+            restless = still and usable and self.clock() - read_since >= RESTLESS_S
             # a predicted result is taken from its first look, or, when the game must be still, its second
             settled = not still or observation.image_ref is None or observation.image_ref == pictured
             if observation.image_ref is None or observation.image_ref != pictured:
                 rested = looked                  # when this look began: a capture takes a while itself
             previous, pictured, self.rested_at = key, observation.image_ref, rested
-            if usable and acceptable is not None and acceptable(estimate) and settled:
+            if usable and acceptable is not None and acceptable(estimate) and (settled or restless):
                 return estimate, observation
-            stable = usable and (policy is None or self.clock() - stable_since >= policy.stable_s)
+            stable = usable and (policy is None or self.clock() - stable_since >= policy.stable_s or restless)
             last = (estimate if stable else None), observation
             if stable and acceptable is None:
                 return estimate, observation

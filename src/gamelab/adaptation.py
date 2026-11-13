@@ -549,13 +549,14 @@ class Adaptive:
         self.seconds += time.monotonic() - started
         return self._adapter()
 
-    async def relearn(self) -> GeneratedAdapter | None:
+    async def relearn(self, misread: bool = False) -> GeneratedAdapter | None:
         """After play stopped at a screen the adapter left unread: the model reads that screen, and when the
         adapter cannot read it as recorded a new one is written from every look so far. None when the screen
         shows no board the rules accept (nothing to learn: the game is not readable here)."""
         started = time.monotonic()
         try:
-            look = await self.adaptation.relabel(self.surface, self.trace, self.adapter.partial)
+            # `misread`: the adapter read the screen whole and wrongly, so nothing of its reading is held to
+            look = await self.adaptation.relabel(self.surface, self.trace, None if misread else self.adapter.partial)
             if look is None:
                 return None
             self.trace.looks.append(look)
@@ -599,6 +600,9 @@ async def adapter_for(surface: Surface, model: Model, family_id: str, *, store: 
 # a game's endings a new look at the screen may get past: the adapter left the screen unread, or its trial
 # moves did not do what the rules predict
 RELEARN_REASONS = ("unreadable", "profile_unconfirmed", "board_not_found", "surface_unsettled")
+# moves that did not do what the rules predict on a board read whole: the reading itself may be wrong (a value
+# the adapter takes for another), which one more look read by the model shows
+MISREAD_REASONS = ("inconsistent", "unknown")
 # adapters made again in one game before giving up: a game shows a handful of new looks, not dozens
 MAX_RELEARNS = 16
 
@@ -645,12 +649,12 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal:
             whole.geometry, whole.vision, whole.last_screen = run.geometry, run.vision, run.last_screen
             whole.record = {**record, "actions_used": used, "confirmed_actions": confirmed}
             stalled = 0 if record.get("confirmed_actions") else stalled + 1
-            if (record.get("outcome") not in ("needs_recovery", "unsupported") or record.get("reason") not in RELEARN_REASONS
+            if (record.get("outcome") not in ("needs_recovery", "unsupported") or record.get("reason") not in (*RELEARN_REASONS, *MISREAD_REASONS)
                     or adaptive.relearned >= MAX_RELEARNS or stalled >= 2 or used >= budget.max_actions
                     or (left is not None and left <= 0)):
                 break
             try:
-                adapter = await adaptive.relearn()
+                adapter = await adaptive.relearn(misread=record.get("reason") in MISREAD_REASONS)
             except AdaptationFailed as error:
                 return whole, {**adaptive.summary(), "failed": error.reason, "detail": error.detail[:2000]}
             if adapter is None:

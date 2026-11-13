@@ -25,6 +25,8 @@ class Author:
     def __init__(self, fake, modules):
         self.fake, self.modules, self.asked = fake, list(modules), []
         self.misread = 0
+        # asked what is in the way of play, it sees nothing: the board is plainly there
+        self.unblocked = False
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
@@ -35,6 +37,8 @@ class Author:
         if "tried" in context:
             # play stopped on a screen with no board: the model closes what covers it
             self.asked.append(("recover", context, images))
+            if self.unblocked:
+                return TurnResult(text=json.dumps({"situation": "a board in play", "action": {"kind": "none"}}))
             left, top, width, height = self.fake.button
             return TurnResult(text=json.dumps({"situation": "a notice", "action": {
                 "kind": "tap", "at": [left + width / 2, top + height / 2]}}))

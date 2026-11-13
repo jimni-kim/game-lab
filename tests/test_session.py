@@ -389,6 +389,30 @@ async def test_a_game_that_must_be_still_takes_a_result_only_once_its_pixels_res
     assert [seen.image_ref for seen in verified] == ["fading-1", "fading-2", "rest", "rest"]
 
 
+async def test_a_game_whose_pixels_never_rest_is_played_once_its_state_holds():
+    """A board whose tiles keep animating while the game waits never shows the same pixels twice: its state,
+    read the same for RESTLESS_S, is taken as settled. Regression: a site with animated tiles was looked at
+    222 times and ended as unreadable before a single move."""
+    from gamelab.session import RESTLESS_S, SettlingPolicy
+    run = Run(goal=single(2), budget=Budget(max_actions=10, compute=50, max_seconds=60))
+    session = run.session()
+    session.settling = SettlingPolicy(timeout_s=2, interval_s=0.1, stable_s=0.2, still=True)
+    observe = run.env.observe
+    looks = []
+
+    async def wait(delay):
+        run.clock.now += delay
+
+    async def restless(target, purpose):
+        seen = await observe(target, purpose)
+        looks.append(purpose)
+        return replace(seen, image_ref=f"frame-{len(looks)}")
+    session.wait, run.env.observe = wait, restless
+    record = await session.run()
+    assert record["outcome"] == "goal_reached" and record["confirmed_actions"] == 2
+    assert len(looks) <= 3 * (RESTLESS_S / 0.1 + 2)
+
+
 async def test_trial_moves_time_the_games_animation_and_later_moves_look_once():
     """A profile made in the session starts by waiting for its moves' pixels to rest (`still`), which costs a
     look or more a move; its trial moves time how long that takes, and after them each move waits the

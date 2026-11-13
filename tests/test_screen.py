@@ -95,6 +95,8 @@ class Screen:
         # what the model says a site no profile registers shows (vision.discover)
         self.discovered = None
         self.recovering, self.recover_calls = [], []
+        # the cover shows no button of its own (a card closed by a tap anywhere)
+        self.buttonless = False
 
     # ── the surface ───────────────────────────────────────────────────
 
@@ -200,7 +202,8 @@ class Screen:
         if "screens" in context:
             return TurnResult(text=json.dumps(evidence | {
                 "screen": self.screen, "board": self.seen_board if self.screen == "board" else None,
-                "control": self.button if self.screen == "won" or self.screen == "covered" and not self.agree_only else None,
+                "control": self.button if self.screen == "won" or self.screen == "covered" and not (
+                    self.agree_only or self.buttonless) else None,
                 "cover": ("consent" if self.agree_only else "notice") if self.screen == "covered" else None,
                 "accept": self.button if self.screen == "covered" and self.agree_only else None}))
         return TurnResult(text=json.dumps(evidence | {"geometry_ref": context["geometry_ref"],

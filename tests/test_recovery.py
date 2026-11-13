@@ -178,3 +178,32 @@ async def test_what_got_past_a_sites_screens_is_kept_with_its_adapter(tmp_path):
     assert made["recovery"]["restored"] == 1 and len(played.recoveries) == 1
     kept = Store(tmp_path).recoveries("https://unregistered.example/", "slide_merge")
     assert [known["action"] for known in kept] == [{"kind": "tap", "at": middle(fake.button)}]
+
+
+async def test_a_cover_the_reader_sees_no_button_on_goes_to_the_model_at_once():
+    """The bounded reader says a cover hides the board and shows no button to close it: there is nothing to
+    wait for, so the model is asked what to do after that one look, not after three unread ones. Regression:
+    each card of a site cost nine questions and half a minute before anything was tried."""
+    fake = Screen()
+    fake.covered, fake.buttonless = True, True
+    fake.recovering = [{"kind": "tap", "at": middle(fake.button)}]
+    played = await run(fake)
+    assert ending(played) == ("goal_reached", "actions"), played.record
+    assert len(fake.model_calls) == 1 and fake.recover_calls[0]["reason"] == "board_covered" and len(fake.taps) == 1
+
+
+async def test_a_value_the_adapter_takes_for_another_is_learned_again_when_its_moves_stop_making_sense(tmp_path, monkeypatch):
+    """The first adapter reads every tile above 16 as 16: nothing is left unread, but the moves stop doing what
+    the rules predict. Nothing is in the way on the screen, so the model reads that screen and the adapter is
+    written again. Regression: a two-digit tile read as its first digit ended the game as inconsistent."""
+    from functools import partial
+    monkeypatch.setattr(adaptation, "GeneratedAdapter", partial(
+        adaptation.GeneratedAdapter, settling={"timeout_s": 0.4, "interval_s": 0.05, "stable_s": 0.1}))
+    fake = Screen()
+    capped = source(fake, cell="cells.append(min(int(value), 16) if far <= 12 else None)")
+    author = Author(fake, [capped, source(fake)])
+    author.unblocked = True
+    played, made = await play_adaptive(fake, author, "slide_merge", goal=GoalSpec("actions", 70), budget=Budget(140, 20, 120),
+                                       store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "actions"), (played.record, made)
+    assert made["relearned"] >= 1 and made["generations"] == 2 and max(map(max, fake.board["grid"])) >= 32
