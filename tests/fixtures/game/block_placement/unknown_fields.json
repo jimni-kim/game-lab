@@ -1,0 +1,15 @@
+{
+  "op": "unknown_fields",
+  "cases": [
+    {
+      "name": "an unread tray piece is unknown while playing",
+      "input": {"state": {"board": [[0, 0], [0, 0]], "tray": [[]]}},
+      "expected": ["tray[0]"]
+    },
+    {
+      "name": "what the end screen covers is not waited for",
+      "input": {"state": {"board": [[null, 0], [0, 0]], "tray": [[]], "scene": "over"}},
+      "expected": []
+    }
+  ]
+}

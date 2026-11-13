@@ -1,0 +1,53 @@
+{
+  "op": "assess",
+  "cases": [
+    {
+      "name": "the tray confirms a move whose board ends as it began",
+      "input": {"rules": {"rows": 1, "cols": 3, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 2},
+                "before": {"board": [[0, 0, 0]], "tray": [[[0, 0], [0, 1], [0, 2]], [[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                "after": {"board": [[0, 0, 0]], "tray": [null, [[0, 0]]]}},
+      "expected": {"effect": "confirmed"}
+    },
+    {
+      "name": "nothing changed is an absent effect",
+      "input": {"rules": {"rows": 1, "cols": 3, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 2},
+                "before": {"board": [[0, 0, 0]], "tray": [[[0, 0], [0, 1], [0, 2]], [[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                "after": {"board": [[0, 0, 0]], "tray": [[[0, 0], [0, 1], [0, 2]], [[0, 0]]]}},
+      "expected": {"effect": "absent"}
+    },
+    {
+      "name": "a new tray after the last piece is accepted without predicting it",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "before": {"board": [[0, 0], [0, 0]], "tray": [[[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                "after": {"board": [[1, 0], [0, 0]], "tray": [[[0, 0], [1, 0]]]}},
+      "expected": {"effect": "confirmed"}
+    },
+    {
+      "name": "a board other than the predicted one is inconsistent",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "before": {"board": [[0, 0], [0, 0]], "tray": [[[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                "after": {"board": [[0, 1], [0, 0]], "tray": [null]}},
+      "expected": {"effect": "inconsistent"}
+    },
+    {
+      "name": "an unknown cell after the move leaves the effect unknown",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "before": {"board": [[0, 0], [0, 0]], "tray": [[[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                "after": {"board": [[1, null], [0, 0]], "tray": [null]}},
+      "expected": {"effect": "unknown"}
+    },
+    {
+      "name": "an end screen over the tray cannot confirm the last move",
+      "input": {"rules": {"rows": 1, "cols": 3, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 2},
+                "before": {"board": [[0, 0, 0]], "tray": [[[0, 0]], [[0, 0], [0, 1]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                "after": {"board": [[1, 0, 0]], "tray": [[], []], "scene": "over"}},
+      "expected": {"effect": "unknown"}
+    }
+  ]
+}

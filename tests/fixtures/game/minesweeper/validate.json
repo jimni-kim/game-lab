@@ -1,0 +1,195 @@
+{
+ "op": "validate",
+ "cases": [
+  {
+   "name": "a screen the rules allow",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": []
+  },
+  {
+   "name": "two mines opened: a game ends at the first",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       12,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       12
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    "grid_exploded"
+   ]
+  },
+  {
+   "name": "a number above the cells around it that could hold a mine",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       4,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    "grid_numbers"
+   ]
+  },
+  {
+   "name": "a value no cell holds",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       13,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    "grid_cell"
+   ]
+  }
+ ]
+}

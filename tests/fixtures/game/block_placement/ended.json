@@ -1,0 +1,508 @@
+{
+  "op": "ended",
+  "cases": [
+    {
+      "name": "an end banner over the tray after a move whose pieces left fit nowhere: the game ended",
+      "input": {
+        "before": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                0
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            1,
+            2
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              1
+            ]
+          ],
+          "tray": [
+            [],
+            []
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "rows": 2,
+          "cols": 3,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 2
+        }
+      },
+      "expected": true
+    },
+    {
+      "name": "the last piece was used: the fresh tray under the banner is nobody's guess",
+      "input": {
+        "before": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            null
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            1,
+            2
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              1
+            ]
+          ],
+          "tray": [
+            [],
+            []
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "rows": 2,
+          "cols": 3,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 2
+        }
+      },
+      "expected": false
+    },
+    {
+      "name": "a piece left still fits: the unread tray is waited for",
+      "input": {
+        "before": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ]
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            1,
+            2
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              1
+            ]
+          ],
+          "tray": [
+            [],
+            []
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "rows": 2,
+          "cols": 3,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 2
+        }
+      },
+      "expected": false
+    },
+    {
+      "name": "the board after is not the move's",
+      "input": {
+        "before": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                0
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            1,
+            2
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              1,
+              1,
+              1
+            ]
+          ],
+          "tray": [
+            [],
+            []
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "rows": 2,
+          "cols": 3,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 2
+        }
+      },
+      "expected": false
+    },
+    {
+      "name": "a slot that reads is not what the move left there",
+      "input": {
+        "before": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                0
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            1,
+            2
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              1
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            []
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "rows": 2,
+          "cols": 3,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 2
+        }
+      },
+      "expected": false
+    },
+    {
+      "name": "nothing is unread: the rules judge the screen itself",
+      "input": {
+        "before": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              0
+            ]
+          ],
+          "tray": [
+            [
+              [
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                0
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            1,
+            2
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              1,
+              1
+            ]
+          ],
+          "tray": [
+            null,
+            [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ],
+              [
+                1,
+                0
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "rows": 2,
+          "cols": 3,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 2
+        }
+      },
+      "expected": false
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "id": "play2048_co",
+  "revision": 3,
+  "family_id": "slide_merge",
+  "fixture_only": false,
+  "controls": {
+    "kind": "keys",
+    "keys": {"up": "ArrowUp", "down": "ArrowDown", "left": "ArrowLeft", "right": "ArrowRight"}
+  },
+  "settling": {"timeout_s": 10, "interval_s": 0.15, "stable_s": 0.25, "animation_s": 0.45},
+  "tolerance": 1,
+  "board": {
+    "frame": {"rgb": [156, 137, 120], "inset": [0.012195, 0.012195, 0.012195, 0.012195]},
+    "rows": 4,
+    "cols": 4,
+    "palette": [
+      {"value": 0, "rgb": [189, 172, 151]},
+      {"value": 2, "rgb": [238, 228, 218]},
+      {"value": 4, "rgb": [235, 216, 182]},
+      {
+        "value": 8,
+        "rgb": [242, 177, 119],
+        "alternates": [[241, 174, 114]]
+      },
+      {
+        "value": 16,
+        "rgb": [246, 148, 97],
+        "alternates": [[245, 143, 91]]
+      },
+      {
+        "value": 32,
+        "rgb": [246, 127, 99],
+        "alternates": [[246, 119, 88]]
+      },
+      {
+        "value": 64,
+        "rgb": [246, 100, 66],
+        "alternates": [[245, 91, 55]]
+      },
+      {
+        "value": 128,
+        "rgb": [240, 209, 106],
+        "alternates": [[242, 207, 86]]
+      },
+      {
+        "value": 256,
+        "rgb": [242, 210, 96],
+        "alternates": [[244, 204, 72], [242, 209, 95]]
+      },
+      {
+        "value": 512,
+        "rgb": [245, 210, 84],
+        "alternates": [[246, 200, 57], [245, 210, 82]]
+      },
+      {
+        "value": 1024,
+        "rgb": [248, 211, 72],
+        "alternates": [[249, 197, 43], [248, 210, 69]]
+      },
+      {
+        "value": 2048,
+        "rgb": [255, 212, 36],
+        "alternates": [[255, 187, 0]]
+      }
+    ]
+  },
+  "tray": [],
+  "rules": {"size": 4},
+  "source": {"url": "https://play2048.co/"}
+}

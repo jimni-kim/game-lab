@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A game family's descriptor (families/<id>.json, read by game.catalog)",
+  "description": "Data about one family of games: what its board shows, how it is played, which meta actions exist and which policies its code offers. English; never names a site or an app. The text is context data for perception, not a prompt; the rules themselves are the family's code.",
+  "type": "object",
+  "required": [
+    "id",
+    "revision",
+    "summary",
+    "state_schema",
+    "board",
+    "state_fields",
+    "actions",
+    "scenes",
+    "meta_actions",
+    "rule_parameters",
+    "policies",
+    "baseline_policy",
+    "default_policy",
+    "default_compute",
+    "goal_value",
+    "verify_every"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "the rule revision plans and estimates are pinned to"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 600
+    },
+    "state_schema": {
+      "type": "string",
+      "description": "the state shape the family's core reads and writes"
+    },
+    "board": {
+      "type": "object",
+      "required": [
+        "shape",
+        "cells"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "shape": {
+          "enum": [
+            "grid"
+          ]
+        },
+        "cells": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "looks"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "looks": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "state_fields": {
+      "type": "object",
+      
+      "description": "each field of the state the family's code reads and writes, with what its values mean: how a cell or piece is written, which value marks one nobody read (what a correction may fill) and which values look empty but are not unread",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 600
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "input",
+          "description"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "input": {
+            "enum": [
+              "drag",
+              "keys",
+              "tap",
+              "swipe"
+            ]
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "looks"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "enum": [
+              "playing",
+              "won",
+              "over"
+            ]
+          },
+          "looks": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "meta_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "description"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "button_on": {
+            "type": "string",
+            "description": "the scene whose own message shows the button this meta action presses (a win message's \"keep going\"): pressed at the button a model finds there, only once the person allows it"
+          }
+        }
+      }
+    },
+    "rule_parameters": {
+      "type": "object",
+      "description": "each rule parameter the family's code implements: what it means and the values a profile may give it (a JSON schema); the standard values are the core's DEFAULT_RULES, and a profile may set only these parameters, within these values",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "description",
+          "values"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "values": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "policies": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "baseline_policy": {
+      "type": "string"
+    },
+    "default_policy": {
+      "type": "string"
+    },
+    "goal_value": {
+      "type": "string",
+      "minLength": 1,
+      "description": "what a reach_value goal's number counts in this family's games (the rules judge it): the value a request in words may set a target for"
+    },
+    "default_compute": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "boards the default policy evaluates per move when a task asks in words and names no budget: what played its registered sites within the per-move time measured in plan §13"
+    },
+    "verify_every": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "how many moves between checks against the screen; 1 in the first families"
+    },
+    "discovery": {
+      "type": "object",
+      "description": "how a game of this family with no registered profile is set up from one look (plan §4.5): the rule values its code plays, read off the board, and the controls, settling and colour tolerance a session profile starts from; a family without it plays registered profiles only",
+      "required": [
+        "rules",
+        "controls",
+        "settling",
+        "tolerance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rules": {
+          "type": "object",
+          "description": "each rule parameter a look may set, with the range the family's code plays",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "minimum",
+              "maximum"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "minimum": {
+                "type": "integer"
+              },
+              "maximum": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "controls": {
+          "type": "object",
+          "description": "the controls a session profile tries first, as a profile registers them"
+        },
+        "settling": {
+          "type": "object",
+          "description": "the settling a session profile starts with, as a profile registers it"
+        },
+        "tolerance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12
+        }
+      }
+    }
+  }
+}

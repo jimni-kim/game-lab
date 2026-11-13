@@ -1,0 +1,45 @@
+{
+  "op": "legal_actions",
+  "cases": [
+    {
+      "name": "the only free cell takes the single cell",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 1], [1, 0]], "tray": [[[0, 0]]]}},
+      "expected": [{"kind": "place", "slot": 0, "anchor": [1, 1], "orientation": 0}]
+    },
+    {
+      "name": "consumed slots are skipped; order is slot, orientation, row, column",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 2},
+                "state": {"board": [[0, 0], [0, 0]], "tray": [null, [[0, 0], [0, 1]]]}},
+      "expected": [{"kind": "place", "slot": 1, "anchor": [0, 0], "orientation": 0},
+                   {"kind": "place", "slot": 1, "anchor": [1, 0], "orientation": 0}]
+    },
+    {
+      "name": "rotation adds each distinct orientation once",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": true, "tray_size": 1},
+                "state": {"board": [[0, 0], [0, 0]], "tray": [[[0, 0], [0, 1]]]}},
+      "expected": [{"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0},
+                   {"kind": "place", "slot": 0, "anchor": [1, 0], "orientation": 0},
+                   {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 1},
+                   {"kind": "place", "slot": 0, "anchor": [0, 1], "orientation": 1}]
+    },
+    {
+      "name": "no move when the piece fits nowhere",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 0], [0, 1]], "tray": [[[0, 0], [0, 1]]]}},
+      "expected": []
+    },
+    {
+      "name": "an unknown cell is never taken for empty",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[null, 0], [0, 0]], "tray": [[[0, 0]]]}},
+      "error": "unknown_cells"
+    },
+    {
+      "name": "nothing is played on the end screen",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[0, 0], [0, 0]], "tray": [[]], "scene": "over"}},
+      "expected": []
+    }
+  ]
+}

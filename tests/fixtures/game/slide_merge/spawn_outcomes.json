@@ -1,0 +1,12 @@
+{
+  "op": "spawn_outcomes",
+  "cases": [
+    {
+      "name": "every empty cell with every spawn value",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "grid": [[2, 0], [4, 0]]},
+      "expected": [{"cell": [0, 1], "value": 2, "weight": 9}, {"cell": [0, 1], "value": 4, "weight": 1},
+                   {"cell": [1, 1], "value": 2, "weight": 9}, {"cell": [1, 1], "value": 4, "weight": 1}]
+    }
+  ]
+}

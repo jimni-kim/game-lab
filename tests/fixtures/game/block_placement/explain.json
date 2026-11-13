@@ -1,0 +1,50 @@
+{
+  "op": "explain",
+  "cases": [
+    {
+      "name": "a block's colour is never what it means: nothing waits to be learned",
+      "input": {
+        "before": {
+          "board": [
+            [
+              0
+            ]
+          ],
+          "tray": [
+            null
+          ],
+          "score": 0
+        },
+        "action": {
+          "kind": "place",
+          "slot": 0,
+          "anchor": [
+            0,
+            0
+          ],
+          "orientation": 0
+        },
+        "after": {
+          "board": [
+            [
+              null
+            ]
+          ],
+          "tray": [
+            null
+          ],
+          "score": 0
+        },
+        "rules": {
+          "rows": 1,
+          "cols": 1,
+          "clear_rows": true,
+          "clear_cols": true,
+          "rotation": false,
+          "tray_size": 1
+        }
+      },
+      "expected": []
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "op": "status",
+  "cases": [
+    {
+      "name": "no piece fits: the game is over",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 0], [0, 1]], "tray": [[[0, 0], [0, 1]]]},
+                "goal": {"objective": "play_until_end", "target_value": null}},
+      "expected": {"terminal": true, "goal": "not_reached"}
+    },
+    {
+      "name": "an empty tray waits for new pieces and is not over",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 0], [0, 1]], "tray": [null]},
+                "goal": {"objective": "play_until_end", "target_value": null}},
+      "expected": {"terminal": false, "goal": "not_reached"}
+    },
+    {
+      "name": "a score at the target reaches the goal",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[0, 0], [0, 0]], "tray": [[[0, 0]]], "score": 120},
+                "goal": {"objective": "reach_value", "target_value": 100}},
+      "expected": {"terminal": false, "goal": "reached"}
+    },
+    {
+      "name": "an unread score leaves a score goal unknown",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[0, 0], [0, 0]], "tray": [[[0, 0]]], "score": null},
+                "goal": {"objective": "reach_value", "target_value": 100}},
+      "expected": {"terminal": false, "goal": "unknown"}
+    },
+    {
+      "name": "the end screen over the tray ends the game though the tray is unread",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 0], [0, 1]], "tray": [[]], "scene": "over"},
+                "goal": {"objective": "play_until_end", "target_value": null}},
+      "expected": {"terminal": true, "goal": "not_reached"}
+    }
+  ]
+}

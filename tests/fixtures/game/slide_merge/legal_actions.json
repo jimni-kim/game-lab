@@ -1,0 +1,29 @@
+{
+  "op": "legal_actions",
+  "cases": [
+    {
+      "name": "only directions that change the grid, in fixed order",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[2, 0], [0, 0]], "score": 0, "scene": "playing"}},
+      "expected": [{"kind": "slide", "direction": "down"}, {"kind": "slide", "direction": "right"}]
+    },
+    {
+      "name": "a locked grid has no move",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[2, 4], [4, 2]], "score": 0, "scene": "playing"}},
+      "expected": []
+    },
+    {
+      "name": "the win scene offers only going on past it",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[8, 0], [0, 0]], "score": 8, "scene": "won"}},
+      "expected": [{"kind": "continue_after_win"}]
+    },
+    {
+      "name": "behind a win message the only move is to go on",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 1, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[null, null], [null, null]], "score": null, "scene": "won"}},
+      "expected": [{"kind": "continue_after_win"}]
+    }
+  ]
+}

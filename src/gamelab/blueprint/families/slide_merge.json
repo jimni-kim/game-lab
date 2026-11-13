@@ -1,0 +1,148 @@
+{
+  "id": "slide_merge",
+  "revision": 1,
+  "summary": "A square grid of numbered tiles. Each move slides every tile as far as it goes in one direction; two equal tiles that meet join into one with their sum, and a tile joins at most once per move. A move that changes nothing is not a move. After each move one new small tile appears on an empty cell. A target tile wins; the game ends when no direction changes the grid.",
+  "state_schema": "slide_merge.v1",
+  "board": {
+    "shape": "grid",
+    "cells": [
+      {
+        "kind": "empty",
+        "looks": "a blank cell"
+      },
+      {
+        "kind": "tile",
+        "looks": "a cell showing a power of two; its colour follows the number"
+      },
+      {
+        "kind": "unknown",
+        "looks": "a cell hidden or caught mid-animation"
+      }
+    ]
+  },
+  "state_fields": {
+    "grid": "the grid's rows from the top, each a list of cells from the left: 0 empty, a tile's number, null a cell nobody read",
+    "score": "the game's score as read, or null",
+    "scene": "the id of the scene the screen shows"
+  },
+  "actions": [
+    {
+      "kind": "slide",
+      "input": "keys",
+      "description": "one arrow key (or one swipe on a touch screen) in the direction to slide"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "playing",
+      "looks": "the grid with the score above it"
+    },
+    {
+      "id": "won",
+      "looks": "a notice over the grid that the target tile was made, offering to keep going"
+    },
+    {
+      "id": "over",
+      "looks": "a notice over the grid that no move is left, offering to try again"
+    }
+  ],
+  "meta_actions": [
+    {
+      "id": "new_game",
+      "description": "start another game"
+    },
+    {
+      "id": "continue_after_win",
+      "description": "close the win notice and keep playing the same game",
+      "button_on": "won"
+    }
+  ],
+  "rule_parameters": {
+    "size": {
+      "description": "cells on each side of the square grid",
+      "values": {
+        "type": "integer",
+        "minimum": 2,
+        "maximum": 8
+      }
+    },
+    "target": {
+      "description": "the tile that wins",
+      "values": {
+        "type": "integer",
+        "minimum": 4,
+        "maximum": 65536
+      }
+    },
+    "start_tiles": {
+      "description": "tiles on the grid when a game starts",
+      "values": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4
+      }
+    },
+    "spawn": {
+      "description": "the values a new tile can have, each with its relative chance; the chances only steer the search, a check accepts any listed value",
+      "values": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 4,
+        "items": {
+          "type": "object",
+          "required": [
+            "value",
+            "weight"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 65536
+            },
+            "weight": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        }
+      }
+    }
+  },
+  "policies": [
+    "baseline",
+    "expectimax"
+  ],
+  "baseline_policy": "baseline",
+  "default_policy": "expectimax",
+  "default_compute": 500,
+  "goal_value": "the largest tile on the board",
+  "verify_every": 1,
+  "discovery": {
+    "rules": {
+      "size": {
+        "minimum": 3,
+        "maximum": 8
+      }
+    },
+    "controls": {
+      "kind": "keys",
+      "keys": {
+        "up": "ArrowUp",
+        "down": "ArrowDown",
+        "left": "ArrowLeft",
+        "right": "ArrowRight"
+      }
+    },
+    "settling": {
+      "timeout_s": 10,
+      "interval_s": 0.15,
+      "stable_s": 0.25,
+      "animation_s": 0.45,
+      "still": true
+    },
+    "tolerance": 1
+  }
+}

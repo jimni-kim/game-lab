@@ -1,0 +1,50 @@
+{
+  "op": "slide",
+  "cases": [
+    {
+      "name": "four equal tiles merge into two, each tile once",
+      "input": {"grid": [[2, 2, 2, 2], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "left"},
+      "expected": {"grid": [[4, 4, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 8, "moved": true}
+    },
+    {
+      "name": "a merged tile does not merge again in the same move",
+      "input": {"grid": [[2, 2, 4, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "left"},
+      "expected": {"grid": [[4, 4, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 4, "moved": true}
+    },
+    {
+      "name": "tiles merge across a gap",
+      "input": {"grid": [[4, 0, 4, 8], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "left"},
+      "expected": {"grid": [[8, 8, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 8, "moved": true}
+    },
+    {
+      "name": "moving without merging is a legal move",
+      "input": {"grid": [[0, 0, 0, 2], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "left"},
+      "expected": {"grid": [[2, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 0, "moved": true}
+    },
+    {
+      "name": "a direction that changes nothing does not move",
+      "input": {"grid": [[2, 4, 8, 16], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "left"},
+      "expected": {"grid": [[2, 4, 8, 16], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 0, "moved": false}
+    },
+    {
+      "name": "sliding right merges from the right edge first",
+      "input": {"grid": [[2, 2, 2, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "right"},
+      "expected": {"grid": [[0, 0, 2, 4], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 4, "moved": true}
+    },
+    {
+      "name": "sliding up works on columns",
+      "input": {"grid": [[2, 0, 0, 0], [2, 0, 0, 0], [4, 0, 0, 0], [4, 0, 0, 0]], "direction": "up"},
+      "expected": {"grid": [[4, 0, 0, 0], [8, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "gained": 12, "moved": true}
+    },
+    {
+      "name": "sliding down merges from the bottom edge first",
+      "input": {"grid": [[2, 0, 0, 0], [2, 0, 0, 0], [2, 0, 0, 0], [0, 0, 0, 0]], "direction": "down"},
+      "expected": {"grid": [[0, 0, 0, 0], [0, 0, 0, 0], [2, 0, 0, 0], [4, 0, 0, 0]], "gained": 4, "moved": true}
+    },
+    {
+      "name": "an unknown cell is never taken for empty",
+      "input": {"grid": [[2, null, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], "direction": "left"},
+      "error": "unknown_cells"
+    }
+  ]
+}

@@ -1,0 +1,1576 @@
+{
+  "browser": "156.0.8078.4",
+  "viewport": [
+    1280,
+    900
+  ],
+  "device_scale_factor": 1,
+  "measured_on": "blockblast_initial.png",
+  "cases": [
+    {
+      "name": "initial",
+      "file": "blockblast_initial.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-10T09:04:24.558899+00:00",
+      "sha256": "4e5309aa268ce2b4693bb399ba060235e4d64f86ba8fae6797f835aa51587cae",
+      "state": {
+        "board": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "Empty 8x8 board after the three tutorial placements, with yellow 2x3, pink 3x3 and red 2x2 pieces; partial has the yellow rectangle at the top left and its tray slot empty. Annotated from the saved image before running the reader."
+      }
+    },
+    {
+      "name": "partial",
+      "file": "blockblast_partial.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-10T09:05:13.173009+00:00",
+      "sha256": "cfd4037384fadd3ab6a364ebb10d260252732eebdcc012c6f639c9827737cf59",
+      "state": {
+        "board": [
+          [
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          null,
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "Empty 8x8 board after the three tutorial placements, with yellow 2x3, pink 3x3 and red 2x2 pieces; partial has the yellow rectangle at the top left and its tray slot empty. Annotated from the saved image before running the reader."
+      }
+    },
+    {
+      "name": "preview",
+      "file": "blockblast_preview.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-10T09:04:25.558756+00:00",
+      "sha256": "ead08e306a1448b3116057434ee5ae3e187e9188f69669ba7a6e3af6b2ed3176",
+      "unreadable": true
+    },
+    {
+      "name": "tutorial",
+      "file": "blockblast_tutorial.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-10T08:56:39.013360+00:00",
+      "sha256": "9765b942283702a806655128922e1939d55d53513eb2191fa047fadbad1dd3a3",
+      "unreadable": true
+    },
+    {
+      "name": "loading",
+      "file": "blockblast_loading.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-10T08:57:35.262167+00:00",
+      "sha256": "84668f2224a02df47e2812e7bebe8a59927f38b716db34d1264c5efcf21ab9a9",
+      "unreadable": true
+    },
+    {
+      "name": "no_space",
+      "file": "blockblast_no_space.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T00:29:31+00:00",
+      "sha256": "4efad85fbd2c0810fa32fad2b9e660e92af11b36e5ad122e617c3164e6bf5f2e",
+      "state": {
+        "board": [
+          [
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            0
+          ]
+        ],
+        "tray": [
+          [],
+          [],
+          []
+        ],
+        "score": null,
+        "scene": "over"
+      },
+      "terminal": true,
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "The game's 'No Space Left' banner right after the last placement: the board stays visible (transcribed cell by cell from the saved image before running the reader) and the banner covers the tray, which is therefore left unread."
+      }
+    },
+    {
+      "name": "blue_piece",
+      "file": "blockblast_blue_piece.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T05:21:49+00:00",
+      "sha256": "a28ab86220e35cce6f02d29a0fa5ec36d60385de66c6c3082f62ad4525b7b109",
+      "state": {
+        "board": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "Empty board after the first-visit tutorial, with a royal-blue 2x3, a purple 3x3 and an orange corner piece. Annotated from the image; the blue was not a registered piece colour before revision 5."
+      }
+    },
+    {
+      "name": "six_cell",
+      "file": "blockblast_six_cell.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T11:09:00+00:00",
+      "sha256": "169c754c4bd6bf6a87da3c47acffe528c7b9a68d89b7dcd7dbd4054a82422963",
+      "state": {
+        "board": [
+          [
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            0,
+            0,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            1,
+            0,
+            1,
+            0,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            0,
+            0,
+            1,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              3,
+              0
+            ],
+            [
+              4,
+              0
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              0,
+              3
+            ],
+            [
+              0,
+              4
+            ],
+            [
+              0,
+              5
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "Final page of a 2026-11-11 local evaluation run (tools/evaluate_game_live.py, profile revision 6, game 1), which stopped as unreadable: the one-by-six piece in the third slot is wider than that slot's box, and the five-cell vertical piece fills the middle one. Board and tray annotated from the image."
+      }
+    },
+    {
+      "name": "sized_1280x900",
+      "file": "blockblast_sized_1280x900.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T11:43:33+00:00",
+      "sha256": "c14d45d5b5fa9344a760c7160a27c42b85e180aeefc05b268d93273e57b32050",
+      "viewport": [
+        1280,
+        900
+      ],
+      "measured_on": "blockblast_sized_1280x900.png",
+      "state": {
+        "board": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              2,
+              0
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "One game after the first-visit tutorial, captured at 1280x900 and then, without a move, after the window was resized to 1100x780 and 1440x1000: the game redraws its board at another size and place. Empty board with a 3x3, a 2x3 and a five-cell corner piece, annotated from the images."
+      }
+    },
+    {
+      "name": "sized_1100x780",
+      "file": "blockblast_sized_1100x780.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T11:43:35+00:00",
+      "sha256": "aa7e98116d66c3c115f4636e0da169dc8d8c100a0cb4d24f28bca08d371e15bb",
+      "viewport": [
+        1100,
+        780
+      ],
+      "measured_on": "blockblast_sized_1100x780.png",
+      "state": {
+        "board": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              2,
+              0
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "One game after the first-visit tutorial, captured at 1280x900 and then, without a move, after the window was resized to 1100x780 and 1440x1000: the game redraws its board at another size and place. Empty board with a 3x3, a 2x3 and a five-cell corner piece, annotated from the images."
+      }
+    },
+    {
+      "name": "sized_1440x1000",
+      "file": "blockblast_sized_1440x1000.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T11:43:38+00:00",
+      "sha256": "9e762866fe70af172c74a7a16744622bf3b3c7fde3c96bbc6fff93e41664a14f",
+      "viewport": [
+        1440,
+        1000
+      ],
+      "measured_on": "blockblast_sized_1440x1000.png",
+      "state": {
+        "board": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              2,
+              0
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "One game after the first-visit tutorial, captured at 1280x900 and then, without a move, after the window was resized to 1100x780 and 1440x1000: the game redraws its board at another size and place. Empty board with a 3x3, a 2x3 and a five-cell corner piece, annotated from the images."
+      }
+    },
+    {
+      "name": "long_piece_over_scene",
+      "file": "blockblast_long_piece_over_scene.png",
+      "profile": "blockblast_org",
+      "url": "https://blockblast.org/",
+      "captured_at": "2026-11-11T12:01:27+00:00",
+      "sha256": "4b7e66f639c1ace1df213af4bcbf55bd1f0dd0fb7846e4786e08bdc5c92bdd8c",
+      "state": {
+        "board": [
+          [
+            1,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1
+          ],
+          [
+            1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1
+          ],
+          [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1
+          ],
+          [
+            0,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        ],
+        "tray": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              0,
+              3
+            ],
+            [
+              0,
+              4
+            ],
+            [
+              0,
+              5
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              3,
+              0
+            ]
+          ],
+          [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              0
+            ]
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "manual_visual_annotation",
+        "description": "Final page of the first measured-geometry smoke run (tools/evaluate_game_live.py, 54 moves, 53 confirmed), which stopped as unreadable: the one-by-six piece in the first slot reached over the scene sample between the first two slots. Board and tray annotated from the image; the scene is now sampled above the row a one-row piece takes."
+      }
+    }
+  ]
+}

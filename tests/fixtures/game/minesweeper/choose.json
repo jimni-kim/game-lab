@@ -1,0 +1,341 @@
+{
+ "op": "choose",
+ "cases": [
+  {
+   "name": "a cell a number alone proves safe is opened by both",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "baseline",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      4
+     ]
+    },
+    "certain": true
+   }
+  },
+  {
+   "name": "1-2-1: two numbers together prove the middle safe (solver)",
+   "input": {
+    "rules": {
+     "rows": 2,
+     "cols": 3,
+     "mines": 2,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       9,
+       9
+      ],
+      [
+       1,
+       2,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      1
+     ]
+    },
+    "certain": true
+   }
+  },
+  {
+   "name": "1-2-1: the baseline only guesses the cell nearest the middle",
+   "input": {
+    "rules": {
+     "rows": 2,
+     "cols": 3,
+     "mines": 2,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       9,
+       9
+      ],
+      [
+       1,
+       2,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "baseline",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      1
+     ]
+    },
+    "certain": false
+   }
+  },
+  {
+   "name": "the mines left prove cells beside no number safe (solver)",
+   "input": {
+    "rules": {
+     "rows": 1,
+     "cols": 5,
+     "mines": 1,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       1,
+       9,
+       9,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    "certain": true
+   }
+  },
+  {
+   "name": "counting every layout finds the one cell no layout mines (solver)",
+   "input": {
+    "rules": {
+     "rows": 1,
+     "cols": 4,
+     "mines": 1,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       1,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    "certain": true
+   }
+  },
+  {
+   "name": "the baseline guesses that board's cell nearest the middle",
+   "input": {
+    "rules": {
+     "rows": 1,
+     "cols": 4,
+     "mines": 1,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       1,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "baseline",
+    "budget": 1000
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    "certain": false
+   }
+  },
+  {
+   "name": "no cell is opened on a board no layout fits (a misread)",
+   "input": {
+    "rules": {
+     "rows": 1,
+     "cols": 4,
+     "mines": 1,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       9,
+       3,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "solver",
+    "budget": 1000
+   },
+   "expected": {
+    "action": null,
+    "certain": false
+   }
+  },
+  {
+   "name": "a move the screen showed had no effect is left out",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "policy": "baseline",
+    "budget": 1000,
+    "excluded": [
+     {
+      "kind": "open",
+      "cell": [
+       0,
+       4
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "action": {
+     "kind": "open",
+     "cell": [
+      1,
+      3
+     ]
+    },
+    "certain": true
+   }
+  }
+ ]
+}

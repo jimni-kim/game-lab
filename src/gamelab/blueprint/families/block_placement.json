@@ -1,0 +1,105 @@
+{
+  "id": "block_placement",
+  "revision": 1,
+  "summary": "A square grid and a tray of a few pieces. Each move drags one tray piece onto empty cells of the grid. Every full row and every full column is cleared at the same time after the piece lands. When the tray is empty a new set of pieces appears. The game ends when no tray piece fits anywhere.",
+  "state_schema": "block_placement.v1",
+  "board": {
+    "shape": "grid",
+    "cells": [
+      {
+        "kind": "empty",
+        "looks": "a cell in the board's background colour"
+      },
+      {
+        "kind": "filled",
+        "looks": "a coloured block; the colour carries no rule"
+      },
+      {
+        "kind": "unknown",
+        "looks": "a cell hidden by an animation, a dialog or a dragged piece"
+      }
+    ]
+  },
+  "state_fields": {
+    "board": "the board's rows from the top, each a list of cells from the left: 0 empty, 1 filled, null a cell nobody read",
+    "tray": "one entry per tray slot, in the tray's order: a piece is the list of its cells as [row, column] pairs, unique and sorted, shifted so that its smallest row and column are 0; [] is a piece nobody read yet, the only entry a correction may fill; null is a slot whose piece was already placed, which stays null and is never what an unread piece becomes",
+    "score": "the game's score as read, or null",
+    "scene": "the id of the scene the screen shows"
+  },
+  "actions": [
+    {
+      "kind": "place",
+      "input": "drag",
+      "description": "move one tray piece so that its cells cover empty cells, then release it"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "playing",
+      "looks": "the grid with pieces waiting in the tray below or beside it"
+    },
+    {
+      "id": "over",
+      "looks": "a notice over the grid that no piece fits, often with the final score and a replay button"
+    }
+  ],
+  "meta_actions": [
+    {
+      "id": "new_game",
+      "description": "start another game after the end, or instead of the one on the screen"
+    }
+  ],
+  "rule_parameters": {
+    "rows": {
+      "description": "rows on the board",
+      "values": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16
+      }
+    },
+    "cols": {
+      "description": "columns on the board",
+      "values": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16
+      }
+    },
+    "clear_rows": {
+      "description": "whether a full row is cleared",
+      "values": {
+        "type": "boolean"
+      }
+    },
+    "clear_cols": {
+      "description": "whether a full column is cleared",
+      "values": {
+        "type": "boolean"
+      }
+    },
+    "rotation": {
+      "description": "whether a piece may be turned before it is placed",
+      "values": {
+        "type": "boolean"
+      }
+    },
+    "tray_size": {
+      "description": "how many pieces the tray holds",
+      "values": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5
+      }
+    }
+  },
+  "policies": [
+    "greedy",
+    "search"
+  ],
+  "baseline_policy": "greedy",
+  "default_policy": "search",
+  "default_compute": 1000,
+  "goal_value": "the game's score",
+  "verify_every": 1
+}

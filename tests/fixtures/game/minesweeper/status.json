@@ -1,0 +1,266 @@
+{
+ "op": "status",
+ "cases": [
+  {
+   "name": "every safe cell open wins the game",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "a mine opened loses it",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       12,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "covered safe cells left: the game goes on",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "a count of cells opened is reached before the end",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "goal": {
+     "objective": "reach_value",
+     "target_value": 10
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "the game's own win message wins it",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     ],
+     "score": null,
+     "scene": "won"
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  }
+ ]
+}

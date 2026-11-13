@@ -1,0 +1,54 @@
+{
+  "op": "status",
+  "cases": [
+    {
+      "name": "the target tile reaches a value goal",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[8, 0], [0, 0]], "score": 8, "scene": "won"},
+                "goal": {"objective": "reach_value", "target_value": null}},
+      "expected": {"terminal": false, "goal": "reached"}
+    },
+    {
+      "name": "a goal value overrides the rules' target",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[8, 0], [0, 0]], "score": 8, "scene": "won"},
+                "goal": {"objective": "reach_value", "target_value": 16}},
+      "expected": {"terminal": false, "goal": "not_reached"}
+    },
+    {
+      "name": "a locked grid is over",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[2, 4], [4, 2]], "score": 0, "scene": "playing"},
+                "goal": {"objective": "play_until_end", "target_value": null}},
+      "expected": {"terminal": true, "goal": "not_reached"}
+    },
+    {
+      "name": "the game-over scene is over even before the grid is read as locked",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[2, 0], [0, 0]], "score": 0, "scene": "over"},
+                "goal": {"objective": "play_until_end", "target_value": null}},
+      "expected": {"terminal": true, "goal": "not_reached"}
+    },
+    {
+      "name": "an end screen over the tiles ends the game and leaves a tile goal unknown",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 1, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[null, null], [null, null]], "score": null, "scene": "over"},
+                "goal": {"objective": "reach_value", "target_value": 8}},
+      "expected": {"terminal": true, "goal": "unknown"}
+    },
+    {
+      "name": "the win message over the tiles says the game's own target tile was made",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 1, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[null, null], [null, null]], "score": null, "scene": "won"},
+                "goal": {"objective": "reach_value", "target_value": 8}},
+      "expected": {"terminal": false, "goal": "reached"}
+    },
+    {
+      "name": "the win message says nothing of a target above the game's own",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 1, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "state": {"grid": [[null, null], [null, null]], "score": null, "scene": "won"},
+                "goal": {"objective": "reach_value", "target_value": 16}},
+      "expected": {"terminal": false, "goal": "unknown"}
+    }
+  ]
+}

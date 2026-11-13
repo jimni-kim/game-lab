@@ -1,0 +1,43 @@
+{
+  "op": "apply",
+  "cases": [
+    {
+      "name": "a full row and a full column clear at once",
+      "input": {"rules": {"rows": 3, "cols": 3, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 1, 0], [0, 0, 1], [0, 0, 1]], "tray": [[[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 2], "orientation": 0}},
+      "expected": {"state": {"board": [[0, 0, 0], [0, 0, 0], [0, 0, 0]], "tray": [null]},
+                   "cleared_rows": [0], "cleared_cols": [2]}
+    },
+    {
+      "name": "the rows-only variant keeps a full column",
+      "input": {"rules": {"rows": 3, "cols": 3, "clear_rows": true, "clear_cols": false, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 1, 0], [0, 0, 1], [0, 0, 1]], "tray": [[[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 2], "orientation": 0}},
+      "expected": {"state": {"board": [[0, 0, 0], [0, 0, 1], [0, 0, 1]], "tray": [null]},
+                   "cleared_rows": [0], "cleared_cols": []}
+    },
+    {
+      "name": "a rotated piece is placed in its rotation",
+      "input": {"rules": {"rows": 3, "cols": 3, "clear_rows": true, "clear_cols": true, "rotation": true, "tray_size": 2},
+                "state": {"board": [[0, 0, 0], [0, 0, 0], [0, 0, 0]], "tray": [[[0, 0], [0, 1]], [[0, 0]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [1, 2], "orientation": 1}},
+      "expected": {"state": {"board": [[0, 0, 0], [0, 0, 1], [0, 0, 1]], "tray": [null, [[0, 0]]]},
+                   "cleared_rows": [], "cleared_cols": []}
+    },
+    {
+      "name": "an overlapping placement is refused",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[1, 0], [0, 0]], "tray": [[[0, 0], [0, 1]]]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0}},
+      "error": "illegal_action"
+    },
+    {
+      "name": "a consumed slot cannot be placed again",
+      "input": {"rules": {"rows": 2, "cols": 2, "clear_rows": true, "clear_cols": true, "rotation": false, "tray_size": 1},
+                "state": {"board": [[0, 0], [0, 0]], "tray": [null]},
+                "action": {"kind": "place", "slot": 0, "anchor": [0, 0], "orientation": 0}},
+      "error": "illegal_action"
+    }
+  ]
+}

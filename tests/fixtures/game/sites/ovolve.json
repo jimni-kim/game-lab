@@ -1,0 +1,645 @@
+{
+  "browser": "156.0.8078.4",
+  "viewport": [
+    1280,
+    1000
+  ],
+  "device_scale_factor": 1,
+  "measured_on": "ovolve_initial.png",
+  "cases": [
+    {
+      "name": "initial",
+      "file": "ovolve_initial.png",
+      "profile": "ovolve_2048",
+      "url": "https://ovolve.github.io/2048-AI/",
+      "captured_at": "2026-11-10T09:03:13.855225+00:00",
+      "sha256": "a48043fffbf25fed450a5b6828ec3770b47a339b542fd06225bf12fc5ec4d3b8",
+      "state": {
+        "grid": [
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            2,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "rendered_dom",
+        "tiles": [
+          {
+            "classes": "tile tile-2 tile-position-1-2 tile-new",
+            "text": "2"
+          },
+          {
+            "classes": "tile tile-2 tile-position-2-3 tile-new",
+            "text": "2"
+          }
+        ]
+      },
+      "capture_actions": []
+    },
+    {
+      "name": "progress",
+      "file": "ovolve_progress.png",
+      "profile": "ovolve_2048",
+      "url": "https://ovolve.github.io/2048-AI/",
+      "captured_at": "2026-11-10T09:03:19.083833+00:00",
+      "sha256": "5693548947956ab63acd63058b6853a49a20f324ca3f3bacece4f1918a011b76",
+      "state": {
+        "grid": [
+          [
+            2,
+            2,
+            32,
+            2
+          ],
+          [
+            16,
+            8,
+            0,
+            8
+          ],
+          [
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            2,
+            0,
+            0,
+            0
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "rendered_dom",
+        "tiles": [
+          {
+            "classes": "tile tile-2 tile-position-1-1",
+            "text": "2"
+          },
+          {
+            "classes": "tile tile-16 tile-position-1-2",
+            "text": "16"
+          },
+          {
+            "classes": "tile tile-2 tile-position-1-3",
+            "text": "2"
+          },
+          {
+            "classes": "tile tile-2 tile-position-1-4 tile-new",
+            "text": "2"
+          },
+          {
+            "classes": "tile tile-2 tile-position-2-1",
+            "text": "2"
+          },
+          {
+            "classes": "tile tile-8 tile-position-2-2",
+            "text": "8"
+          },
+          {
+            "classes": "tile tile-32 tile-position-3-1",
+            "text": "32"
+          },
+          {
+            "classes": "tile tile-2 tile-position-4-1",
+            "text": "2"
+          },
+          {
+            "classes": "tile tile-8 tile-position-4-2",
+            "text": "8"
+          }
+        ]
+      },
+      "capture_actions": [
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp"
+      ]
+    },
+    {
+      "name": "terminal_board",
+      "file": "ovolve_terminal_board.png",
+      "profile": "ovolve_2048",
+      "url": "https://ovolve.github.io/2048-AI/",
+      "captured_at": "2026-11-10T09:09:17.020800+00:00",
+      "sha256": "608fa0f12228441844c0fb4079660c1c8093112515282cf02992f3a52cf56ed8",
+      "oracle": {
+        "kind": "rendered_dom",
+        "message": "Game over!\n\nTry again ",
+        "annotation": "The screenshot is before the delayed terminal overlay; tiles manually transcribed from visible numerals. No adjacent equal tiles and no empty cells."
+      },
+      "capture_actions": [
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowLeft"
+      ],
+      "terminal": true,
+      "state": {
+        "grid": [
+          [
+            2,
+            4,
+            8,
+            2
+          ],
+          [
+            8,
+            64,
+            16,
+            8
+          ],
+          [
+            2,
+            4,
+            8,
+            64
+          ],
+          [
+            4,
+            8,
+            4,
+            2
+          ]
+        ],
+        "scene": "playing",
+        "score": null
+      }
+    },
+    {
+      "name": "over",
+      "file": "ovolve_over.png",
+      "profile": "ovolve_2048",
+      "url": "https://ovolve.github.io/2048-AI/",
+      "captured_at": "2026-11-10T09:11:59.496307+00:00",
+      "sha256": "8bfc4b5f1bca2dfb6c91eb9e5f1d8b2658131f6d932767db550e0d981402f573",
+      "oracle": {
+        "kind": "rendered_dom",
+        "message": "Game over!\n\nTry again "
+      },
+      "capture_actions": [
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowUp",
+        "ArrowUp",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowLeft",
+        "ArrowLeft"
+      ],
+      "state": {
+        "grid": [
+          [
+            null,
+            null,
+            null,
+            null
+          ],
+          [
+            null,
+            null,
+            null,
+            null
+          ],
+          [
+            null,
+            null,
+            null,
+            null
+          ],
+          [
+            null,
+            null,
+            null,
+            null
+          ]
+        ],
+        "score": null,
+        "scene": "over"
+      },
+      "terminal": true
+    },
+    {
+      "name": "glow",
+      "file": "ovolve_glow.png",
+      "profile": "ovolve_2048",
+      "url": "https://ovolve.github.io/2048-AI/",
+      "captured_at": "2026-11-11T02:21:25+00:00",
+      "sha256": "2ecc13c0e941df419ecf0f914ab0b3985087a9e3d5c75dcb0257b15b9912ed8e",
+      "state": {
+        "grid": [
+          [
+            256,
+            32,
+            4,
+            0
+          ],
+          [
+            128,
+            32,
+            0,
+            0
+          ],
+          [
+            2,
+            0,
+            0,
+            2
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "rendered_dom",
+        "grid": [
+          [
+            256,
+            32,
+            4,
+            0
+          ],
+          [
+            128,
+            32,
+            0,
+            0
+          ],
+          [
+            2,
+            0,
+            0,
+            2
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        "score": 2708,
+        "annotation": "Final page of a live evaluation run (tools/evaluate_game_live.py); the 256 and 128 tiles cast the site's glow over the board's left border, where revision 2 sampled its scene."
+      }
+    },
+    {
+      "name": "tinted",
+      "file": "ovolve_tinted.png",
+      "profile": "ovolve_2048",
+      "url": "https://ovolve.github.io/2048-AI/",
+      "captured_at": "2026-11-11T02:35:08+00:00",
+      "sha256": "3cd29111d1970de963144a26dd69128eaca975ff61531039fcacfb0d9f4a9238",
+      "state": {
+        "grid": [
+          [
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            16,
+            2,
+            0,
+            0
+          ],
+          [
+            16,
+            256,
+            2,
+            0
+          ]
+        ],
+        "score": null,
+        "scene": "playing"
+      },
+      "oracle": {
+        "kind": "rendered_dom",
+        "grid": [
+          [
+            2,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            16,
+            2,
+            0,
+            0
+          ],
+          [
+            16,
+            256,
+            2,
+            0
+          ]
+        ],
+        "score": 1836,
+        "annotation": "Final page of the third live evaluation run, which stopped as unreadable: the 256 tile's glow tints the 2 above it (row 3, column 2) a few levels past the registered tolerance, toward the 4's colour."
+      }
+    }
+  ]
+}

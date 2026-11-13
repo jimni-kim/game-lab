@@ -1,0 +1,255 @@
+{
+  "_comment": "Evaluation-only site setup (the window the person plays in and its first steps) and answer keys for tools/evaluate_game_live.py. Never read by the game plugin: setup stands in for the person starting a game, and the oracle reads the page only to score the plugin afterwards.",
+  "ovolve_2048": {
+    "viewport": [1280, 1000],
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 1500
+      }
+    ],
+    "oracle": "() => { const size = 4, grid = Array.from({length: size}, () => Array(size).fill(0)); for (const tile of document.querySelectorAll('.tile')) { const value = +(/tile-(\\d+)\\b/.exec(tile.className) || [])[1]; const at = /tile-position-(\\d)-(\\d)/.exec(tile.className); if (value && at) { const row = +at[2] - 1, col = +at[1] - 1; grid[row][col] = Math.max(grid[row][col], value); } } const score = document.querySelector('.score-container'); const message = document.querySelector('.game-message'); return {grid, score: score ? +score.childNodes[0].textContent.trim() : null, over: !!message && message.classList.contains('game-over'), won: !!message && message.classList.contains('game-won')}; }"
+  },
+  "blockblast_org": {
+    "viewport": [1280, 900],
+    "_comment": "The site keeps a game in its storage and resumes it on reload: each game clears it first, as a first visit. Play opens the Unity game (about 10 s to load), then a three-placement tutorial whose drops were measured with the profile's pickup geometry (2026-11-11). No answer key: the board is a canvas.",
+    "setup": [
+      {
+        "clear_storage": "https://blockblast.org"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      },
+      {
+        "click": [
+          640,
+          403
+        ]
+      },
+      {
+        "wait_ms": 12000
+      },
+      {
+        "drag": [
+          656,
+          760,
+          672,
+          593.6
+        ]
+      },
+      {
+        "wait_ms": 2500
+      },
+      {
+        "drag": [
+          656,
+          731,
+          672,
+          632.8
+        ]
+      },
+      {
+        "wait_ms": 2500
+      },
+      {
+        "drag": [
+          642,
+          746,
+          644,
+          585.2
+        ]
+      },
+      {
+        "wait_ms": 5000
+      }
+    ]
+  },
+  "play2048_co": {
+    "viewport": [1280, 1000],
+    "_comment": "The site keeps a game in its storage and resumes it on reload: each game clears it first, as a first visit. A first visit opens a welcome popup over the header, closed with its x. No answer key: the board is a canvas and the page exposes no grid.",
+    "setup": [
+      {
+        "clear_storage": "https://play2048.co"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 6000
+      },
+      {
+        "click": [
+          800,
+          24
+        ]
+      },
+      {
+        "wait_ms": 1000
+      }
+    ]
+  },
+  "game2048_com": {
+    "url": "https://2048game.com/",
+    "family": "slide_merge",
+    "viewport": [1280, 1000],
+    "_comment": "Stage 8a control: the original open-source markup on another site (gabrielecirulli.github.io/2048 now goes to play2048.co, a development site). ovolve copied the same markup, so a result here is not counted as generalization. DOM, no start screen, ads beside the board (2026-11-12, page opened only). It saves the game in localStorage: each game clears it.",
+    "setup": [
+      {
+        "clear_storage": "https://2048game.com"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 4000
+      }
+    ],
+    "oracle": "() => { const size = 4, grid = Array.from({length: size}, () => Array(size).fill(0)); for (const tile of document.querySelectorAll('.tile')) { const value = +(/tile-(\\d+)\\b/.exec(tile.className) || [])[1]; const at = /tile-position-(\\d)-(\\d)/.exec(tile.className); if (value && at) { const row = +at[2] - 1, col = +at[1] - 1; grid[row][col] = Math.max(grid[row][col], value); } } const score = document.querySelector('.score-container'); const message = document.querySelector('.game-message'); return {grid, score: score ? +score.childNodes[0].textContent.trim() : null, over: !!message && message.classList.contains('game-over'), won: !!message && message.classList.contains('game-won')}; }"
+  },
+  "march2048_4x4": {
+    "url": "https://march2048-site.pages.dev/",
+    "family": "slide_merge",
+    "viewport": [1280, 1000],
+    "_comment": "Stage 8a, a DOM 2048 in its own markup (a grid of divs, each cell's text its value). No ads, no start screen, no ranking (2026-11-12, page opened only).",
+    "setup": [
+      {
+        "clear_storage": "https://march2048-site.pages.dev"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      }
+    ],
+    "oracle": "() => { const board = [...document.querySelectorAll('div.grid.gap-3')].find(e => e.children.length >= 9 && Number.isInteger(Math.sqrt(e.children.length))); if (!board) return null; const size = Math.sqrt(board.children.length); const values = [...board.children].map(cell => +cell.innerText.trim() || 0); return {grid: Array.from({length: size}, (_, row) => values.slice(row * size, row * size + size)), score: null, over: null, won: null}; }"
+  },
+  "march2048_5x5": {
+    "url": "https://march2048-site.pages.dev/2048-5x5/",
+    "family": "slide_merge",
+    "viewport": [1280, 1000],
+    "_comment": "Stage 8a, board size 5x5 on march2048_4x4's site.",
+    "setup": [
+      {
+        "clear_storage": "https://march2048-site.pages.dev"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      }
+    ],
+    "oracle": "() => { const board = [...document.querySelectorAll('div.grid.gap-3')].find(e => e.children.length >= 9 && Number.isInteger(Math.sqrt(e.children.length))); if (!board) return null; const size = Math.sqrt(board.children.length); const values = [...board.children].map(cell => +cell.innerText.trim() || 0); return {grid: Array.from({length: size}, (_, row) => values.slice(row * size, row * size + size)), score: null, over: null, won: null}; }"
+  },
+  "march2048_6x6": {
+    "url": "https://march2048-site.pages.dev/2048-6x6/",
+    "family": "slide_merge",
+    "viewport": [1280, 1000],
+    "_comment": "Stage 8a, board size 6x6 on march2048_4x4's site.",
+    "setup": [
+      {
+        "clear_storage": "https://march2048-site.pages.dev"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      }
+    ],
+    "oracle": "() => { const board = [...document.querySelectorAll('div.grid.gap-3')].find(e => e.children.length >= 9 && Number.isInteger(Math.sqrt(e.children.length))); if (!board) return null; const size = Math.sqrt(board.children.length); const values = [...board.children].map(cell => +cell.innerText.trim() || 0); return {grid: Array.from({length: size}, (_, row) => values.slice(row * size, row * size + size)), score: null, over: null, won: null}; }"
+  },
+  "arkadium_2048": {
+    "url": "https://www.arkadium.com/games/2048-game/",
+    "family": "slide_merge",
+    "viewport": [1280, 1000],
+    "_comment": "Stage 8a, a portal's canvas 2048 in a cross-origin iframe, its own look, with a privacy consent dialog, a pre-game video ad and a leaderboard (2026-11-12, page opened only). Setup only waits: the consent, the ad and the start are left as they are until the first approved run has seen them; keys must reach the iframe. No answer key: canvas.",
+    "setup": [
+      {
+        "clear_storage": "https://www.arkadium.com"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 20000
+      }
+    ]
+  },
+  "doge2048": {
+    "url": "https://doge2048.com/",
+    "family": "slide_merge",
+    "viewport": [1280, 1000],
+    "_comment": "Stage 8a, picture tiles (doge characters) in its own markup. A start menu: PLAY is endless play, the person's start here; Daily Drop (one official try a day) and Blitz are ranked and not played. The click was read off the 2026-11-12 screenshot at this window and is first tried on the approved run. Ads further down the page.",
+    "setup": [
+      {
+        "clear_storage": "https://doge2048.com"
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 5000
+      },
+      {
+        "click": [
+          640,
+          450
+        ]
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
+  },
+  "play2048_co_win_in_four": {
+    "viewport": [1280, 1000],
+    "_comment": "play2048.co four merges from its win screen (plan, stage 8a): on a first visit the site imports, once, a game the original open-source 2048 saved (localStorage gameState, grid.cells[x][y]). Here 1024, 512, 256, 128 on the bottom row and a 128 above the last: 2048 takes at least four moves, so a game with no profile wins only after its three trial moves (two 1024 side by side won on the second, ending the trial, 2026-11-13). The win screen keeps the board in view under 'You Win' with a Keep Going button. A returning player's welcome popup replaces the first visit's and is left for the plugin to close. Start with --profile play2048_co --site play2048_co_win_in_four.",
+    "setup": [
+      {
+        "clear_storage": "https://play2048.co"
+      },
+      {
+        "local_storage": {
+          "gameState": "{\"grid\":{\"size\":4,\"cells\":[[null,null,null,{\"position\":{\"x\":0,\"y\":3},\"value\":1024}],[null,null,null,{\"position\":{\"x\":1,\"y\":3},\"value\":512}],[null,null,null,{\"position\":{\"x\":2,\"y\":3},\"value\":256}],[null,null,{\"position\":{\"x\":3,\"y\":2},\"value\":128},{\"position\":{\"x\":3,\"y\":3},\"value\":128}]]},\"score\":20000,\"over\":false,\"won\":false,\"keepPlaying\":false}"
+        }
+      },
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 6000
+      }
+    ]
+  },
+  "tatham_mines": {
+    "viewport": [1280, 900],
+    "_comment": "Each reload starts a new random game (9x9, 10 mines, no guessing needed). No answer key: the board is a canvas and the page exposes no grid; the end the plugin judges is compared with the status bar's.",
+    "ending": {"selector": "#statusbar", "won": "COMPLETED", "over": "DEAD"},
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 1500
+      }
+    ]
+  },
+  "tatham_mines_guess": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/mines.html#9x9:4,4,u101110000a20004002800",
+    "viewport": [1280, 900],
+    "_comment": "A game the page opens from its game id, mines placed by hand: after the start cell's opening the numbers decide no cell, the solver's least likely guess is a mine, and the page states the loss. Played with --profile tatham_mines --site tatham_mines_guess.",
+    "ending": {"selector": "#statusbar", "won": "COMPLETED", "over": "DEAD"},
+    "setup": [
+      {
+        "wait_ms": 1500
+      }
+    ]
+  }
+}

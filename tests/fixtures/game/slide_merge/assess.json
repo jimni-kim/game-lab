@@ -1,0 +1,77 @@
+{
+  "op": "assess",
+  "cases": [
+    {
+      "name": "the slid grid plus one allowed new tile is confirmed",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[4, 0], [0, 2]], "score": 4, "scene": "playing"}},
+      "expected": {"effect": "confirmed"}
+    },
+    {
+      "name": "a new tile of a value that never spawns is inconsistent",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[4, 0], [0, 8]], "score": 4, "scene": "playing"}},
+      "expected": {"effect": "inconsistent"}
+    },
+    {
+      "name": "two new tiles are inconsistent",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[4, 2], [0, 2]], "score": 4, "scene": "playing"}},
+      "expected": {"effect": "inconsistent"}
+    },
+    {
+      "name": "a score that does not add up is inconsistent",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[4, 0], [0, 2]], "score": 8, "scene": "playing"}},
+      "expected": {"effect": "inconsistent"}
+    },
+    {
+      "name": "an unread score does not block the grid's confirmation",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": null, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[4, 0], [0, 2]], "score": null, "scene": "playing"}},
+      "expected": {"effect": "confirmed"}
+    },
+    {
+      "name": "an unchanged grid is an absent effect",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"}},
+      "expected": {"effect": "absent"}
+    },
+    {
+      "name": "an unknown cell after the move leaves the effect unknown",
+      "input": {"rules": {"size": 2, "target": 2048, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 2], [0, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "left"},
+                "after": {"grid": [[4, null], [0, 2]], "score": 4, "scene": "playing"}},
+      "expected": {"effect": "unknown"}
+    },
+    {
+      "name": "going on past the win changes only the scene",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 2, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[8, 0], [0, 0]], "score": 8, "scene": "won"},
+                "action": {"kind": "continue_after_win"},
+                "after": {"grid": [[8, 0], [0, 0]], "score": 8, "scene": "playing"}},
+      "expected": {"effect": "confirmed"}
+    },
+    {
+      "name": "an end screen over the tiles cannot confirm the last move",
+      "input": {"rules": {"size": 2, "target": 8, "start_tiles": 1, "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]},
+                "before": {"grid": [[2, 0], [2, 0]], "score": 0, "scene": "playing"},
+                "action": {"kind": "slide", "direction": "up"},
+                "after": {"grid": [[null, null], [null, null]], "score": null, "scene": "over"}},
+      "expected": {"effect": "unknown"}
+    }
+  ]
+}

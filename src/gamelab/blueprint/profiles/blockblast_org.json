@@ -1,0 +1,54 @@
+{
+  "id": "blockblast_org",
+  "revision": 9,
+  "family_id": "block_placement",
+  "fixture_only": false,
+  "controls": {
+    "kind": "drag",
+    "duration_ms": 500,
+    "pickup": {"anchor": [0.5, 0.85], "cell_scale": [1, 1], "offset_cells": [0, -1.7142857142857142]}
+  },
+  "settling": {"timeout_s": 4, "interval_s": 0.15, "stable_s": 0.25, "animation_s": 0.6, "still": true},
+  "tolerance": 4,
+  "board": {
+    "frame": {"rgb": [24, 36, 74], "inset": [0.010965, 0.008791, 0.006579, 0.006593]},
+    "rows": 8,
+    "cols": 8,
+    "palette": [{"value": 0, "rgb": [33, 44, 82]}, {"value": 1, "any": true}]
+  },
+  "tray": [
+    {
+      "at": [-0.044643, 1.058036, 0.334821, 0.357143],
+      "rows": 6,
+      "cols": 6,
+      "palette": [{"value": 0, "rgb": [33, 44, 82]}, {"value": 1, "any": true}],
+      "piece": {
+        "cell": [0.517857, 0.517857],
+        "background": [[60, 87, 150], [51, 77, 142]]
+      }
+    },
+    {
+      "at": [0.345982, 1.058036, 0.334821, 0.357143],
+      "rows": 6,
+      "cols": 6,
+      "palette": [{"value": 0, "rgb": [33, 44, 82]}, {"value": 1, "any": true}],
+      "piece": {
+        "cell": [0.517857, 0.517857],
+        "background": [[60, 87, 150], [51, 77, 142]]
+      }
+    },
+    {
+      "at": [0.714286, 1.058036, 0.334821, 0.357143],
+      "rows": 6,
+      "cols": 6,
+      "palette": [{"value": 0, "rgb": [33, 44, 82]}, {"value": 1, "any": true}],
+      "piece": {
+        "cell": [0.517857, 0.517857],
+        "background": [[60, 87, 150], [51, 77, 142]]
+      }
+    }
+  ],
+  "tray_band": [-0.098214, 1.022321, 1.196429, 0.4375],
+  "rules": {"rows": 8, "cols": 8, "tray_size": 3, "clear_rows": true, "clear_cols": true, "rotation": false},
+  "source": {"url": "https://blockblast.org/"}
+}

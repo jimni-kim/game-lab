@@ -1,0 +1,335 @@
+{
+ "op": "legal_actions",
+ "cases": [
+  {
+   "name": "every covered cell is a move, row by row",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      4
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      3
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      4
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      2,
+      4
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      3,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a flagged cell and a mine shown are never opened",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       10,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       11
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      0,
+      4
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      3
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      1,
+      4
+     ]
+    },
+    {
+     "kind": "open",
+     "cell": [
+      3,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "no move once a mine was opened, whatever is unread",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       12,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       null
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": []
+  },
+  {
+   "name": "no move once every safe cell is open",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": []
+  },
+  {
+   "name": "an unread cell is never taken for covered",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "state": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       null
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "error": "unknown_cells"
+  }
+ ]
+}

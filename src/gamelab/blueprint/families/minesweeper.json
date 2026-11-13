@@ -1,0 +1,104 @@
+{
+  "id": "minesweeper",
+  "revision": 1,
+  "summary": "A grid of covered cells, some hiding mines. Each move opens one covered cell: a mine ends the game; otherwise the cell shows how many of its eight neighbours hold mines, and a cell with none opens its neighbours in turn. The game is won when every cell without a mine is open.",
+  "state_schema": "minesweeper.v1",
+  "board": {
+    "shape": "grid",
+    "cells": [
+      {
+        "kind": "covered",
+        "looks": "a cell not yet opened, often drawn raised or in a colour of its own"
+      },
+      {
+        "kind": "number",
+        "looks": "an opened cell, flat, showing a digit from 1 to 8 whose colour follows the digit, or blank for 0"
+      },
+      {
+        "kind": "flag",
+        "looks": "a covered cell with a mark on it, often a small flag"
+      },
+      {
+        "kind": "mine",
+        "looks": "a mine drawn on a cell: the one opened, often on a red cell, and on some games every other once the game is lost"
+      },
+      {
+        "kind": "unknown",
+        "looks": "a cell hidden by an animation or a dialog"
+      }
+    ]
+  },
+  "state_fields": {
+    "grid": "the grid's rows from the top, each a list of cells from the left: 0 to 8 an opened cell and the mines around it, 9 covered, 10 a covered cell marked with a flag, 11 a mine shown on a cell nobody opened, 12 the mine opened, null a cell nobody read (never the same as covered)",
+    "score": "always null: the game keeps no score",
+    "scene": "the id of the scene the screen shows"
+  },
+  "actions": [
+    {
+      "kind": "open",
+      "input": "tap",
+      "description": "one click or tap on a covered cell"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "playing",
+      "looks": "the grid with covered cells left to open"
+    },
+    {
+      "id": "won",
+      "looks": "a notice that every safe cell is open, or the covered cells all marked"
+    },
+    {
+      "id": "over",
+      "looks": "a notice that a mine was opened, or a mine shown on a red cell"
+    }
+  ],
+  "meta_actions": [
+    {
+      "id": "new_game",
+      "description": "start another game after the end, or instead of the one on the screen"
+    }
+  ],
+  "rule_parameters": {
+    "rows": {
+      "description": "rows on the grid",
+      "values": {
+        "type": "integer",
+        "minimum": 2,
+        "maximum": 16
+      }
+    },
+    "cols": {
+      "description": "columns on the grid",
+      "values": {
+        "type": "integer",
+        "minimum": 2,
+        "maximum": 16
+      }
+    },
+    "mines": {
+      "description": "mines hidden on the grid, fewer than its cells",
+      "values": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 255
+      }
+    },
+    "flags": {
+      "description": "whether moves place flags; only false is played: every move opens a cell, and a flag the game itself shows counts as a mine",
+      "values": {
+        "const": false
+      }
+    }
+  },
+  "policies": [
+    "baseline",
+    "solver"
+  ],
+  "baseline_policy": "baseline",
+  "default_policy": "solver",
+  "default_compute": 20000,
+  "goal_value": "the cells opened",
+  "verify_every": 1
+}

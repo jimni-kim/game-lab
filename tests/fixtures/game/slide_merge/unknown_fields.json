@@ -1,0 +1,15 @@
+{
+  "op": "unknown_fields",
+  "cases": [
+    {
+      "name": "an unread tile is unknown while playing",
+      "input": {"state": {"grid": [[null, 0], [0, 2]], "scene": "playing"}},
+      "expected": ["grid[0][0]"]
+    },
+    {
+      "name": "tiles behind the game's own message are not waited for",
+      "input": {"state": {"grid": [[null, null], [null, null]], "scene": "over"}},
+      "expected": []
+    }
+  ]
+}

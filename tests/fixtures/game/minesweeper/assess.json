@@ -1,0 +1,1069 @@
+{
+ "op": "assess",
+ "cases": [
+  {
+   "name": "a 0 opens its covered neighbours and theirs in turn",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      3,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a number opens alone",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a mine opened ends the game and is the move's effect",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       12,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a lost game may show its other mines",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       12,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       11,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       11
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a lost game that changed an opened cell is inconsistent",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       12,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       1,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "a cell opened that the move's 0s do not reach is inconsistent",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "a 0 whose covered neighbour stays covered is inconsistent",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      3,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "the same screen is a move without effect",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "absent"
+   }
+  },
+  {
+   "name": "the last safe cell opened, the game may flag every covered cell",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       9,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      2,
+      4
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       10,
+       2,
+       0
+      ],
+      [
+       0,
+       2,
+       10,
+       2,
+       0
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       1
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       10
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a flag before the game is won is no open's effect",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       10
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "an unread cell leaves the effect unknown",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "open",
+     "cell": [
+      0,
+      3
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       2,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       null
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "unknown"
+   }
+  },
+  {
+   "name": "a fresh game is all covered",
+   "input": {
+    "rules": {
+     "rows": 4,
+     "cols": 5,
+     "mines": 3,
+     "flags": false
+    },
+    "before": {
+     "grid": [
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       2,
+       9,
+       9,
+       9
+      ],
+      [
+       0,
+       1,
+       1,
+       2,
+       9
+      ],
+      [
+       0,
+       0,
+       0,
+       1,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "new_game"
+    },
+    "after": {
+     "grid": [
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ],
+      [
+       9,
+       9,
+       9,
+       9,
+       9
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  }
+ ]
+}

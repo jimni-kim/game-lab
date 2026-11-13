@@ -1,0 +1,278 @@
+{
+  "op": "explain",
+  "cases": [
+    {
+      "name": "an unread cell the join filled holds the joined value",
+      "input": {
+        "before": {
+          "grid": [
+            [
+              1024,
+              1024
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "slide",
+          "direction": "left"
+        },
+        "after": {
+          "grid": [
+            [
+              null,
+              0
+            ],
+            [
+              0,
+              2
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "size": 2,
+          "target": 2048,
+          "start_tiles": 2,
+          "spawn": [
+            {
+              "value": 2,
+              "weight": 9
+            },
+            {
+              "value": 4,
+              "weight": 1
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "cell": [
+            0,
+            0
+          ],
+          "value": 2048
+        }
+      ]
+    },
+    {
+      "name": "an unread cell the slide left empty is not explained",
+      "input": {
+        "before": {
+          "grid": [
+            [
+              1024,
+              1024
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "slide",
+          "direction": "left"
+        },
+        "after": {
+          "grid": [
+            [
+              2048,
+              null
+            ],
+            [
+              0,
+              2
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "size": 2,
+          "target": 2048,
+          "start_tiles": 2,
+          "spawn": [
+            {
+              "value": 2,
+              "weight": 9
+            },
+            {
+              "value": 4,
+              "weight": 1
+            }
+          ]
+        }
+      },
+      "expected": []
+    },
+    {
+      "name": "a read cell that disagrees with the slide explains nothing",
+      "input": {
+        "before": {
+          "grid": [
+            [
+              1024,
+              1024
+            ],
+            [
+              2,
+              0
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "slide",
+          "direction": "left"
+        },
+        "after": {
+          "grid": [
+            [
+              null,
+              0
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "size": 2,
+          "target": 2048,
+          "start_tiles": 2,
+          "spawn": [
+            {
+              "value": 2,
+              "weight": 9
+            },
+            {
+              "value": 4,
+              "weight": 1
+            }
+          ]
+        }
+      },
+      "expected": []
+    },
+    {
+      "name": "two new tiles where the game adds one explain nothing",
+      "input": {
+        "before": {
+          "grid": [
+            [
+              1024,
+              1024
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "slide",
+          "direction": "left"
+        },
+        "after": {
+          "grid": [
+            [
+              null,
+              2
+            ],
+            [
+              0,
+              2
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "size": 2,
+          "target": 2048,
+          "start_tiles": 2,
+          "spawn": [
+            {
+              "value": 2,
+              "weight": 9
+            },
+            {
+              "value": 4,
+              "weight": 1
+            }
+          ]
+        }
+      },
+      "expected": []
+    },
+    {
+      "name": "a board read in full has nothing to explain",
+      "input": {
+        "before": {
+          "grid": [
+            [
+              2,
+              2
+            ],
+            [
+              0,
+              0
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "action": {
+          "kind": "slide",
+          "direction": "left"
+        },
+        "after": {
+          "grid": [
+            [
+              4,
+              0
+            ],
+            [
+              0,
+              2
+            ]
+          ],
+          "score": null,
+          "scene": "playing"
+        },
+        "rules": {
+          "size": 2,
+          "target": 2048,
+          "start_tiles": 2,
+          "spawn": [
+            {
+              "value": 2,
+              "weight": 9
+            },
+            {
+              "value": 4,
+              "weight": 1
+            }
+          ]
+        }
+      },
+      "expected": []
+    }
+  ]
+}

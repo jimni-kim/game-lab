@@ -1,0 +1,30 @@
+{
+  "id": "tatham_mines",
+  "revision": 1,
+  "family_id": "minesweeper",
+  "fixture_only": false,
+  "controls": {"kind": "tap"},
+  "settling": {"timeout_s": 4, "interval_s": 0.15, "stable_s": 0.25, "animation_s": 0.5, "still": true},
+  "tolerance": 2,
+  "board": {
+    "frame": {"rgb": [153, 153, 153], "opposite": [255, 255, 255], "inset": [0.016216, 0.016216, 0.010811, 0.010811]},
+    "rows": 9,
+    "cols": 9,
+    "palette": [
+      {"value": 0, "rgb": [218, 218, 218]},
+      {"value": 1, "rgb": [0, 0, 255]},
+      {"value": 2, "rgb": [0, 128, 0]},
+      {"value": 3, "rgb": [255, 0, 0]},
+      {"value": 4, "rgb": [0, 0, 128]},
+      {"value": 5, "rgb": [128, 0, 0]},
+      {"value": 6, "rgb": [0, 128, 128]},
+      {"value": 7, "rgb": [0, 0, 0]},
+      {"value": 8, "rgb": [128, 128, 128]},
+      {"value": 9, "rgb": [230, 230, 230]},
+      {"value": 12, "any": true}
+    ]
+  },
+  "tray": [],
+  "rules": {"rows": 9, "cols": 9, "mines": 10, "flags": false},
+  "source": {"url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/mines.html"}
+}
