@@ -319,37 +319,23 @@ async def test_a_game_lost_after_enough_moves_still_gives_an_adapter_and_ends_as
     assert Store(tmp_path).load("https://mines.example/", "minesweeper") is not None
 
 
-async def test_a_way_past_a_screen_never_taps_the_cells_of_a_game_played_by_taps():
-    """Asked what is in the way, the model may answer with a tap; where the game's moves are taps on its cells, a
-    tap there is a move (and may end the game), so one is refused, asked for or replayed. A game played by keys
-    is not held to this: a tap on a card over its board is harmless."""
+async def test_a_tap_on_the_cells_is_sent_as_the_model_asked_and_told_back_when_it_changed_nothing():
+    """Asked what is in the way, the model may answer with a tap anywhere, the board's cells included: the
+    prompt tells it such a tap is a move, and nothing in the code refuses one. A tap that changed nothing is told
+    back with the next question, and the notice's own button then closes it."""
     fake = Mines()
     fake.covered = True
     reader = Reader(fake, recovering=[{"kind": "tap", "at": middle(BOARD)}, {"kind": "tap", "at": middle(fake.button)}])
     asked = Recovery(reader, "minesweeper")
-    assert asked.taps_cells and not Recovery(reader, "slide_merge").taps_cells
-    assert not await asked.attempt(fake, "label_failed", {"state": None, "recent": []}, avoid=[BOARD])
-    assert asked.log[-1]["action"] is None and asked.log[-1]["refused"] == {"kind": "tap", "at": middle(BOARD)}
-    assert not fake.taps and fake.covered
-    assert await asked.attempt(fake, "label_failed", {"state": None, "recent": []}, avoid=[BOARD])
-    assert fake.taps == [tuple(middle(fake.button))] and not fake.covered
-    # a kept tap that would land on the cells now is not replayed: the model is asked instead
-    fake.covered = True
-    kept = [{"action": {"kind": "tap", "at": middle(BOARD)}, "signature": recovery.signature(await fake.capture())}]
-    replayed = Recovery(Reader(fake, recovering=[{"kind": "give_up"}]), "minesweeper", known=kept)
-    assert not await replayed.attempt(fake, "label_failed", {"state": None, "recent": []}, avoid=[BOARD])
-    assert replayed.log[-1]["source"] == "model" and len(fake.taps) == 1
+    assert await asked.attempt(fake, "label_failed", {"state": None, "recent": []})
+    assert fake.taps == [tuple(middle(BOARD))] and fake.covered and asked.log[-1]["changed"] is False
+    assert await asked.attempt(fake, "label_failed", {"state": None, "recent": []})
+    assert reader.asked[-1][1]["tried"] == [{"action": {"kind": "tap", "at": middle(BOARD)}, "screen_changed": False}]
+    assert fake.taps[-1] == tuple(middle(fake.button)) and not fake.covered and fake.played == 0
 
 
-async def test_a_notice_over_the_first_moves_of_a_tap_game_is_closed_beside_the_cells_or_not_at_all():
-    """Once the first look has said where the board is, a notice over the first moves is got past with no tap on
-    the cells: a tap there is refused and the exploring stops, a tap on the notice's button lets it go on."""
-    fake = Mines()
-    fake.cover_after = 1
-    reader = Reader(fake, recovering=[{"kind": "tap", "at": middle(BOARD)}])
-    with pytest.raises(AdaptationFailed, match="label_failed"):
-        await Adaptation(reader, "minesweeper", compute=COMPUTE, recovery=Recovery(reader, "minesweeper")).explore(fake)
-    assert len(fake.taps) == 1 and fake.covered and fake.played == 1
+async def test_a_notice_over_the_first_moves_of_a_tap_game_is_closed_and_the_exploring_goes_on():
+    """A notice over the first moves is got past by the model's input, and the same game is explored on."""
     again = Mines()
     again.cover_after = 1
     reader = Reader(again, recovering=[{"kind": "tap", "at": middle(again.button)}])
@@ -359,18 +345,16 @@ async def test_a_notice_over_the_first_moves_of_a_tap_game_is_closed_beside_the_
     assert [kind for kind, _, _ in reader.asked].count("recover") == 1
 
 
-async def test_a_notice_during_play_of_a_tap_game_is_got_past_without_a_tap_on_the_cells(tmp_path):
-    """Play by generated code stops at a notice over the board; the model's way past it may not be a tap where
-    the measured cells lie. A tap on the notice's button, above the board, lets the same game go on to its end."""
+async def test_a_notice_during_play_of_a_tap_game_is_got_past_and_the_game_played_to_its_end(tmp_path):
+    """Play by generated code stops at a notice over the board; a tap on the notice's button, above the board,
+    lets the same game go on to its end."""
     fake = Mines()
     fake.cover_after = adaptation.EXPLORE_MOVES + 2
-    reader = Reader(fake, [source()], recovering=[{"kind": "tap", "at": middle(BOARD)}, {"kind": "tap", "at": middle(fake.button)}])
+    reader = Reader(fake, [source()], recovering=[{"kind": "tap", "at": middle(fake.button)}])
     played, made = await play_adaptive(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"),
                                        budget=Budget(60, COMPUTE, 300), store=Store(tmp_path))
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "play_until_end"), (played.record, made)
-    assert fake.over() and not fake.covered
-    refused = [entry for entry in played.recoveries if entry.get("refused")]
-    assert len(refused) == 1 and refused[0]["action"] is None and made["recovery"]["restored"] == 1
+    assert fake.over() and not fake.covered and made["recovery"]["restored"] == 1
     # every tap but the one on the button opened a cell; the move whose result the notice hid was played but
     # could not be confirmed
     assert fake.taps.count(tuple(middle(fake.button))) == 1

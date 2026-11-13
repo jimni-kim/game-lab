@@ -205,10 +205,8 @@ class Adaptation:
             try:
                 read = await self._label(surface, board, rules, accept)
             except AdaptationFailed as error:
-                # the board box, when known, is where this game's cells lie: no way past a screen taps them
                 if error.detail != "no_board" or self.recovery is None or tries >= MAX_TRIES or not await \
-                        self.recovery.attempt(surface, error.reason, {"state": self.last_state, "recent": []},
-                                              avoid=[board] if board else []):
+                        self.recovery.attempt(surface, error.reason, {"state": self.last_state, "recent": []}):
                     raise
                 tries += 1
                 continue

@@ -6,9 +6,8 @@ ended there: the model is shown the screen and why play stopped, and answers wit
 choosing (a tap, a key, a swipe, a wait), that nothing is in the way, or that it gives up. The input is sent,
 the screen looked at again by the code, and play goes on by the code as soon as it reads a board.
 
-The model never picks a move of the game: where the game is played by taps on its cells, a tap that lands
-on them is refused (`avoid`), asked for or replayed. An input that brought play back is kept with a small
-picture of the screen it was sent on, and sent again without asking when a screen like it comes back.
+The model never picks a move of the game. An input that brought play back is kept with a small picture of
+the screen it was sent on, and sent again without asking when a screen like it comes back.
 """
 from __future__ import annotations
 
@@ -98,14 +97,6 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
     return None
 
 
-def on_cells(action: dict[str, Any] | None, avoid: list[list[float]]) -> bool:
-    """Whether a tap lands in one of the boxes ([left, top, width, height]) the game's cells lie in."""
-    if not action or action["kind"] != TAP:
-        return False
-    x, y = action["at"]
-    return any(left <= x < left + width and top <= y < top + height for left, top, width, height in avoid)
-
-
 async def send(surface: Any, action: dict[str, Any]) -> None:
     if action["kind"] == TAP:
         await surface.tap(*action["at"], TAP_MS)
@@ -121,8 +112,6 @@ class Recovery:
     def __init__(self, model: Model, family_id: str, *, known: list[dict[str, Any]] | None = None,
                  accept_consent: bool = False) -> None:
         self.model, self.family_id, self.accept_consent = model, family_id, accept_consent
-        # whether the game's moves are taps on its cells: then a tap on them is a move, never a way past a screen
-        self.taps_cells = any(action["input"] == TAP for action in catalog.descriptor(family_id)["actions"])
         # inputs that brought play back, each with the small picture of the screen it was sent on
         self.known: list[dict[str, Any]] = list(known or [])
         # every time the code was stuck and what was done about it, for whoever measures the run
@@ -131,25 +120,19 @@ class Recovery:
         self.tried: list[dict[str, Any]] = []
         self.questions = 0
 
-    async def attempt(self, surface: Any, reason: str, context: dict[str, Any], *, timeout_s: float | None = None,
-                      avoid: list[list[float]] = ()) -> bool:
+    async def attempt(self, surface: Any, reason: str, context: dict[str, Any], *, timeout_s: float | None = None) -> bool:
         """One thing done about the screen as it is now. True when an input was sent (or waited out) and the
-        screen is worth another look; False when nothing is in the way, the model gives up or has no answer.
-        `avoid`: the boxes the game's cells lie in on this screen; a game played by taps there is not tapped
-        there (it would be a move, and on some games the end of the game)."""
+        screen is worth another look; False when nothing is in the way, the model gives up or has no answer."""
         png = await surface.capture()
         seen = signature(png)
         entry: dict[str, Any] = {"reason": reason, "source": "model", "situation": None, "action": None, "changed": None}
         self.log.append(entry)
         self._forget()
-        cells = list(avoid) if self.taps_cells else []
-        action = self._replay(seen, cells) if reason in REPLAYED_REASONS else None
+        action = self._replay(seen) if reason in REPLAYED_REASONS else None
         if action is not None:
             entry["source"] = "replay"
         else:
             action = await self._ask(png, reason, context, surface.kinds, entry, timeout_s)
-            if on_cells(action, cells):
-                entry["refused"], action = action, None
         entry["action"] = action
         if action is None or action["kind"] in (NONE, GIVE_UP):
             return False
@@ -170,13 +153,12 @@ class Recovery:
             self.known = [known for known in self.known if known["action"] != self.tried[-1]["action"]
                           or _distance(known["signature"], self.tried[-1]["signature"]) > REPLAY_DISTANCE]
 
-    def _replay(self, seen: list[int], cells: list[list[float]]) -> dict[str, Any] | None:
+    def _replay(self, seen: list[int]) -> dict[str, Any] | None:
         """The input that got past a screen like this one before; never twice on one screen, so one that
-        no longer works is followed by a question. One that would land on the game's cells now is not sent."""
+        no longer works is followed by a question."""
         if self.tried:
             return None
-        near = [known for known in self.known if _distance(known["signature"], seen) <= REPLAY_DISTANCE
-                and not on_cells(known["action"], cells)]
+        near = [known for known in self.known if _distance(known["signature"], seen) <= REPLAY_DISTANCE]
         return min(near, key=lambda known: _distance(known["signature"], seen))["action"] if near else None
 
     async def _ask(self, png: bytes, reason: str, context: dict[str, Any], kinds: frozenset[str],
