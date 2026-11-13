@@ -14,11 +14,19 @@ the set of tiles the game can add, not one predicted screen; the spawn weights o
 """
 from __future__ import annotations
 
-from itertools import product
+from itertools import pairwise, product
 
 DIRECTIONS = ("up", "down", "left", "right")
 DEFAULT_RULES = {"size": 4, "target": 2048, "start_tiles": 2,
                  "spawn": [{"value": 2, "weight": 9}, {"value": 4, "weight": 1}]}
+# what a general solver may rely on (`solvers.fits`): `outcomes` lists every state a move may leave
+CAPABILITIES = ("chance_enumerable",)
+# board evaluation, in tile ranks (log2) so it stays an integer: free cells, neighbours that can
+# join, rows and columns that rise or fall one way, and the biggest tile kept in a corner
+EMPTY_WEIGHT = 27
+MERGE_WEIGHT = 7
+MONOTONIC_PENALTY = 4
+CORNER_WEIGHT = 10
 
 
 # ── state ─────────────────────────────────────────────────────────────
@@ -114,6 +122,51 @@ def spawn_outcomes(grid, rules: dict) -> list[dict]:
 
 def max_tile(grid) -> int:
     return max(max(row) for row in grid)
+
+
+def outcomes(state: dict, action: dict, rules: dict) -> list[list]:
+    """Every state a move may leave, each with its weight: `[[weight, state]]`, the slide followed by each
+    tile the game may add. The scene the game then shows (its win or end message) is not predicted."""
+    if action.get("kind") == "continue_after_win":
+        return [[1, {**state, "scene": "playing"}]]
+    moved = slide(state["grid"], action.get("direction"))
+    if action.get("kind") != "slide" or not moved["moved"]:
+        raise ValueError("illegal_action")
+    score = None if state.get("score") is None else state["score"] + moved["gained"]
+    slid = {**state, "grid": moved["grid"], "score": score}
+    found = []
+    for spawned in spawn_outcomes(moved["grid"], rules):
+        r, c = spawned["cell"]
+        grid = [list(row) for row in moved["grid"]]
+        grid[r][c] = spawned["value"]
+        found.append([spawned["weight"], {**slid, "grid": grid}])
+    return found or [[1, slid]]
+
+
+def _rank(v: int) -> int:
+    return v.bit_length() - 1 if v else 0
+
+
+def grid_value(grid) -> int:
+    """A grid's worth to the policies (not the game's score), as an integer."""
+    size = len(grid)
+    empties = sum(1 for row in grid for v in row if v == 0)
+    merges = penalty = 0
+    lines = [list(row) for row in grid] + [[grid[r][c] for r in range(size)] for c in range(size)]
+    for line in lines:
+        ranks = [_rank(v) for v in line]
+        merges += sum(1 for a, b in pairwise(line) if a and a == b)
+        rising = sum(max(0, b - a) for a, b in pairwise(ranks))
+        falling = sum(max(0, a - b) for a, b in pairwise(ranks))
+        penalty += min(rising, falling)
+    top = max_tile(grid)
+    corner = _rank(top) if top in (grid[0][0], grid[0][-1], grid[-1][0], grid[-1][-1]) else 0
+    return EMPTY_WEIGHT * empties + MERGE_WEIGHT * merges - MONOTONIC_PENALTY * penalty + CORNER_WEIGHT * corner
+
+
+def evaluate(state: dict, rules: dict) -> int:
+    """A state's worth to a search (not the game's score)."""
+    return grid_value(state["grid"])
 
 
 def status(state: dict, rules: dict, goal: dict) -> dict:

@@ -15,6 +15,7 @@ import json
 from types import ModuleType
 from typing import Any
 
+from .. import solvers
 from ..contracts import (
     ActionPlan,
     Assessment,
@@ -55,6 +56,10 @@ class GridFamily:
     def describe(self) -> dict[str, Any]:
         return self.descriptor
 
+    def policies(self) -> list[str]:
+        """Every policy a run may name: the family's own, then the general solvers its rule model fits."""
+        return [*self.descriptor["policies"], *solvers.generic_policies(self.model)]
+
     def bind(self, profile: dict[str, Any] | None) -> GridFamily:
         return GridFamily(self.descriptor, self.model, self.solver, profile)
 
@@ -81,12 +86,20 @@ class GridFamily:
                 excluded: tuple[dict[str, Any], ...] = ()) -> ActionPlan | NeedObservation:
         if state.unknown_fields:
             return NeedObservation("unknown_cells")
-        chosen = self.solver.choose(state.payload, self.rules, policy, compute, list(excluded))["action"]
+        chosen = self.choose(state.payload, policy, compute, excluded)
         if chosen is None:
             return NeedObservation("no_legal_action")
         return ActionPlan(id=f"plan-{state.id}", based_on_state=state.id, rule_revision=self.revision,
                           policy_revision=f"{self.id}.{policy}.{self.revision}", steps=(chosen,),
                           verify_every=self.verify_every)
+
+    def choose(self, payload: dict[str, Any], policy: str, compute: int,
+               excluded: tuple[dict[str, Any], ...] = ()) -> dict[str, Any] | None:
+        """The move `policy` picks on a fully read state: the family's own solver's, or a general solver's
+        over the rule model alone."""
+        if policy in solvers.GENERIC:
+            return solvers.GENERIC[policy].choose(payload, self.rules, self.model, compute, list(excluded))["action"]
+        return self.solver.choose(payload, self.rules, policy, compute, list(excluded))["action"]
 
     def explain(self, before: dict[str, Any], action: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
         """The values the rules give a move's unread cells (`[{"cell": [r, c], "value": v}]`), or []."""

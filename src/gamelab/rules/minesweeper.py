@@ -22,6 +22,9 @@ COVERED, FLAG, MINE, EXPLODED = 9, 10, 11, 12
 MARKED = (FLAG, MINE)
 NEIGHBOURS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 DEFAULT_RULES = {"rows": 9, "cols": 9, "mines": 10, "flags": False}
+# what a general solver may rely on (`solvers.fits`): where the mines lie is hidden and what a move opens
+# cannot be listed, so there is no `outcomes`; the numbers shown constrain it
+CAPABILITIES = ("hidden", "constraints")
 # the replay game's stream of draws: a fixed linear congruential generator (Knuth's MMIX constants)
 LCG_MULTIPLIER, LCG_INCREMENT = 6364136223846793005, 1442695040888963407
 

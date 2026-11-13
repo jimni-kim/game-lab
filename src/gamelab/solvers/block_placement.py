@@ -6,34 +6,11 @@ randomness) and ported with it. Placements are tried in the rule model's order a
 """
 from __future__ import annotations
 
-from itertools import product
+from ..rules.block_placement import apply, board_value as evaluate, legal_actions
 
-from ..rules.block_placement import EMPTY, apply, legal_actions
-
-# board evaluation: free cells are worth keeping, single shut-in holes and ragged edges are not
-EMPTY_WEIGHT = 2
-HOLE_PENALTY = 5
-EDGE_PENALTY = 1
 # the search looks this many of the best-looking moves deeper at each level
 SEARCH_WIDTH = 3
 POLICIES = ("greedy", "search")
-
-
-def evaluate(board) -> int:
-    """A board's worth to the policies (not the game's score): free cells, minus shut-in holes and edges."""
-    rows, cols = len(board), len(board[0])
-    empties = holes = edges = 0
-    for r, c in product(range(rows), range(cols)):
-        if board[r][c] == EMPTY:
-            empties += 1
-            around = [(r + dr, c + dc) for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))]
-            if all(not (0 <= y < rows and 0 <= x < cols) or board[y][x] != EMPTY for y, x in around):
-                holes += 1
-        if c + 1 < cols and (board[r][c] == EMPTY) != (board[r][c + 1] == EMPTY):
-            edges += 1
-        if r + 1 < rows and (board[r][c] == EMPTY) != (board[r + 1][c] == EMPTY):
-            edges += 1
-    return EMPTY_WEIGHT * empties - HOLE_PENALTY * holes - EDGE_PENALTY * edges
 
 
 def _children(state: dict, rules: dict) -> list[tuple[int, dict, dict]]:

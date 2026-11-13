@@ -59,7 +59,7 @@ def check(goal: GoalSpec, budget: Budget, family_id: str, policy: str | None) ->
         raise ValueError("invalid_budget")
     family = catalog.family(family_id)
     policy = policy or family.descriptor["default_policy"]
-    if policy not in family.describe()["policies"]:
+    if policy not in family.policies():
         raise ValueError("policy_unknown")
     return policy
 

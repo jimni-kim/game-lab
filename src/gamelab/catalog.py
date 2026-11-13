@@ -63,6 +63,10 @@ def descriptor(family_id: str) -> dict[str, Any]:
         if missing := [name for name in functions if not callable(getattr(module, name, None))] \
                 + [name for name in values if not hasattr(module, name)]:
             raise ValueError(f"game family {family_id}: the {kind} lacks {', '.join(missing)}")
+    if unknown := set(model.CAPABILITIES) - set(rules.CAPABILITY_NAMES):
+        raise ValueError(f"game family {family_id}: unknown capabilities {sorted(unknown)}")
+    if set(model.CAPABILITIES) & set(rules.ENUMERATING) and not callable(getattr(model, "outcomes", None)):
+        raise ValueError(f"game family {family_id}: the rule model lists no outcomes")
     if data["id"] != family_id:
         problems.append(f"id {data['id']!r} is not the file's name")
     # a model reads the state's fields by this description, so it names exactly the fields the rule model writes

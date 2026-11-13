@@ -23,7 +23,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from .. import catalog
+from .. import catalog, solvers
 from ..environments.replay import DRAW_BITS
 from .measure import revision
 
@@ -46,7 +46,7 @@ def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int) -
     while moves < max_moves:
         started = time.perf_counter()
         # a policy reads only what the screen would show, never what the game hides (where mines lie)
-        action = family.solver.choose(family.shown(copy.deepcopy(state)), family.rules, policy, compute)["action"]
+        action = family.choose(family.shown(copy.deepcopy(state)), policy, compute)
         took_ms.append((time.perf_counter() - started) * 1000)
         if action is None:
             ended = "no_move"
@@ -117,13 +117,17 @@ def main(args: argparse.Namespace) -> int:
 
     seeds = range(args.first_seed, args.first_seed + args.games)
     runs: list[tuple[str, str, int]] = []
+    chosen: dict[str, str] = {}
     for family_id in args.family or sorted(catalog.MODELS):
         family = catalog.family(family_id)
-        baseline, chosen = family.baseline_policy, family.descriptor["default_policy"]
+        baseline, own = family.baseline_policy, family.descriptor["default_policy"]
+        chosen[family_id] = own
         # the baseline ignores the budget; it is played once at the smallest one
         budgets = args.compute or DEFAULT_COMPUTE[family_id]
         runs.append((family_id, baseline, min(budgets)))
-        runs += [(family_id, chosen, budget) for budget in budgets]
+        runs += [(family_id, own, budget) for budget in budgets]
+        # the general solvers the rule model fits, at the same budgets: what a game with no solver of its own gets
+        runs += [(family_id, generic, budget) for generic in solvers.generic_policies(family.model) for budget in budgets]
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {run: [pool.submit(play, *run, seed, args.max_moves) for seed in seeds] for run in runs}
@@ -139,6 +143,9 @@ def main(args: argparse.Namespace) -> int:
             "family_revision": family.revision, "rules": family.rules,
             "runs": [{"policy": policy, "compute": compute, **summarize(games[run]),
                       **({"vs_baseline": paired(base, games[run])} if run != family_runs[0] else {}),
+                      # a general solver against the family's own at the same budget
+                      **({"vs_own": paired(games[(family_id, chosen[family_id], run[2])], games[run])}
+                         if run[1] in solvers.GENERIC else {}),
                       "per_game": [{k: v for k, v in g.items() if k != "ms_decisions"} for g in games[run]]}
                      for run in family_runs for _, policy, compute in [run]]}
     if args.out:

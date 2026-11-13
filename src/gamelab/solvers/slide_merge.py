@@ -6,19 +6,11 @@ randomness) and ported with it. Directions are tried in DIRECTIONS order and a t
 """
 from __future__ import annotations
 
-from itertools import pairwise
-
-from ..rules.slide_merge import DIRECTIONS, legal_actions, max_tile, slide, spawn_outcomes
+from ..rules.slide_merge import DIRECTIONS, grid_value as evaluate, legal_actions, slide, spawn_outcomes
 
 # the baseline's fixed preference: keep the big tiles down and to the left
 BASELINE_ORDER = ("down", "left", "right", "up")
 POLICIES = ("baseline", "expectimax")
-# board evaluation, in tile ranks (log2) so it stays an integer: free cells, neighbours that can
-# join, rows and columns that rise or fall one way, and the biggest tile kept in a corner
-EMPTY_WEIGHT = 27
-MERGE_WEIGHT = 7
-MONOTONIC_PENALTY = 4
-CORNER_WEIGHT = 10
 # a line the search sees end with no move left
 DEAD_END = -(1 << 30)
 # the deepest look-ahead in moves, whatever the budget allows
@@ -27,27 +19,6 @@ MAX_DEPTH = 6
 
 class _OverBudget(Exception):
     pass
-
-
-def _rank(v: int) -> int:
-    return v.bit_length() - 1 if v else 0
-
-
-def evaluate(grid) -> int:
-    """A grid's worth to the policies (not the game's score), as an integer."""
-    size = len(grid)
-    empties = sum(1 for row in grid for v in row if v == 0)
-    merges = penalty = 0
-    lines = [list(row) for row in grid] + [[grid[r][c] for r in range(size)] for c in range(size)]
-    for line in lines:
-        ranks = [_rank(v) for v in line]
-        merges += sum(1 for a, b in pairwise(line) if a and a == b)
-        rising = sum(max(0, b - a) for a, b in pairwise(ranks))
-        falling = sum(max(0, a - b) for a, b in pairwise(ranks))
-        penalty += min(rising, falling)
-    top = max_tile(grid)
-    corner = _rank(top) if top in (grid[0][0], grid[0][-1], grid[-1][0], grid[-1][-1]) else 0
-    return EMPTY_WEIGHT * empties + MERGE_WEIGHT * merges - MONOTONIC_PENALTY * penalty + CORNER_WEIGHT * corner
 
 
 def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[dict] = ()) -> dict:
