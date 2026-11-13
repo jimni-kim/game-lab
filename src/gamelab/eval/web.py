@@ -339,10 +339,13 @@ async def main(args: argparse.Namespace) -> int:
     if args.viewport:
         site = {**site, "resize": args.viewport}
     registered = profiles.load(args.profile) if args.profile else None
-    if registered is None and ("url" not in site or "family" not in site):
+    if args.identify and not args.generate:
+        raise SystemExit("--identify plays by a generated adapter: give --generate")
+    if registered is None and ("url" not in site or not (args.identify or "family" in site)):
         raise SystemExit(f"{args.site} in sites.json names no url and family: give --profile")
     url = site.get("url") or registered.data["source"]["url"]
-    family_id = registered.family_id if registered else site["family"]
+    # with --identify nobody says which game the page shows: the harness finds out from the screen
+    family_id = None if args.identify else (registered.family_id if registered else site["family"])
     # with --unregistered the harness is given the game's family and no profile, and makes one from a look;
     # the profile here only names the page
     profile = None if args.unregistered else registered
@@ -383,3 +386,5 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "adapters",
                         help="where generated adapters are kept by site and reused")
     parser.add_argument("--regenerate", action="store_true", help="write a new adapter even when one is kept for the site")
+    parser.add_argument("--identify", action="store_true",
+                        help="with --generate: do not tell the harness the game's family; it is found from the screen")

@@ -109,8 +109,9 @@ async def send(surface: Any, action: dict[str, Any]) -> None:
 
 
 class Recovery:
-    def __init__(self, model: Model, family_id: str, *, known: list[dict[str, Any]] | None = None,
+    def __init__(self, model: Model, family_id: str | None, *, known: list[dict[str, Any]] | None = None,
                  accept_consent: bool = False) -> None:
+        # `family_id` None: the game is not known yet (a screen before any board was seen)
         self.model, self.family_id, self.accept_consent = model, family_id, accept_consent
         # inputs that brought play back, each with the small picture of the screen it was sent on
         self.known: list[dict[str, Any]] = list(known or [])
@@ -167,7 +168,8 @@ class Recovery:
         timeout = RECOVER_TIMEOUT_S if timeout_s is None else min(RECOVER_TIMEOUT_S, timeout_s)
         if timeout <= 0:
             return None
-        asked = {"family": catalog.descriptor(self.family_id), "reason": reason, "screen": list(size),
+        asked = {"family": catalog.descriptor(self.family_id) if self.family_id else None, "reason": reason,
+                 "screen": list(size),
                  "inputs": sorted(kind for kind, needs in NEEDS.items() if needs in kinds) + [WAIT],
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, **context,
                  "tried": [{"action": tried["action"], "screen_changed": tried["screen_changed"]}

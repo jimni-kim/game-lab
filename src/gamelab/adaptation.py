@@ -176,6 +176,8 @@ class Adaptation:
         self.frames: list[bytes] = []
         # what each screen read said of the rule values a game may be played without knowing (`_told`)
         self.told: list[dict[str, Any]] = []
+        # the first screen as read already (`probe`), for the exploring to start from
+        self.first: tuple[bytes, dict[str, Any], list[int], dict[str, Any]] | None = None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -234,12 +236,24 @@ class Adaptation:
                 frames.append(frame)
         return frames
 
+    async def probe(self, surface: Surface) -> bool:
+        """Whether the screen as it is shows a board of this family: read once by the model, with nothing done
+        about a screen that shows none. The reading is kept for the exploring to start from."""
+        self.told, self.first = [], None
+        try:
+            png, state, board, rules = await self._label(surface, None, None, retries=0)
+        except AdaptationFailed:
+            return False
+        self.last_state, self.frames = state, await self._frames(surface, png)
+        self.first = png, state, board, rules
+        return True
+
     async def _label(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
-                     accept: Any = None) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
+                     accept: Any = None, retries: int = LABEL_RETRIES) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
         """One screen read by the model into a state the rule model accepts whole (and `accept`, when given,
         takes as the last move's result); asked again on a fresh capture when it is not."""
         problem = "no_board"
-        for _ in range(1 + LABEL_RETRIES):
+        for _ in range(1 + retries):
             png = await surface.capture()
             size = _size(png)
             shape = None
@@ -323,8 +337,10 @@ class Adaptation:
         """The game's first moves, each screen read by the model and each move the solver's. A game that ends
         meanwhile (a mine under a first guess) ends the exploring: its last screen is a look like the others,
         and the trace is kept when enough was seen before it; nothing is started anew here."""
-        self.told = []
-        png, state, board, rules = await self._read(surface, None, None)
+        if self.first is None:
+            self.told = []
+            self.first = await self._read(surface, None, None)
+        (png, state, board, rules), self.first = self.first, None
         trace = Trace(self.family_id, rules, await surface.address())
         family = catalog.family(self.family_id).bind({"rules": rules})
         over = False
@@ -705,6 +721,49 @@ class Adaptive:
             self.store.save_recoveries(self.trace.site, self.family_id, self.recovery.known)
 
 
+# questions asked and inputs sent to reach a board before a game is given up as not shown
+IDENTIFY_TOKENS, IDENTIFY_TIMEOUT_S = 1000, 60.0
+MOST_CANDIDATES = 3
+
+
+def explorable() -> list[str]:
+    """The families a game can be recognised as: those whose first moves can be played before an adapter exists."""
+    return [family_id for family_id in sorted(catalog.MODELS)
+            if catalog.descriptor(family_id).get("discovery", {}).get("controls", {}).get("kind") in EXPLORED_WITH]
+
+
+async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: str | None = None) -> dict[str, Any]:
+    """Which families the game on the screen may be, as a model sees it (PLAN §10, game identification):
+    `{"families": [ids, likeliest first], "questions", "situation"}`. A screen that shows no game in play is
+    not the end of it: the model gets past it with inputs of its own, and the screen is asked about again.
+    The answer is a guess; the caller checks it by reading the board and playing moves by the family's rules."""
+    listed = [{key: descriptor[key] for key in ("id", "summary", "board", "actions")}
+              for descriptor in map(catalog.descriptor, explorable())]
+    known = {family["id"] for family in listed}
+    found: dict[str, Any] = {"families": [], "questions": 0, "situation": None}
+    for tries in range(MAX_TRIES + 1):
+        png = await surface.capture()
+        context = {"families": listed, **({"hint": hint} if hint else {})}
+        found["questions"] += 1
+        result = await model.complete(TurnRequest(
+            system_stable=_prompt("identify_game.md"), max_tokens=IDENTIFY_TOKENS, timeout_s=IDENTIFY_TIMEOUT_S,
+            messages=[Msg("user", [{"type": "text", "text": json.dumps(context)}, _image(png)])]))
+        answer = _json(result.text)
+        answer = answer if isinstance(answer, dict) else {}
+        if isinstance(answer.get("situation"), str):
+            found["situation"] = answer["situation"][:300]
+        named = answer.get("families") if isinstance(answer.get("families"), list) else []
+        found["families"] = list(dict.fromkeys(name for name in named if name in known))[:MOST_CANDIDATES]
+        if found["families"] or answer.get("screen") == "game":
+            break
+        if tries == MAX_TRIES or not await recovery.attempt(surface, "game_not_shown", {"state": None, "recent": []}):
+            break
+    if found["families"]:
+        recovery.succeeded()
+    found["inputs"] = recovery.summary()["inputs"]
+    return found
+
+
 async def adapter_for(surface: Surface, model: Model, family_id: str, *, store: Store | None = None,
                       policy: str | None = None, compute: int = 200, fresh: bool = False
                       ) -> tuple[GeneratedAdapter, Made]:
@@ -726,32 +785,89 @@ MISREAD_REASONS = ("inconsistent", "unknown", "absent")
 MAX_RELEARNS = 16
 
 
-async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal: Any, budget: Any,
-                        store: Store | None = None, policy: str | None = None, fresh: bool = False,
-                        **options: Any) -> tuple[Any, dict[str, Any]]:
-    """One game read by generated code from its first screen to its end: `play` by the site's adapter, and
-    each time it stops at a screen the adapter cannot read, one more look learned and play taken up again
-    with what is left of the budget. Returns the whole game as one `Run` and how the adapter was made."""
-    from .contracts import Budget, GoalSpec, Outcome
-    from .play import Run, play
-    from .session import ended
-
-    adaptive = Adaptive(surface, model, family_id, store=store, policy=policy, compute=budget.compute, fresh=fresh,
-                        accept_consent=options.get("accept_consent", False))
-    started = time.monotonic()
-    whole = Run(record={})
-    used = confirmed = 0
-    try:
+async def _begin(surface: Surface, model: Model, family_id: str | None, make: Any, store: Store | None,
+                 fresh: bool, hint: str | None) -> tuple[Adaptive | None, GeneratedAdapter | None, dict[str, Any]]:
+    """The game's `Adaptive` and its adapter, for the family given or, with none given, the one the game is
+    found to be: the family a kept adapter of this site names, else each family a model names for the screen,
+    likeliest first, taken when its board is read from the screen and its first moves do what its rules say.
+    Also what was found on the way (`identified`, `failed`); the adapter is None when none could be made."""
+    found: dict[str, Any] = {}
+    candidates = [family_id]
+    if family_id is None:
+        site = await surface.address()
+        kept = [] if store is None or fresh else [name for name in explorable() if store.load(site, name) is not None]
+        if kept:
+            candidates, found["identified"] = kept[:1], {"family": kept[0], "source": "kept", "questions": 0}
+        else:
+            asked = await identify(surface, model, Recovery(model, None, known=[]), hint=hint)
+            candidates = asked["families"]
+            found["identified"] = {"family": None, "source": "model", "candidates": candidates, "tried": [],
+                                   "questions": asked["questions"], "inputs": asked["inputs"],
+                                   "situation": asked["situation"]}
+            if not candidates:
+                return None, None, {**found, "failed": "game_not_identified", "detail": asked["situation"] or ""}
+    adaptive, failure = None, AdaptationFailed("game_not_identified")
+    for candidate in candidates:
+        if adaptive is not None:
+            adaptive.close()
+        adaptive = make(candidate)
+        asked = found.get("identified", {}).get("source") == "model"
         try:
+            if asked:
+                found["identified"]["tried"].append(candidate)
+                # a family the screen's board cannot be read as is not this game: the next one is tried
+                if not await adaptive.adaptation.probe(surface):
+                    failure = AdaptationFailed("game_not_identified", f"no {candidate} board was read from the screen")
+                    continue
             adapter = await adaptive.start()
         except Exception as error:
             # a model that could not be reached while the adapter was made ends the game too, with its record
             if not isinstance(error, AdaptationFailed):
                 log.exception("adaptation failed")
                 error = AdaptationFailed("model_failed", f"{type(error).__name__}: {error}")
-            whole.record = ended(Outcome.UNSUPPORTED, f"adaptation_{error.reason}", family_id=family_id)
-            whole.recoveries = list(adaptive.recovery.log)
-            return whole, {**adaptive.summary(), "failed": error.reason, "detail": error.detail[:2000]}
+            failure = error
+            # first moves that did not do what this family's rules say: the game may be another's
+            if asked and error.reason == "label_failed":
+                continue
+            break
+        if "identified" in found:
+            found["identified"]["family"] = candidate
+        return adaptive, adapter, found
+    return adaptive, None, {**found, "failed": failure.reason, "detail": failure.detail[:2000]}
+
+
+async def play_adaptive(surface: Surface, model: Model, family_id: str | None, *, goal: Any, budget: Any,
+                        store: Store | None = None, policy: str | None = None, fresh: bool = False,
+                        hint: str | None = None, **options: Any) -> tuple[Any, dict[str, Any]]:
+    """One game read by generated code from its first screen to its end: `play` by the site's adapter, and
+    each time it stops at a screen the adapter cannot read, one more look learned and play taken up again
+    with what is left of the budget. Returns the whole game as one `Run` and how the adapter was made.
+    `family_id` None: nobody says which game this is, and it is found out from the screen (`_begin`); `hint`
+    is what the person said of it, if anything."""
+    from .contracts import Budget, GoalSpec, Outcome
+    from .play import Run, play
+    from .session import ended
+
+    def make(family: str) -> Adaptive:
+        return Adaptive(surface, model, family, store=store, policy=policy, compute=budget.compute, fresh=fresh,
+                        accept_consent=options.get("accept_consent", False))
+
+    started = time.monotonic()
+    whole = Run(record={})
+    used = confirmed = 0
+    adaptive = None
+    try:
+        try:
+            adaptive, adapter, found = await _begin(surface, model, family_id, make, store, fresh, hint)
+        except Exception as error:
+            log.exception("identification failed")
+            adapter, found = None, {"failed": "model_failed", "detail": f"{type(error).__name__}: {error}"[:2000]}
+        if adapter is None:
+            reason = found["failed"] if found["failed"] == "game_not_identified" else f"adaptation_{found['failed']}"
+            whole.record = ended(Outcome.UNSUPPORTED, reason, family_id=adaptive.family_id if adaptive else family_id)
+            whole.recoveries = list(adaptive.recovery.log) if adaptive else []
+            return whole, {**(adaptive.summary() if adaptive else {}), **found}
+        family_id = adaptive.family_id
         stalled = 0
         while True:
             left = None if budget.max_seconds is None else budget.max_seconds - (time.monotonic() - started)
@@ -775,9 +891,10 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str, *, goal:
             try:
                 adapter = await adaptive.relearn(misread=record.get("reason") in MISREAD_REASONS)
             except AdaptationFailed as error:
-                return whole, {**adaptive.summary(), "failed": error.reason, "detail": error.detail[:2000]}
+                return whole, {**adaptive.summary(), **found, "failed": error.reason, "detail": error.detail[:2000]}
             if adapter is None:
                 break
-        return whole, adaptive.summary()
+        return whole, {**adaptive.summary(), **found}
     finally:
-        adaptive.close()
+        if adaptive is not None:
+            adaptive.close()
