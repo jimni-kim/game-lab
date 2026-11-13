@@ -36,8 +36,10 @@ eval/                       평가 CLI
 # 풀이기 실력 (화면 없음, 비용 없음)
 .venv/bin/python -m gamelab.eval policies --games 100 --out out/policies.json
 
+# 모델 설정은 .env에 둔다 (.env.example 참고). 쓸 수 있는 모델 이름 보기:
+.venv/bin/python -m gamelab.eval models
+
 # 웹 실사이트 (모델 비용이 든다. --vision-model '' 이면 모델에 묻지 않음)
-export AGENTIC_OPENROUTER_KEY=...
 .venv/bin/python -m gamelab.eval web --profile ovolve_2048 --games 3 --objective reach_value --target 2048 --compute 500 --out out/ovolve
 .venv/bin/python -m gamelab.eval web --site march2048_4x4 --games 3 --compute 500 --out out/march   # 프로필 없는 사이트
 

@@ -7,9 +7,9 @@ game and are not counted as the harness's moves.
   .venv/bin/python -m gamelab.eval web --profile ovolve_2048 --games 3 \\
       --objective reach_value --target 2048 --compute 500 --out out/ovolve
 
-The bounded model reader asks `--vision-model` (an OpenRouter model id unless `--model-base` names another
-OpenAI-compatible API; the key comes from AGENTIC_OPENROUTER_KEY or OPENROUTER_API_KEY) about screens the
-code cannot read; with `--vision-model ''` no model is asked and such a screen stays unread.
+The bounded model reader asks `--vision-model` (AGENTIC_OPENAI_MODEL unless given; a name the LiteLLM proxy
+serves, or another OpenAI-compatible API's with `--model-base`; the key is AGENTIC_OPENAI_KEY) about screens
+the code cannot read; with `--vision-model ''` no model is asked and such a screen stays unread.
 
 `--perturb KIND@N[:ARG]` (repeatable) disturbs a game after the harness's Nth input, as a person or a site
 would; the harness is not told:

@@ -40,9 +40,10 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-actions", type=int, default=3000)
     parser.add_argument("--max-seconds", type=float, default=7200)
     parser.add_argument("--out", type=Path, required=True, help="results and screenshots (out/ is not tracked)")
-    parser.add_argument("--vision-model", default=model.DEFAULT_MODEL,
-                        help=f"the model the bounded reader asks ({model.DEFAULT_MODEL}; '' asks none)")
-    parser.add_argument("--model-base", default=model.OPENROUTER_BASE, help="an OpenAI-compatible API's base URL")
+    parser.add_argument("--vision-model", default=model.default_model(),
+                        help=f"the model the bounded reader asks ({model.MODEL_VARIABLE} unless given; '' asks none)")
+    parser.add_argument("--model-base", default=model.api_base(),
+                        help=f"an OpenAI-compatible API's base URL ({model.BASE_VARIABLE}, else {model.DEFAULT_BASE})")
     parser.add_argument("--accept-consent", action="store_true",
                         help="agree to a site's terms when it offers no refusal (else the game stops there)")
 
@@ -58,7 +59,7 @@ def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, mod
         return None, None
     key = model.api_key()
     if not key:
-        raise SystemExit(f"asking {args.vision_model} needs a key: set one of {', '.join(model.KEY_VARIABLES)}")
+        raise SystemExit(f"asking {args.vision_model} needs a key: set {model.KEY_VARIABLE}")
     client = model.ChatClient(args.vision_model, key, base=args.model_base)
     return client, model.Recorded(client, model.prompts(catalog.FRAGMENT / "prompts"))
 

@@ -1,4 +1,4 @@
-"""Measure the harness: `python -m gamelab.eval policies | web | android ...`."""
+"""Measure the harness: `python -m gamelab.eval policies | web | android ...`; `models` lists what the model API serves."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ import inspect
 import os
 from pathlib import Path
 
+from .. import model
 from . import android, measure, policies, web
 
 
@@ -20,6 +21,14 @@ def load_env(path: Path) -> None:
             os.environ.setdefault(name.strip(), value.strip().strip("'\""))
 
 
+async def models(args: argparse.Namespace) -> int:
+    key = model.api_key()
+    if not key:
+        raise SystemExit(f"set {model.KEY_VARIABLE}")
+    print("\n".join(await model.available(key, model.api_base())))
+    return 0
+
+
 def main() -> int:
     load_env(measure.ROOT / ".env")
     parser = argparse.ArgumentParser(prog="python -m gamelab.eval", description=__doc__)
@@ -28,6 +37,8 @@ def main() -> int:
         command = commands.add_parser(name, description=module.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
         module.configure(command)
         command.set_defaults(run=module.main)
+    listing = commands.add_parser("models", description="The model names the API serves this key.")
+    listing.set_defaults(run=models)
     args = parser.parse_args()
     run = args.run
     del args.run

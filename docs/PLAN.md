@@ -100,7 +100,7 @@ key(key) / tap(x, y, ms) / drag(x0, y0, x1, y1, ms)
 - 결과: 판마다 `NAME-NN.json`(결과, 요청, 세션 기록, 수별 입력, 모델 답)과 `NAME-NN-final.png`, 실행마다 `summary.json`.
 - 지표: 끝 종류와 이유, 확인된 수, 수별 효과(확인·없음·불일치), 오독(정답키가 있는 사이트), 재전송, 한 수 시간, 캡처 수, 모델 질문 수와 토큰, 페이지가 말하는 끝과의 일치.
 - `--perturb`: `resize`, `cover`, `cover_bare`, `consent`, `consent_agree`, `tab`, `navigate`, `user`, `cancel`, `filter`. `disconnect`(task 재시작)는 task 저장을 뺐으므로 없다.
-- 모델: OpenAI 호환 API. 기본은 OpenRouter, 키는 환경 변수 `AGENTIC_OPENROUTER_KEY`(또는 `OPENROUTER_API_KEY`).
+- 모델: OpenAI 호환 API. 기본은 Azure 앞의 LiteLLM 프록시(`https://litellm.agenticfw.dev/v1`). 키는 `AGENTIC_OPENAI_KEY`, 모델 이름은 `AGENTIC_OPENAI_MODEL` 또는 `--vision-model`(2026-11-13 사용자 결정으로 OpenRouter에서 바꿈).
 
 ## 6. 분리 결과 (2026-11-13)
 
@@ -112,7 +112,7 @@ key(key) / tap(x, y, ms) / drag(x0, y0, x1, y1, ms)
   - 동의 버튼만 있는 약관 요청은 `--accept-consent`일 때만 누른다. 게임의 계속하기 버튼은 묻지 않고 누른다.
   - 정책 평가에 지뢰찾기가 들어갔다(승률). 원본 도구는 지뢰찾기에서 오류가 났다.
 - 확인하지 못한 것
-  - **실사이트와 실제 모델 호출.** 웹 평가는 로컬 페이지로만 끝까지 돌렸다. OpenRouter 호출은 가짜 응답으로만 시험했다.
+  - **실사이트와 실제 모델 호출.** 웹 평가는 로컬 페이지로만 끝까지 돌렸다. 모델 API 호출은 가짜 응답으로만 시험했다.
   - **실제 Android 기기.** adb 명령은 가짜 adb로만 시험했다. 에뮬레이터 `army-game`은 켜지 않았다.
   - `--scale`(devicePixelRatio)과 `tab`·`navigate`·`filter`·`resize` 교란은 옮겼지만 돌려 보지 않았다.
 - 알려진 한계

@@ -1,8 +1,8 @@
 """The model the harness asks about a screen: one bounded question, one text answer, no tools.
 
 A question is a `TurnRequest` (a fixed system prompt, one user message of JSON context and a PNG) and its
-answer a `TurnResult`. `ChatClient` sends it to an OpenAI-compatible chat completions API (OpenRouter
-unless told otherwise) with the key from the environment; anything with an async `complete(request)`
+answer a `TurnResult`. `ChatClient` sends it to an OpenAI-compatible chat completions API (the team's
+LiteLLM proxy in front of Azure unless told otherwise) with the key from the environment; anything with an async `complete(request)`
 can stand in for it (a test's canned answers, `Recorded` around a client).
 """
 from __future__ import annotations
@@ -16,12 +16,10 @@ from typing import Any, Protocol
 
 import httpx
 
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-# where the key is looked for, in this order
-KEY_VARIABLES = ("AGENTIC_OPENROUTER_KEY", "OPENROUTER_API_KEY")
-# the model a run asks unless told otherwise: the reader asks only at the start and on screens the code
-# cannot read, and a weaker model's misreading is what a run would then measure
-DEFAULT_MODEL = "anthropic/claude-opus-5.5"
+# the API asked unless told otherwise (BASE_VARIABLE, --model-base): the LiteLLM proxy in front of Azure
+DEFAULT_BASE = "https://litellm.agenticfw.dev/v1"
+# the environment's names for the key, the API's base URL and the model, as ARMY names them
+KEY_VARIABLE, BASE_VARIABLE, MODEL_VARIABLE = "AGENTIC_OPENAI_KEY", "AGENTIC_OPENAI_BASE", "AGENTIC_OPENAI_MODEL"
 # a whole answer in one Markdown code fence, as some models wrap JSON
 _FENCED = re.compile(r"\A\s*```[a-zA-Z]*\n(.*?)\n?```\s*\Z", re.DOTALL)
 
@@ -64,11 +62,28 @@ class Model(Protocol):
 
 
 def api_key() -> str | None:
-    return next((value for name in KEY_VARIABLES if (value := os.environ.get(name, "").strip())), None)
+    return os.environ.get(KEY_VARIABLE, "").strip() or None
+
+
+def api_base() -> str:
+    return os.environ.get(BASE_VARIABLE, "").strip() or DEFAULT_BASE
+
+
+def default_model() -> str:
+    """The model a run asks unless told otherwise: the one the environment names, else none."""
+    return os.environ.get(MODEL_VARIABLE, "").strip()
+
+
+async def available(key: str, base: str) -> list[str]:
+    """The model names the API serves this key."""
+    async with httpx.AsyncClient(headers={"Authorization": f"Bearer {key}"}) as http:
+        response = await http.get(f"{base.rstrip('/')}/models", timeout=30)
+        response.raise_for_status()
+        return sorted(entry["id"] for entry in response.json()["data"])
 
 
 class ChatClient:
-    def __init__(self, model: str, key: str, *, base: str = OPENROUTER_BASE, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, model: str, key: str, *, base: str = DEFAULT_BASE, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.model, self.base = model, base.rstrip("/")
         self._http = httpx.AsyncClient(headers={"Authorization": f"Bearer {key}"}, transport=transport)
 
