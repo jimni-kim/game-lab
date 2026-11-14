@@ -2,12 +2,15 @@
 
 A question is a `TurnRequest` (a fixed system prompt, one user message of JSON context and a PNG) and its
 answer a `TurnResult`. `ChatClient` sends it to an OpenAI-compatible chat completions API (the team's
-LiteLLM proxy in front of Azure unless told otherwise) with the key from the environment; anything with an async `complete(request)`
-can stand in for it (a test's canned answers, `Recorded` around a client).
+LiteLLM proxy in front of Azure unless told otherwise) with the key from the environment, and reads the answer
+as a stream: a long question (code to write) keeps the model silent for minutes, and a gateway cuts a connection on
+which nothing flows. Anything with an async `complete(request)` can stand in for it (a test's canned answers,
+`Recorded` around a client).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -21,11 +24,11 @@ import httpx
 DEFAULT_BASE = "https://litellm.agenticfw.dev/v1"
 # the environment's names for the key, the API's base URL and the model, as ARMY names them
 KEY_VARIABLE, BASE_VARIABLE, MODEL_VARIABLE = "AGENTIC_OPENAI_KEY", "AGENTIC_OPENAI_BASE", "AGENTIC_OPENAI_MODEL"
-# a whole answer in one Markdown code fence, as some models wrap JSON
 # answers of a gateway, not of the model, after which a question is sent again, and how often
 RETRIED = frozenset({429, 502, 503, 504})
 RETRIES = 2
 RETRY_WAIT_S = 2.0
+# a whole answer in one Markdown code fence, as some models wrap JSON
 _FENCED = re.compile(r"\A\s*```[a-zA-Z]*\n(.*?)\n?```\s*\Z", re.DOTALL)
 
 
@@ -93,25 +96,31 @@ class ChatClient:
         self._http = httpx.AsyncClient(headers={"Authorization": f"Bearer {key}"}, transport=transport)
 
     async def complete(self, request: TurnRequest) -> TurnResult:
-        # a gateway that timed out or is busy is asked again: a long question (code to write) must not end a game
-        for attempt in range(1 + RETRIES):
-            try:
-                response = await self._http.post(f"{self.base}/chat/completions", json=self.body(request),
-                                                 timeout=request.timeout_s)
-            except httpx.TransportError:
-                if attempt == RETRIES:
-                    raise
-            else:
-                if response.status_code not in RETRIED or attempt == RETRIES:
-                    response.raise_for_status()
-                    return answer(response.json())
-            await asyncio.sleep(RETRY_WAIT_S * (attempt + 1))
+        # the httpx timeout bounds each wait for the next bytes, so a stream that keeps flowing is not cut off;
+        # the whole question, retries included, is bounded once more so a trickling answer cannot hang a game
+        async with asyncio.timeout(request.timeout_s):
+            # a gateway that timed out or is busy is asked again: a long question (code to write) must not end a game
+            for attempt in range(1 + RETRIES):
+                try:
+                    async with self._http.stream("POST", f"{self.base}/chat/completions", json=self.body(request),
+                                                 timeout=request.timeout_s) as response:
+                        if response.status_code not in RETRIED or attempt == RETRIES:
+                            if response.is_error:
+                                # a streamed body is not read yet, and the error should carry what the API said
+                                await response.aread()
+                                response.raise_for_status()
+                            return await streamed(response)
+                except httpx.TransportError:
+                    if attempt == RETRIES:
+                        raise
+                await asyncio.sleep(RETRY_WAIT_S * (attempt + 1))
 
     def body(self, request: TurnRequest) -> dict[str, Any]:
         messages = [{"role": "system", "content": request.system_stable},
                     *({"role": message.role, "content": [_part(part) for part in message.content]}
                       for message in request.messages)]
-        return {"model": self.model, "messages": messages, "max_completion_tokens": request.max_tokens, "stream": False}
+        return {"model": self.model, "messages": messages, "max_completion_tokens": request.max_tokens,
+                "stream": True, "stream_options": {"include_usage": True}}
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -131,11 +140,39 @@ def answer(data: dict[str, Any]) -> TurnResult:
     content = message.get("content")
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-    if isinstance(content, str) and (fenced := _FENCED.match(content)):
-        content = fenced[1]
     usage = data.get("usage") or {}
-    return TurnResult(text=content, tool_calls=list(message.get("tool_calls") or []),
+    return TurnResult(text=_unfenced(content), tool_calls=list(message.get("tool_calls") or []),
                       usage=Usage(usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0))
+
+
+async def streamed(response: httpx.Response) -> TurnResult:
+    """A streamed chat completion read as `answer` reads a whole one: the first choice's text pieces joined
+    (a fence around the whole of it removed) and the tokens it cost, which come in a chunk of their own."""
+    if response.headers.get("content-type", "").startswith("application/json"):
+        # a server that answers in one piece anyway (an old proxy, a test's double) is read as before
+        await response.aread()
+        return answer(response.json())
+    pieces: list[str] = []
+    usage: dict[str, Any] = {}
+    async for line in response.aiter_lines():
+        # anything but data (a keep-alive comment, an event name, the blank line between events) says nothing
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:"):].strip()
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+        if chunk.get("choices") and isinstance(content := (chunk["choices"][0].get("delta") or {}).get("content"), str):
+            pieces.append(content)
+        usage = chunk.get("usage") or usage
+    return TurnResult(text=_unfenced("".join(pieces)) if pieces else None,
+                      usage=Usage(usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0))
+
+
+def _unfenced(content: Any) -> Any:
+    if isinstance(content, str) and (fenced := _FENCED.match(content)):
+        return fenced[1]
+    return content
 
 
 class Recorded:

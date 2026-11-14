@@ -336,5 +336,22 @@
         "wait_ms": 2000
       }
     ]
+  },
+  "khang_solitaire": {
+    "url": "https://khang-nd.github.io/js-solitaire/",
+    "family": "klondike",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "An open-source (MIT) Klondike drawn with page elements: the stock at the top left, four foundations at the top right, seven piles below. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
   }
 }
