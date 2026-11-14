@@ -25,6 +25,8 @@ from .model import Model, Msg, TurnRequest
 log = logging.getLogger("gamelab.recovery")
 
 TAP, KEY, SWIPE, WAIT, NONE, GIVE_UP = "tap", "key", "swipe", "wait", "none", "give_up"
+# what a model giving up may say of the game itself: its own end screen, won or lost, stands where the board was
+ENDS = ("won", "lost")
 # what an input of the model's is carried out with (`Surface.kinds`)
 NEEDS = {TAP: "tap", KEY: "keys", SWIPE: "drag"}
 # the keys it may press: the ones a game or a notice is answered with, never a shortcut or text
@@ -92,6 +94,8 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
         return {"kind": SWIPE, "from": start, "to": end}
     if kind == WAIT and type(action.get("ms")) is int and 0 < action["ms"] <= MAX_WAIT_MS:
         return {"kind": WAIT, "ms": action["ms"]}
+    if kind == GIVE_UP and action.get("end") in ENDS:
+        return {"kind": kind, "end": action["end"]}
     if kind in (NONE, GIVE_UP):
         return {"kind": kind}
     return None

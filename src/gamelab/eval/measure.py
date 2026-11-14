@@ -39,6 +39,8 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
     parser.add_argument("--max-seconds", type=float, default=7200)
+    parser.add_argument("--max-input-tokens", type=int, default=300_000,
+                        help="the tokens one game's model questions may send together (0: no limit)")
     parser.add_argument("--out", type=Path, required=True, help="results and screenshots (out/ is not tracked)")
     parser.add_argument("--vision-model", default=model.default_model(),
                         help=f"the model the bounded reader asks ({model.MODEL_VARIABLE} unless given; '' asks none)")
@@ -50,7 +52,8 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
 
 def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
     return (GoalSpec(args.objective, args.target),
-            Budget(max_actions=args.max_actions, compute=args.compute, max_seconds=args.max_seconds))
+            Budget(max_actions=args.max_actions, compute=args.compute, max_seconds=args.max_seconds,
+                   max_input_tokens=getattr(args, "max_input_tokens", None) or None))
 
 
 def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, model.Recorded | None]:
@@ -91,8 +94,27 @@ class Recorder:
             self.during(len(self.inputs) + 1)
 
     async def after_input(self, receipt: InputReceipt) -> None:
+        await self._done(str(receipt.delivery))
+
+    # the agent's own loop (`agent.Watch`) tells of the same things without the session's types
+    async def seen(self, png: bytes) -> None:
+        self.shots += 1
+        self.shot_bytes += len(png)
+
+    async def sending(self, number: int, action: dict[str, Any], state: dict[str, Any], sent: dict[str, Any],
+                      observed_s: float) -> None:
+        self._open = {"tool": sent["kind"], "arguments": sent, "action_id": f"a{number}", "kind": action.get("kind"),
+                      "planned_on": state, "truth": await self.truth() if self.truth else None,
+                      "observed_s": observed_s, "sent_s": time.monotonic()}
+        if self.during is not None:
+            self.during(len(self.inputs) + 1)
+
+    async def sent(self) -> None:
+        await self._done("delivered")
+
+    async def _done(self, delivery: str) -> None:
         record, self._open = self._open, None
-        self.inputs.append({**record, "delivery": str(receipt.delivery), "done_s": time.monotonic()})
+        self.inputs.append({**record, "delivery": delivery, "done_s": time.monotonic()})
         if len(self.inputs) % PROGRESS_EVERY == 0:
             truth = record["truth"] or {}
             print(json.dumps({"game": self.name, "inputs": len(self.inputs), "shots": self.shots,

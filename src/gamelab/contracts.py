@@ -22,6 +22,8 @@ class Outcome(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     USER_STOPPED = "user_stopped"
     NEEDS_RECOVERY = "needs_recovery"
+    # the agent's own loop (`agent`): a model saw nothing more it could do, or its inputs ran out
+    GAVE_UP = "gave_up"
     UNSUPPORTED = "unsupported"
 
 
@@ -128,6 +130,8 @@ class Budget:
     max_actions: int            # inputs sent, whatever came of them
     compute: int                # what a policy may spend on one decision (search nodes)
     max_seconds: float | None = None
+    # the tokens every model question of one game may send together (None: not counted against the game)
+    max_input_tokens: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)

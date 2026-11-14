@@ -287,14 +287,19 @@ async def test_a_tap_game_is_played_by_generated_code_to_its_end(tmp_path):
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "play_until_end"), (played.record, made)
     assert fake.over() and not any(cell == EXPLODED for row in fake.grid for cell in row)
     assert made["generations"] == 1 and made["relearned"] == 0 and not made.get("failed")
-    assert len(fake.taps) == adaptation.EXPLORE_MOVES + played.record["confirmed_actions"] and not fake.keys
+    # the first moves, read by the model, are moves of the same game; the rest are read by the code written from them
+    assert len(fake.taps) == played.record["confirmed_actions"] and not fake.keys
+    assert [move["level"] for move in played.moves[:adaptation.EXPLORE_MOVES + 1]] == ["L2"] * adaptation.EXPLORE_MOVES + ["L3"]
+    assert played.record["levels"] == {"L2": adaptation.EXPLORE_MOVES, "L3": len(fake.taps) - adaptation.EXPLORE_MOVES}
+    assert [kind for kind, _, _ in reader.asked] == ["label"] * (adaptation.EXPLORE_MOVES + 1) + ["write"]
     assert all(inside(tap, BOARD) for tap in fake.taps)
     assert Store(tmp_path).load("https://mines.example/", "minesweeper")[0] == source().strip()
 
 
 async def test_a_mine_under_a_first_guess_ends_the_exploring_with_its_own_reason():
     """The first move of the game is a guess; when it opens a mine there is nothing to learn an adapter from,
-    and no new game is started unasked: the exploring stops and says why."""
+    and no new game is started unasked: the exploring stops and says why. Played as a game, that is the game's
+    own end, not a game that could not be played."""
     fake = Mines(mines=MINED_CENTRE)
     with pytest.raises(AdaptationFailed, match="game_ended"):
         await Adaptation(Reader(fake), "minesweeper", compute=COMPUTE).explore(fake)
@@ -302,14 +307,14 @@ async def test_a_mine_under_a_first_guess_ends_the_exploring_with_its_own_reason
     again = Mines(mines=MINED_CENTRE)
     played, made = await play_adaptive(again, Reader(again), "minesweeper", goal=GoalSpec("play_until_end"),
                                        budget=Budget(60, COMPUTE, 300))
-    assert (played.record["outcome"], played.record["reason"]) == ("unsupported", "adaptation_game_ended")
-    assert made["failed"] == "game_ended" and "1 moves" in made["detail"] and len(again.taps) == 1
+    assert (played.record["outcome"], played.record["reason"]) == ("game_over", "terminal")
+    assert played.record["confirmed_actions"] == 1 and len(again.taps) == 1 and made["generations"] == 0 and "failed" not in made
 
 
 async def test_a_game_lost_after_enough_moves_still_gives_an_adapter_and_ends_as_the_game_ended(tmp_path):
     """A mine opened after the first few moves ends the exploring early with a screen of the lost game as its
-    last look. Enough was seen to write the adapter, which must read that screen too; the game then ends in
-    play as the game's own end, and the adapter is kept for the next game."""
+    last look. Enough was seen to write the adapter, which must read that screen too; the game ends as the
+    game's own end, and the adapter is written then and kept for the next game."""
     fake = Mines(draw=LOST_EARLY)
     trace = await Adaptation(Reader(fake), "minesweeper", compute=COMPUTE).explore(fake)
     assert len(trace.looks) == 5 and len(fake.taps) == 4 and trace.looks[-1].action is None
@@ -319,8 +324,16 @@ async def test_a_game_lost_after_enough_moves_still_gives_an_adapter_and_ends_as
     played, made = await play_adaptive(again, Reader(again, [source()]), "minesweeper", goal=GoalSpec("play_until_end"),
                                        budget=Budget(60, COMPUTE, 300), store=Store(tmp_path))
     assert (played.record["outcome"], played.record["reason"]) == ("game_over", "terminal"), (played.record, made)
-    assert played.record["confirmed_actions"] == 0 and len(again.taps) == 4 and made["generations"] == 1
+    assert played.record["confirmed_actions"] == 4 == len(again.taps) and made["generations"] == 1
+    assert played.record["levels"] == {"L2": 4, "L3": 0}
     assert Store(tmp_path).load("https://mines.example/", "minesweeper") is not None
+    # the next game on the site is read by that adapter from its first move, and no model is asked
+    third = Mines()
+    silent = Reader(third)
+    played, made = await play_adaptive(third, silent, "minesweeper", goal=GoalSpec("play_until_end"),
+                                       budget=Budget(60, COMPUTE, 300), store=Store(tmp_path))
+    assert (played.record["outcome"], made["reused"], silent.asked) == ("goal_reached", True, []), (played.record, made)
+    assert played.record["levels"]["L2"] == 0
 
 
 async def test_a_tap_on_the_cells_is_sent_as_the_model_asked_and_told_back_when_it_changed_nothing():
@@ -362,7 +375,9 @@ async def test_a_notice_during_play_of_a_tap_game_is_got_past_and_the_game_playe
     # every tap but the one on the button opened a cell; the move whose result the notice hid was played but
     # could not be confirmed
     assert fake.taps.count(tuple(middle(fake.button))) == 1
-    assert len(fake.taps) == 1 + fake.played == 1 + adaptation.EXPLORE_MOVES + played.record["confirmed_actions"] + 1
+    assert len(fake.taps) == 1 + fake.played == 1 + played.record["confirmed_actions"] + 1
+    # the model is asked once what the screen shows and once what to do about it
+    assert [kind for kind, _, _ in reader.asked][adaptation.EXPLORE_MOVES + 2:] == ["label", "recover"]
 
 
 @pytest.mark.parametrize(("mines", "kept"), [

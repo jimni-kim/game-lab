@@ -313,7 +313,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
             # from the game's first moves, and made again whenever play stops at a screen it cannot read
             reader = options.pop("model")
             run, adapted = await play_adaptive(WebSurface(page), reader, family_id, store=Store(args.adapter_store),
-                                               fresh=args.regenerate, **options)
+                                               fresh=args.regenerate, **({"loop": args.loop} if getattr(args, "loop", None) else {}), **options)
         else:
             run = await play(WebSurface(page), **options,
                              **({"profile": profile} if profile is not None else {"family_id": family_id}))
@@ -388,5 +388,7 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "adapters",
                         help="where generated adapters are kept by site and reused")
     parser.add_argument("--regenerate", action="store_true", help="write a new adapter even when one is kept for the site")
+    parser.add_argument("--loop", choices=("agent", "session"),
+                        help="with --generate: the loop that plays (the agent's own unless told; session: the one kept as baseline)")
     parser.add_argument("--identify", action="store_true",
                         help="with --generate: do not tell the harness the game's family; it is found from the screen")

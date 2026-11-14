@@ -6,6 +6,7 @@ The context says why the code stopped (`reason`):
 - `board_covered`: something covers the board and the code has no button to close it, or closed covers too often.
 - `absent`, `inconsistent`, `unknown`, `profile_unconfirmed`: the board was read, but the moves sent did not do what the rules predict (the game may be ignoring input, or something beside the board may be waiting for an answer).
 - `button_unseen`: the game shows a message the code knows no button for.
+- `continue_after_win`: the game shows its win message and the code plays on in the same game: press what keeps this game going, never what starts another.
 
 It also gives `state` (the last board the code read, or null), `recent` (the last moves and their effects), `screen` (the image's width and height in pixels), `inputs` (the kinds of input this screen takes), `keys` (the keys you may press) and `tried` (the inputs already sent for this stop, each with whether the screen changed afterwards). Do not repeat an input that changed nothing.
 
@@ -16,7 +17,7 @@ Look at what is actually in the way: a notice, a card or an animation over the b
 - `{"kind": "swipe", "from": [x, y], "to": [x, y]}`: a short drag.
 - `{"kind": "wait", "ms": n}`: wait up to 5000 ms, for a screen that is loading or animating.
 - `{"kind": "none"}`: the board is plainly visible, uncovered and waiting for a move, so nothing is in the way (the code's reading is at fault, not the screen).
-- `{"kind": "give_up"}`: no input can return to the game (the game is over with no way to continue the same game, the page is gone, a login or payment is required).
+- `{"kind": "give_up"}`: no input can return to the game (the page is gone, a login or payment is required). When the reason is that this game itself has ended and the screen plainly says so (its own end message stands over or in place of the board), add how it ended: `{"kind": "give_up", "end": "won"}` or `{"kind": "give_up", "end": "lost"}`.
 
 Never tap an advertisement, a link that leaves the game, or anything that installs, buys, subscribes, signs in, shares, or watches an advertisement for a reward. Never start a ranked, daily or timed mode. Never start a new game while a game is in play; a start screen before any play may be started in its plain mode. Agree to a site's terms only when `accept_consent` is true; otherwise press the button that refuses them, and give up if there is none. When a prompt says a tap or a swipe anywhere continues, prefer a tap away from the board's cells and from any button. When the family's actions are played by tapping the board's cells, a tap that reaches a cell is a move of the game and may end it: tap the button of whatever is in the way, and where a tap anywhere would continue, tap a point beyond the cells.
 

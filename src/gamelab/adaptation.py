@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import hashlib
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -249,9 +250,11 @@ class Adaptation:
         return True
 
     async def _label(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
-                     accept: Any = None, retries: int = LABEL_RETRIES) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
+                     accept: Any = None, retries: int = LABEL_RETRIES, patient: bool = True
+                     ) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
         """One screen read by the model into a state the rule model accepts whole (and `accept`, when given,
-        takes as the last move's result); asked again on a fresh capture when it is not."""
+        takes as the last move's result); asked again on a fresh capture when it is not. `patient` off: a
+        screen the model says shows no board is not asked about again (the caller has another way past it)."""
         problem = "no_board"
         for _ in range(1 + retries):
             png = await surface.capture()
@@ -263,6 +266,8 @@ class Adaptation:
             answer = await self.label(png, board, shape)
             if answer is None:
                 problem = "no_board"
+                if not patient:
+                    break
                 await asyncio.sleep(SETTLE_S)
                 continue
             found = answer.get("board") if board is None else board
@@ -406,12 +411,15 @@ class Adaptation:
                                                        messages=[Msg("user", content)]))
         return result.text or ""
 
-    async def make(self, trace: Trace, previous: tuple[str, list[str]] | None = None) -> Made:
+    async def make(self, trace: Trace, previous: tuple[str, list[str]] | None = None, allowed: Any = None) -> Made:
         """An adapter that passes every check on the trace, written in at most MAX_GENERATIONS attempts;
-        `previous` is an earlier adapter and what is wrong with it now, to write from."""
+        `previous` is an earlier adapter and what is wrong with it now, to write from. `allowed`, when given,
+        says before each attempt whether one more may be asked for (a game's budget of questions)."""
         started, before = time.monotonic(), self.questions
         attempts = []
         for generation in range(1, MAX_GENERATIONS + 1):
+            if allowed is not None and not allowed():
+                raise AdaptationFailed("budget", json.dumps(attempts))
             source = await self.write(trace, previous)
             report = adopt(source, trace)
             attempts.append({key: report[key] for key in ("passed", "failed_check", "transitions")})
@@ -721,6 +729,9 @@ class Adaptive:
             self.store.save_recoveries(self.trace.site, self.family_id, self.recovery.known)
 
 
+# which loop plays a game read by generated code: the agent's own (`agent`), or the session's kept beside it
+# as the baseline (docs/design/2026-11-14-agent-loop.md)
+LOOP = os.environ.get("GAMELAB_LOOP", "agent")
 # questions asked and inputs sent to reach a board before a game is given up as not shown
 IDENTIFY_TOKENS, IDENTIFY_TIMEOUT_S = 1000, 60.0
 MOST_CANDIDATES = 3
@@ -847,6 +858,11 @@ async def play_adaptive(surface: Surface, model: Model, family_id: str | None, *
     from .contracts import Budget, GoalSpec, Outcome
     from .play import Run, play
     from .session import ended
+
+    if options.pop("loop", LOOP) == "agent":
+        from . import agent
+        return await agent.play(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy,
+                                fresh=fresh, hint=hint, **options)
 
     def make(family: str) -> Adaptive:
         return Adaptive(surface, model, family, store=store, policy=policy, compute=budget.compute, fresh=fresh,
