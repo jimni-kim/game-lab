@@ -322,11 +322,14 @@ class Adaptation:
         return True
 
     async def _label(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
-                     accept: Any = None, retries: int = LABEL_RETRIES, patient: bool = True
-                     ) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
+                     accept: Any = None, retries: int = LABEL_RETRIES, patient: bool = True,
+                     prior: dict[str, Any] | None = None) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
         """One screen read by the model into a state the rule model accepts whole (and `accept`, when given,
         takes as the last move's result); asked again on a fresh capture when it is not. `patient` off: a
-        screen the model says shows no board is not asked about again (the caller has another way past it)."""
+        screen the model says shows no board is not asked about again (the caller has another way past it).
+        `prior`: what is already known of this screen (the rules' prediction of the move just played, else the
+        last state read); a value the model leaves unread takes the prior's, so a thing half hidden now (a card
+        another was laid on) is not lost for want of a second reading."""
         problem = "no_board"
         for _ in range(1 + retries):
             png = await surface.capture()
@@ -353,7 +356,7 @@ class Adaptation:
             family = catalog.family(self.family_id).bind({"rules": chosen})
             # the board is what is learned here: a score read off the page (in the site's own counting) would
             # only make a right board look like a wrong move
-            read = {**answer["state"], **({"score": None} if "score" in answer["state"] else {})}
+            read = {**_filled(answer["state"], prior), **({"score": None} if "score" in answer["state"] else {})}
             state = family.estimate(Observation("label", 0, "explore", 0, 0.0, "explore", public_facts={"state": read}))
             if isinstance(state, NeedObservation) or state.unknown_fields:
                 problem = "state_refused"
@@ -784,6 +787,17 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
                 and abs(asked["x1"] - goal[0]) <= across * DRAG_ONTO and abs(asked["y1"] - goal[1]) <= down * DRAG_ONTO)
     left, top, width, height = cell_box(board, _shape(None, look.state), look.action["cell"])
     return left <= asked["x"] < left + width and top <= asked["y"] < top + height
+
+
+def _filled(read: Any, prior: Any) -> Any:
+    """A reading with each unread value taken from `prior` where that has one at the same place."""
+    if read is None:
+        return prior if not isinstance(prior, (dict, list)) else None
+    if isinstance(read, dict) and isinstance(prior, dict):
+        return {key: _filled(value, prior.get(key)) for key, value in read.items()}
+    if isinstance(read, list) and isinstance(prior, list) and len(read) == len(prior):
+        return [_filled(value, other) for value, other in zip(read, prior)]
+    return read
 
 
 def _unread_leaves(value: Any) -> int:

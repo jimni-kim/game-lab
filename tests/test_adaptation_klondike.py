@@ -152,6 +152,7 @@ class Croupier:
 
     def __init__(self, fake, modules=()):
         self.fake, self.modules, self.asked = fake, list(modules), []
+        self.shy = False
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
@@ -166,6 +167,10 @@ class Croupier:
         def off(value):
             return [off(part) for part in value] if isinstance(value[0], list) else [value[0] + 2, value[1] - 1, value[2] - 3, value[3]]
         seen = self.fake.seen
+        if self.shy:
+            # it cannot read a card another lies on: only the top card of each pile
+            seen = {**seen, "tableau": [{"down": pile["down"], "up": [None] * (len(pile["up"]) - 1) + pile["up"][-1:]}
+                                        for pile in seen["tableau"]]}
         return TurnResult(text=json.dumps({
             "screen": "board", "board": [20, 20, 600, 580], "rules": {}, "state": {**seen, "scene": "won" if seen["scene"] == "won" else "playing"},
             "places": {name: off(value) for name, value in self.fake.places().items()}}))
@@ -349,3 +354,15 @@ def test_a_cut_is_named_by_its_nearest_sample_and_one_like_none_is_not_named():
     # a box of another size is another thing, and one off the picture gives no sample
     assert samples.distance(red, flat((200, 10, 10), size=(41, 12))) == 255.0
     assert samples.cut(Image.new("RGB", (60, 30)), [50, 2, 40, 12]) is None
+
+
+async def test_a_card_the_model_can_no_longer_read_under_another_is_the_one_the_rules_say_lies_there():
+    """A card another was laid on shows only its edge, and the model leaves it unread. The rules know which card
+    it is: the one that lay there before the move. Regression: the reading was refused for ever and the game
+    given up at its second move."""
+    fake = Patience()
+    croupier = Croupier(fake, ["def measure(picture):\n    return None\n"] * adaptation.MAX_GENERATIONS)
+    croupier.shy = True
+    played, made = await agent.play(fake, croupier, "klondike", goal=GoalSpec("actions", 25), budget=Budget(60, 200, 120))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    assert not fake.refused and {move["effect"] for move in played.moves} == {"confirmed"}

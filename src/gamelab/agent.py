@@ -545,7 +545,7 @@ class Agent:
             else:
                 png, state, board, rules = await self._asking(tool._label(
                     self.surface, self.board, self.trace.rules if self.trace else None,
-                    accept if expect is not None or partial is not None else None, patient=False))
+                    accept if expect is not None or partial is not None else None, patient=False, prior=self._prior(expect)))
                 tool.last_state, tool.frames = state, await tool._frames(self.surface, png)
         except AdaptationFailed as error:
             # no board on the screen, or one the model could not read as the rules have it
@@ -587,6 +587,17 @@ class Agent:
                 return
             previous = seen
             await asyncio.sleep(STILL_GAP_S)
+
+    def _prior(self, expect: tuple[Reading, dict[str, Any]] | None) -> dict[str, Any] | None:
+        """What is known of the screen about to be read: what the rules say the move just played leaves (where
+        the rule model says), else the last state read."""
+        predict = getattr(self.family.model, "apply", None) if expect is not None else None
+        if predict is None:
+            return self.state
+        try:
+            return predict(expect[0].state, self.family.rules, expect[1])["state"]
+        except (ValueError, KeyError, TypeError):
+            return self.state
 
     def _drop_unproven(self) -> None:
         """A look nothing bore out is not one to write an adapter from."""
