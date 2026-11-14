@@ -694,7 +694,7 @@ class Agent:
             return
         action = self.recovery.log[-1]["action"] or {}
         if action.get("kind") == GIVE_UP and "end" in action:
-            won = action["end"] == WON and str(self.goal.objective) == "play_until_end"
+            won = action["end"] == WON and self._won_meets_goal()
             raise _End(Outcome.GOAL_REACHED if won else Outcome.GAME_OVER, WON if won else "end_screen", self._situation())
         if action.get("kind") == NONE and not self.shrugged:
             # the model sees a board in play: it is read once more before the game is given up
@@ -703,6 +703,16 @@ class Agent:
         if await self._other_family():
             return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
+
+    def _won_meets_goal(self) -> bool:
+        """Whether the game's own win message, with nothing under it read, is the goal reached: the rule
+        model's to say (a win is the family's own target, which a run may have set higher)."""
+        try:
+            seen = self.family.model.status(self.family.unread_state(WON), self.family.rules,
+                                            {"objective": str(self.goal.objective), "target_value": self.goal.target_value})
+        except Exception:
+            return False
+        return seen["goal"] == "reached"
 
     def _situation(self) -> str:
         return (self.recovery.log[-1]["situation"] or "") if self.recovery and self.recovery.log else ""

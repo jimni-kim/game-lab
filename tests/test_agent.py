@@ -135,6 +135,18 @@ async def test_the_games_own_end_screen_over_the_board_ends_the_game_as_the_mode
     played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
     assert ending(played) == ("game_over", "end_screen") and played.record["detail"] == "as drawn", played.record
     assert len(fake.taps) == 3
+    # a win message over the board is the goal reached when the family's own win is what was asked for
+    won = Mines()
+    won.cover_after = 3
+    played, _ = await agent.play(won, Reader(won, recovering=[{"kind": "give_up", "end": "won"}]), "minesweeper",
+                                 goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
+    assert ending(played) == ("goal_reached", "won"), played.record
+    # the rule model says whether a win is the goal: a tile asked for beyond the game's own is not reached by it
+    playing = agent.Agent(Screen(), None, "slide_merge", goal=GoalSpec("reach_value", 4096), budget=Budget(1, 1, 1))
+    playing.family = agent.catalog.family("slide_merge")
+    assert not playing._won_meets_goal()
+    playing.goal = GoalSpec("reach_value", 2048)
+    assert playing._won_meets_goal()
     stuck = Mines()
     stuck.cover_after = 3
     played, made = await agent.play(stuck, Reader(stuck), "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
