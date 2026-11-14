@@ -49,7 +49,7 @@ from typing import Any
 
 from pathlib import Path
 
-from .. import agent
+from .. import agent, request
 from ..adaptation import Store
 from ..environments.web import WebSurface, browser
 from . import measure
@@ -61,6 +61,8 @@ SETUP_LOADED = "domcontentloaded"
 # a setup drag (the person's hand in a tutorial) moves in this many steps, this far apart
 SETUP_DRAG_STEPS = 20
 SETUP_DRAG_STEP_MS = 25
+# a page a request named, which nobody set up: the window it is opened at and how long it is left to load
+ASKED_VIEWPORT, ASKED_WAIT_MS = (1280, 900), 4000
 # a resized page redraws its game: wait this long before the harness looks
 RESIZE_WAIT_MS = 2500
 # what --perturb can do, and the argument each takes: required, optional, or none
@@ -294,6 +296,8 @@ def perturbed(game: Game, recorder: measure.Recorder) -> list[dict[str, Any]]:
 async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, url: str,
                    family_id: str | None, site: dict[str, Any], model: Any, writer: Any = None) -> dict[str, Any]:
     goal, budget = measure.goal_and_budget(args)
+    # a request in words set the goal and says what it can of the game
+    goal, hint = (args.asked["goal"], args.asked["hint"]) if getattr(args, "asked", None) else (goal, None)
     name = f"{name}-{number:02d}"
     answered = len(model.answers)
     started = time.monotonic()
@@ -306,7 +310,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
         # from the game's first moves, and made again whenever play stops at a screen it cannot read
         run, adapted = await agent.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
                                         store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
-                                        watch=recorder, accept_consent=args.accept_consent, writer=writer)
+                                        watch=recorder, accept_consent=args.accept_consent, writer=writer, hint=hint)
     finally:
         await game.tidy()
     elapsed = time.monotonic() - started
@@ -322,17 +326,31 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
 
 
 async def main(args: argparse.Namespace) -> int:
-    site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site)
-    if site is None:
+    if not (args.site or args.ask):
+        raise SystemExit("give --site, or --ask with a request that names the page")
+    client, model = measure.vision_model(args)
+    if model is None:
+        raise SystemExit("a game is played with a model: name one with --vision-model")
+    args.asked = None
+    if args.ask:
+        # what to play for is the request's to say; the page too, unless --site names it
+        args.asked = await request.understand(model, args.ask)
+        print(json.dumps({"asked": {"url": args.asked["url"], "goal": args.asked["goal"].to_json(), "hint": args.asked["hint"]}},
+                         ensure_ascii=False), flush=True)
+    site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site) if args.site else None
+    if site is None and args.site:
         raise SystemExit(f"no evaluation setup for {args.site} in sites.json")
+    if site is None:
+        if args.asked["url"] is None:
+            raise SystemExit("the request names no page: give --site, or the address in the request")
+        # a page nobody set up: opened as it is, at the usual window, and found out from its screen
+        site = {"url": args.asked["url"], "viewport": list(ASKED_VIEWPORT), "setup": [{"reload": True}, {"wait_ms": ASKED_WAIT_MS}]}
+        args.site = "asked"
     if args.viewport:
         site = {**site, "resize": args.viewport}
     # with --identify nobody says which game the page shows: the harness finds out from the screen
     # (a site whose entry names no family is always found out so)
     family_id = None if args.identify else site.get("family")
-    client, model = measure.vision_model(args)
-    if model is None:
-        raise SystemExit("a game is played with a model: name one with --vision-model")
     writer_client, writer = measure.writer_model(args, model)
     results = []
     try:
@@ -351,7 +369,10 @@ async def main(args: argparse.Namespace) -> int:
 
 
 def configure(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--site", required=True, help="the entry in sites.json: the page, the game's family and its setup")
+    parser.add_argument("--site", help="the entry in sites.json: the page, the game's family and its setup")
+    parser.add_argument("--ask", metavar="WORDS",
+                        help="a request in words (\"play 2048 at https://... until the 512 tile\"): it sets the goal in "
+                             "place of --objective and --target, and names the page when --site does not")
     measure.game_arguments(parser)
     parser.add_argument("--viewport", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"),
                         help="resize the window to this after the site's setup, before the harness plays")

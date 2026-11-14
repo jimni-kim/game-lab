@@ -1,6 +1,7 @@
 """The evaluation commands: their arguments, the sites they start from and the policies' own games. No browser,
 device or model."""
 import argparse
+import asyncio
 import json
 
 import pytest
@@ -33,8 +34,11 @@ def test_a_web_run_is_named_by_its_site_alone_and_old_commands_still_parse():
     for removed in (["--profile", "ovolve_2048"], ["--unregistered"], ["--loop", "session"]):
         with pytest.raises(SystemExit):
             parser.parse_args(["--site", "ovolve_2048", "--compute", "20", "--out", "out/x", *removed])
+    # a run names its page by --site, or by the address in a request in words (--ask)
+    asked = parser.parse_args(["--ask", "play 2048 at https://x.example/ to 512", "--compute", "20", "--out", "out/x"])
+    assert asked.site is None and asked.ask.startswith("play 2048")
     with pytest.raises(SystemExit):
-        parser.parse_args(["--compute", "20", "--out", "out/x"])
+        asyncio.run(web.main(parser.parse_args(["--compute", "20", "--out", "out/x"])))
 
 
 def test_policies_are_compared_on_the_same_seeds_and_a_hidden_game_by_wins():
