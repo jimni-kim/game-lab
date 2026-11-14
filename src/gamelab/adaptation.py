@@ -34,7 +34,7 @@ from .contracts import NeedObservation, Observation
 from .surface import Surface
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
-from .recovery import MAX_TRIES, Recovery
+from .recovery import MAX_TRIES, Recovery, view
 from .sandbox import Sandbox, SandboxError
 
 log = logging.getLogger("gamelab.adaptation")
@@ -226,9 +226,11 @@ class Adaptation:
     async def label(self, png: bytes, board: list[int] | None, shape: tuple[int, int] | None) -> dict[str, Any] | None:
         """What the model reads on one screen: `{"board", "rules", "state"}` or None when it shows no board
         or the answer is no answer. The rule model checks the state afterwards."""
-        context = {"family": self.descriptor, **({"board": board} if board else {}),
+        # a large screen is shown smaller (`view`): boxes go to the model and come back in what it is shown
+        shown, scale = view(png)
+        context = {"family": self.descriptor, **({"board": [round(value * scale) for value in board]} if board else {}),
                    **({"sources": self.controls["source"]} if "source" in self.controls else {})}
-        content = [{"type": "text", "text": json.dumps(context)}, _image(png)]
+        content = [{"type": "text", "text": json.dumps(context)}, _image(shown)]
         if board and shape:
             content.append(_image(overlay(png, board, *shape)))
         self.questions += 1
@@ -237,6 +239,13 @@ class Adaptation:
         answer = _json(result.text)
         if not isinstance(answer, dict) or answer.get("screen") != "board" or not isinstance(answer.get("state"), dict):
             return None
+        if scale != 1.0:
+            def whole(box: Any) -> Any:
+                return [round(value / scale) for value in box] if isinstance(box, list) and all(
+                    type(value) in (int, float) for value in box) else box
+            answer["board"] = whole(answer.get("board"))
+            if isinstance(answer.get("sources"), list):
+                answer["sources"] = [whole(box) for box in answer["sources"]]
         return answer
 
     async def _read(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,

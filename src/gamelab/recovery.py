@@ -41,6 +41,8 @@ MAX_WAIT_MS = 5000
 # a screen's small picture: this many grey levels a side, and how far two may differ on average (of 255)
 # and still be the same screen. A guess, kept tight: on a dark site (2026-11-13) a notice and the board behind
 # it differed by only 21 to 29. What keeps a replay from landing on a board is less this than REPLAYED_REASONS
+# the longer side of a picture a model is shown: larger ones are made this size first (`view`)
+VIEW_SIDE = 1536
 SIGNATURE_SIDE = 16
 REPLAY_DISTANCE = 8.0
 # why play stopped when the screen showed no board the code could use (something in the way): only there is
@@ -56,6 +58,23 @@ def signature(png: bytes) -> list[int]:
 
     with Image.open(BytesIO(png)) as image:
         return list(image.convert("L").resize((SIGNATURE_SIDE, SIGNATURE_SIDE)).tobytes())
+
+
+def view(png: bytes) -> tuple[bytes, float]:
+    """The picture as a model is shown it, and how much smaller it is than the screen: a model's service
+    shrinks a large picture before the model sees it, and the model then answers in the pixels of what it
+    saw. A picture already no longer than VIEW_SIDE is shown as it is; points and boxes a model gives are
+    divided by the factor to be the screen's."""
+    from PIL import Image
+
+    with Image.open(BytesIO(png)) as image:
+        longer = max(image.size)
+        if longer <= VIEW_SIDE:
+            return png, 1.0
+        scale = VIEW_SIDE / longer
+        out = BytesIO()
+        image.convert("RGB").resize((round(image.width * scale), round(image.height * scale))).save(out, format="PNG")
+        return out.getvalue(), scale
 
 
 def _distance(one: list[int], other: list[int]) -> float:
@@ -168,6 +187,7 @@ class Recovery:
 
     async def _ask(self, png: bytes, reason: str, context: dict[str, Any], kinds: frozenset[str],
                    entry: dict[str, Any], timeout_s: float | None) -> dict[str, Any] | None:
+        png, scale = view(png)
         size = _size(png)
         timeout = RECOVER_TIMEOUT_S if timeout_s is None else min(RECOVER_TIMEOUT_S, timeout_s)
         if timeout <= 0:
@@ -195,7 +215,10 @@ class Recovery:
             return None
         if isinstance(answer.get("situation"), str):
             entry["situation"] = answer["situation"][:300]
-        return check(answer.get("action"), size, kinds)
+        action = check(answer.get("action"), size, kinds)
+        # the model answered in the pixels of the picture it was shown: the input is sent in the screen's
+        return action if action is None or scale == 1.0 else {
+            key: [part / scale for part in value] if key in ("at", "from", "to") else value for key, value in action.items()}
 
     def succeeded(self) -> None:
         """Play goes on (a move was confirmed, a board read): the last input sent is what got it there."""

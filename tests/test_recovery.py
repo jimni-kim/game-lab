@@ -257,3 +257,34 @@ async def test_a_board_the_model_sees_and_the_code_cannot_place_is_asked_about_o
     played = await run(fake, moves=3)
     assert ending(played) == ("needs_recovery", "unreadable"), played.record
     assert len(fake.model_calls) == 1 and len(fake.recover_calls) == 1
+
+
+async def test_a_large_screen_is_shown_smaller_and_what_the_model_points_at_is_sent_in_the_screens_pixels():
+    """A model's service shrinks a large picture, and the model answers in the pixels it saw. Regression: on a
+    phone's screen (1080 by 2400) the board box and every swipe landed about a seventh too near the corner."""
+    import json
+    from io import BytesIO
+    from PIL import Image
+    from gamelab.model import TurnResult
+
+    class Phone:
+        kinds, taps = KINDS, []
+
+        async def capture(self, region=None):
+            out = BytesIO()
+            Image.new("RGB", (1080, 2400), (20, 30, 40)).save(out, format="PNG")
+            return out.getvalue()
+
+        async def tap(self, x, y, duration_ms):
+            self.taps.append((round(x), round(y)))
+
+    class Pointing:
+        async def complete(self, request):
+            self.screen = json.loads(request.messages[0].content[0]["text"])["screen"]
+            return TurnResult(text=json.dumps({"situation": "a notice", "action": {"kind": "tap", "at": [self.screen[0] / 2, self.screen[1] / 4]}}))
+    model = Pointing()
+    assert await Recovery(model, "slide_merge").attempt(Phone(), "board_not_found", {"state": None, "recent": []})
+    scale = recovery.VIEW_SIDE / 2400
+    assert model.screen == [round(1080 * scale), recovery.VIEW_SIDE] and Phone.taps == [(540, 600)]
+    small, same = recovery.view(await Screen().capture())
+    assert same == 1.0
