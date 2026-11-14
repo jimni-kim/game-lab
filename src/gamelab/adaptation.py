@@ -64,6 +64,8 @@ OVERLAY_SIDE, OVERLAY_CELL, OVERLAY_MOST = 800, 56, 2400
 # a drag the code asks for plays a recorded one when it starts within this share of the dragged thing's size
 # around the box the model gave for it, and ends within this share of a cell of the recorded end
 DRAG_FROM_MARGIN, DRAG_ONTO = 0.35, 0.34
+# values a screen kept back from the writer may be left unread on and the adapter still be adopted
+HELD_UNREAD = 2
 # an input among a game's places plays a recorded one when each of its ends lies within this share of the
 # place's size around the box the model gave for it
 PLACE_MARGIN = 0.25
@@ -695,7 +697,10 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                 continue
             # by its own samples too: all of it, with nothing the code itself left unread
             own = samples.resolve(raw, look.png, whole)
-            if _board(own) != _board(look.state):
+            # a screen kept back may show what no screen the writer saw did (the first card on a place that was
+            # empty till then): there the code may leave a value or two unread, as long as it reads nothing wrongly
+            spared = look.held and _agrees(_board(own), _board(look.state)) and _unread_leaves(own) <= HELD_UNREAD
+            if _board(own) != _board(look.state) and not spared:
                 marked = any(True for _ in samples.marks(raw))
                 fail("read" if not marked else "samples", index,
                      (f"read() left cells unread: {json.dumps(_board(own))}" if not marked else
@@ -779,6 +784,14 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
                 and abs(asked["x1"] - goal[0]) <= across * DRAG_ONTO and abs(asked["y1"] - goal[1]) <= down * DRAG_ONTO)
     left, top, width, height = cell_box(board, _shape(None, look.state), look.action["cell"])
     return left <= asked["x"] < left + width and top <= asked["y"] < top + height
+
+
+def _unread_leaves(value: Any) -> int:
+    if isinstance(value, dict):
+        return sum(_unread_leaves(part) for part in value.values())
+    if isinstance(value, list):
+        return sum(_unread_leaves(part) for part in value)
+    return value is None
 
 
 def _flat(places: Any) -> list[list[int]]:

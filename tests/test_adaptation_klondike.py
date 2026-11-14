@@ -322,16 +322,30 @@ async def test_code_that_only_says_where_the_cards_are_plays_by_samples_and_lear
 
 def test_a_cut_is_named_by_its_nearest_sample_and_one_like_none_is_not_named():
     from gamelab import samples
+    from PIL import Image
+
+    def flat(colour, spot=None, size=(40, 12)):
+        image = Image.new("RGB", (60, 30), colour)
+        if spot is not None:             # a small mark in one corner: what tells two things apart
+            for y in range(3, 7):
+                for x in range(3, 7):
+                    image.putpixel((x, y), spot)
+        return samples.cut(image, [2, 2, *size])
     bank = samples.Bank()
-    red, blue, shimmer = bytes([200, 10, 10] * 256), bytes([10, 10, 200] * 256), bytes([10, 10, 190] * 256)
+    red, blue = flat((200, 10, 10)), flat((10, 10, 200))
     bank.add("R", red)
     bank.add("B", blue)
-    assert bank.name(red) == (True, "R") and bank.name(bytes([198, 11, 10] * 256)) == (True, "R")
-    assert bank.name(bytes([120, 120, 120] * 256)) == (False, None)
+    assert bank.name(red) == (True, "R") and bank.name(flat((198, 12, 10))) == (True, "R")
+    assert bank.name(flat((120, 120, 120))) == (False, None)
+    # a small difference in one place is a difference: the same red with a mark in its corner is not the red kept
+    assert bank.name(flat((200, 10, 10), spot=(0, 0, 0))) == (False, None)
     # a thing seen to vary is given the room it was seen to need
-    assert bank.name(bytes([10, 10, 180] * 256)) == (False, None)
-    bank.add("B", shimmer)
-    assert bank.name(bytes([10, 10, 180] * 256)) == (True, "B")
+    assert bank.name(flat((10, 10, 180))) == (False, None)
+    bank.add("B", flat((10, 10, 190)))
+    assert bank.name(flat((10, 10, 180))) == (True, "B")
     # the same pixels read as two values tell neither
     bank.add("X", red)
     assert bank.name(red) == (False, None)
+    # a box of another size is another thing, and one off the picture gives no sample
+    assert samples.distance(red, flat((200, 10, 10), size=(41, 12))) == 255.0
+    assert samples.cut(Image.new("RGB", (60, 30)), [50, 2, 40, 12]) is None

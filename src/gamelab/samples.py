@@ -7,7 +7,7 @@ host cuts that box out and names it by the nearest of the samples it keeps, each
 read (the value the model gave at the same place in the state). A cut like no sample is a value nobody read
 (null): the screen then goes to the model, and its reading adds the samples; the code is not written again.
 
-A sample is the cut made small (`SIDE` a side). How far a cut may be from a label's samples and still be it
+A sample is the cut's own pixels. How far a cut may be from a label's samples and still be it
 is learned per label from how much its own samples differ (other captures of the same screen, the same thing
 seen again): a game that draws a thing the same every time holds a cut to nearly the same pixels, one that
 animates it is given what the animation was seen to need.
@@ -19,11 +19,14 @@ import json
 from typing import Any, Iterator
 
 MARK = "look"
-SIDE = 16
-# how far (mean difference a channel, of 255) a cut may be from a label's nearest sample: at least NEAR, the
+# how far (`distance`) a cut may be from a label's nearest sample: at least NEAR, the
 # label's own spread times SPREAD when that is more, never beyond FAR; and two labels this close to each
-# other for a cut are not told apart
-NEAR, SPREAD, FAR, APART = 2.0, 1.5, 14.0, 1.0
+# other for a cut are not told apart. NEAR is tight on purpose: two cards of one suit differ by a small numeral
+# (2026-11-14: by a mean over the whole cut a six was named a five), and a thing not named costs one
+# question, a thing misnamed a game
+NEAR, SPREAD, FAR, APART = 6.0, 1.5, 40.0, 3.0
+# a sample keeps its box's pixels as they are up to this many, and is compared in parts this many pixels a side
+MOST, PART = 4096, 6
 
 
 def is_mark(value: Any) -> bool:
@@ -68,15 +71,35 @@ def _open(png: bytes) -> Any:
 
 
 def cut(image: Any, box: list[float]) -> bytes | None:
-    """The pixels of a box made small, or None for a box that is not on the picture."""
-    left, top, width, height = box
+    """The pixels of a box as a sample, or None for a box that is not on the picture: its width and height,
+    then its pixels as they are. A small drawing is told by a few pixels, so nothing is made smaller unless
+    the box is larger than MOST pixels, and then by a whole factor."""
+    left, top, width, height = (round(value) for value in box)
     if width < 2 or height < 2 or left < 0 or top < 0 or left + width > image.width or top + height > image.height:
         return None
-    return image.crop((round(left), round(top), round(left + width), round(top + height))).resize((SIDE, SIDE)).tobytes()
+    region = image.crop((left, top, left + width, top + height))
+    factor = 1
+    while (width // factor) * (height // factor) > MOST:
+        factor += 1
+    if factor > 1:
+        region = region.resize((max(1, width // factor), max(1, height // factor)))
+    return bytes(region.size) + region.tobytes() if max(region.size) < 256 else None
 
 
 def distance(one: bytes, other: bytes) -> float:
-    return sum(abs(a - b) for a, b in zip(one, other)) / len(one)
+    """How unlike two samples are: the mean difference a channel (of 255) in the part of them that differs
+    most (parts of PART by PART pixels). Things often differ in one small place (a numeral beside the same
+    suit), which a mean over the whole would lose. Samples of different sizes are not the same thing."""
+    if one[:2] != other[:2]:
+        return 255.0
+    width, height = one[0], one[1]
+    across = -(-width // PART)
+    sums = [0] * (across * -(-height // PART))
+    for index in range(width * height):
+        at = 2 + index * 3
+        sums[(index // width) // PART * across + (index % width) // PART] += (
+            abs(one[at] - other[at]) + abs(one[at + 1] - other[at + 1]) + abs(one[at + 2] - other[at + 2]))
+    return max(sums) / (PART * PART * 3)
 
 
 class Bank:
