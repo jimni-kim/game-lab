@@ -2,7 +2,9 @@
 colour line up, which are removed; what is above falls and new pieces come in at the top (PLAN §10, G8).
 
 A piece is its colour, a small whole number (`COLOURS` names them for whoever reads a screen); 0 is a place
-that holds no piece. What comes in at the top is not known before it shows: `apply` leaves those cells
+that holds no piece, and BLOCK a cell filled by something that is no piece: it is not swapped, lines up with
+nothing and does not fall, and pieces rest on it. How a game gets rid of such a thing is the game's own and is
+not modelled: a board on which one is gone is read from the screen like any other result. What comes in at the top is not known before it shows: `apply` leaves those cells
 unread (None) and settles only what the known pieces settle among themselves, so a move's result on the
 screen may differ from it where the new pieces set off more removals. `assess` therefore takes a settled
 board that changed as the move's result, and only an unchanged board as the move not taken.
@@ -14,6 +16,8 @@ from __future__ import annotations
 # the colours a piece is read as, by the number a state holds for it (1-based; 0 is no piece)
 COLOURS = ("red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "cyan", "brown")
 EMPTY = 0
+# a cell filled by something that is not a piece (an obstacle, a locked or covered cell)
+BLOCK = len(COLOURS) + 1
 RUN = 3
 PLAYING, OVER, WON = "playing", "over", "won"
 DEFAULT_RULES = {"rows": 8, "cols": 8, "colours": 6}
@@ -36,7 +40,7 @@ def validate(state: dict, rules: dict) -> list[str]:
     if not isinstance(grid, list) or len(grid) != rows or any(not isinstance(row, list) or len(row) != cols for row in grid):
         return ["grid_shape"]
     problems = []
-    if any(cell is not None and (type(cell) is not int or not 0 <= cell <= len(COLOURS)) for row in grid for cell in row):
+    if any(cell is not None and (type(cell) is not int or not 0 <= cell <= BLOCK) for row in grid for cell in row):
         problems.append("cell_value")
     elif state.get("scene", PLAYING) == PLAYING and not _unread(state) and _runs(grid):
         # a board at rest holds no line of three: one that does is still moving, or was misread
@@ -58,7 +62,7 @@ def _runs(grid) -> set:
     for r in range(rows):
         for c in range(cols):
             colour = grid[r][c]
-            if not colour:
+            if not _piece(colour):
                 continue
             for dr, dc in STEPS:
                 if 0 <= r - dr and 0 <= c - dc and grid[r - dr][c - dc] == colour:
@@ -69,6 +73,11 @@ def _runs(grid) -> set:
                 if length >= RUN:
                     found.update((r + dr * step, c + dc * step) for step in range(length))
     return found
+
+
+def _piece(cell) -> bool:
+    """Whether a cell holds a piece: something that is swapped, lines up and falls."""
+    return cell is not None and EMPTY < cell < BLOCK
 
 
 def _swapped(grid, cell, to):
@@ -82,7 +91,7 @@ def _lines_through(grid, cell) -> bool:
     """Whether the piece at `cell` stands in a line of RUN or more."""
     r, c = cell
     colour = grid[r][c]
-    if not colour:
+    if not _piece(colour):
         return False
     for dr, dc in STEPS:
         length = 1
@@ -106,7 +115,8 @@ def legal_actions(state: dict, rules: dict) -> list[dict]:
         for c in range(len(grid[0])):
             for dr, dc in STEPS:
                 r2, c2 = r + dr, c + dc
-                if r2 >= len(grid) or c2 >= len(grid[0]) or not grid[r][c] or not grid[r2][c2] or grid[r][c] == grid[r2][c2]:
+                if (r2 >= len(grid) or c2 >= len(grid[0]) or not _piece(grid[r][c]) or not _piece(grid[r2][c2])
+                        or grid[r][c] == grid[r2][c2]):
                     continue
                 swapped = _swapped(grid, (r, c), (r2, c2))
                 if _lines_through(swapped, (r, c)) or _lines_through(swapped, (r2, c2)):
@@ -116,16 +126,17 @@ def legal_actions(state: dict, rules: dict) -> list[dict]:
 
 def _fall(grid, removed) -> list:
     """The grid with `removed` cells gone and what was above them fallen; what comes in at the top is unread.
-    An empty place (0) holds nothing and lets nothing through: pieces settle on it."""
+    An empty place and a blocked cell let nothing through: pieces settle on them, and what comes in above a
+    stretch they close off from the top is as unread as anything else that comes in."""
     out = [list(row) for row in grid]
     for c in range(len(grid[0])):
         r = len(grid) - 1
         while r >= 0:
-            if grid[r][c] == EMPTY:
+            if grid[r][c] in (EMPTY, BLOCK):
                 r -= 1
                 continue
-            top = r                      # one stretch of the column between empty places, bottom to top
-            while top - 1 >= 0 and grid[top - 1][c] != EMPTY:
+            top = r                      # one stretch of the column between such cells, bottom to top
+            while top - 1 >= 0 and grid[top - 1][c] not in (EMPTY, BLOCK):
                 top -= 1
             kept = [grid[y][c] for y in range(r, top - 1, -1) if (y, c) not in removed]
             for offset, y in enumerate(range(r, top - 1, -1)):

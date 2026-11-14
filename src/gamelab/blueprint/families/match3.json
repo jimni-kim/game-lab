@@ -1,7 +1,7 @@
 {
   "id": "match3",
-  "revision": 1,
-  "summary": "A grid of pieces of a few colours. Each move swaps two neighbouring pieces (side by side or one above the other) so that three or more pieces of one colour stand in a line. Those pieces are removed, the pieces above fall into their places and new pieces come in at the top; lines that form as they fall are removed too. A swap that lines nothing up is undone by the game.",
+  "revision": 2,
+  "summary": "A grid of pieces of a few colours, not always a rectangle. Each move swaps two neighbouring pieces so that three or more of one colour stand in a line. Those are removed, the pieces above fall and new ones come in at the top; lines that form as they fall are removed too. A swap that lines nothing up is undone. A cell may hold something that is not a piece (an obstacle): it is never swapped and lines up with nothing.",
   "state_schema": "match3.v1",
   "board": {
     "shape": "grid",
@@ -11,8 +11,12 @@
         "looks": "one piece; its colour is what it is, whatever its shape or face"
       },
       {
+        "kind": "blocked",
+        "looks": "a cell of the grid filled by something that is not one of the pieces being swapped: an obstacle, a block, a covered or locked cell"
+      },
+      {
         "kind": "empty",
-        "looks": "a place in the grid's outline that never holds a piece (a gap, a wall)"
+        "looks": "a place inside the grid's bounding rectangle where the grid has no cell (outside an outline that is not a rectangle, a gap)"
       },
       {
         "kind": "unknown",
@@ -21,7 +25,7 @@
     ]
   },
   "state_fields": {
-    "grid": "the grid's rows from the top, each a list of cells from the left: a piece is the number of its colour (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; the nearest of these, and always the same number for the same kind of piece), 0 a place that holds no piece, null a cell nobody read",
+    "grid": "the rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is the number of its colour (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; the nearest of these, and always the same number for the same kind of piece), 11 a cell filled by something that is not a piece to swap (an obstacle, a covered or locked cell), 0 a place where the grid has no cell or the cell holds nothing, null a cell nobody read",
     "score": "the game's score as read, or null",
     "scene": "the id of the scene the screen shows"
   },
