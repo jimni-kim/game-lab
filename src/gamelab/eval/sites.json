@@ -381,5 +381,53 @@
         "wait_ms": 3000
       }
     ]
+  },
+  "tatham_fifteen": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/fifteen.html",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Simon Tatham's Portable Puzzle Collection (MIT), the fifteen puzzle: slide numbered tiles into order. A game of no registered family: no `family` is named, so the harness finds out what it is and, finding none, a model plays it (PLAN §11, H2). Development games for that path; each reload deals a new one. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
+  },
+  "tatham_samegame": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/samegame.html",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Simon Tatham's Portable Puzzle Collection (MIT), Same Game: remove connected groups of one colour. A game of no registered family: no `family` is named, so the harness finds out what it is and, finding none, a model plays it (PLAN §11, H2). Development games for that path; each reload deals a new one. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
+  },
+  "tatham_flip": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/flip.html",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Simon Tatham's Portable Puzzle Collection (MIT), Flip: light every square, each press turning over a pattern of them. A game of no registered family: no `family` is named, so the harness finds out what it is and, finding none, a model plays it (PLAN §11, H2). Development games for that path; each reload deals a new one. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
   }
 }

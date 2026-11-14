@@ -26,7 +26,7 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, catalog
+from . import adaptation, catalog, direct
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
@@ -41,7 +41,7 @@ from .recovery import GIVE_UP, MAX_TRIES, NONE, Recovery
 log = logging.getLogger("gamelab.agent")
 
 RECORD_VERSION = 2
-L2, L3 = "L2", "L3"
+L0, L2, L3 = "L0", "L2", "L3"
 # the first moves read by an adapter (made now, or kept from another game) that must each do what the rules
 # predict: one that does not sends the screen to the model
 TRIAL_MOVES = 3
@@ -62,6 +62,9 @@ STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
 # it was last written is churning, and after MAX_CHURN such rewrites in a row the game goes on read by the
 # model (writing costs about what EXPLORE_MOVES readings do)
 EARNED, MAX_CHURN = EXPLORE_MOVES, 2
+# a game played by the model's own inputs (L0) is given up when this many of them in a row changed nothing on
+# the screen, or when the model gave this many answers in a row that are no input
+MAX_IDLE, MAX_SILENT = 6, 3
 # the question of which game this is, asked again when the model could not be reached
 IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 # a state reached this many times by confirmed moves ends the game as going nowhere
@@ -146,11 +149,13 @@ class Agent:
     def __init__(self, surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-                 writer: Model | None = None) -> None:
+                 writer: Model | None = None, direct: bool = True) -> None:
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
         # the model that writes adapters, when it is another: its questions count in the game's as the reader's do
         self.writer = self.model.also(writer) if writer is not None else None
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
+        # whether a game of no registered family is played by the model's own inputs, not left unplayed
+        self.direct = direct
         self.asked_policy, self.watch, self.cancel, self.accept_consent = policy, watch, cancel, accept_consent
         self.started = time.monotonic()
         # drags are carried: what a held thing is drawn like is measured on the way (`carry`)
@@ -266,7 +271,7 @@ class Agent:
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
         if not await self._next_family():
-            raise _End(Outcome.UNSUPPORTED, "game_not_identified", self.found.get("identified", {}).get("situation") or "")
+            await self._play_direct(self.found.get("identified", {}).get("situation") or "")
 
     async def _identify(self) -> dict[str, Any]:
         """Which families the game may be, as a model sees it; asked again when the model could not be reached
@@ -851,6 +856,77 @@ class Agent:
             return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
 
+    # ── a game of no registered family ────────────────────────────────
+
+    async def _play_direct(self, situation: str) -> None:
+        """The game is none the harness has rules for: a model plays it with inputs of its own (L0), told after
+        each what the code saw change on the screen. Always ends the game (`_End`): at the game's own end as
+        the model reads it, when nothing more can be done, or at a budget. A move counts as confirmed when
+        the screen changed after it, which is all the code can say without rules."""
+        if not self.direct:
+            raise _End(Outcome.UNSUPPORTED, "game_not_identified", situation)
+        if self.adapter is not None:
+            self.adapter.close()
+        self.adapter, self.family_id, self.policy = None, None, "model"
+        player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent)
+        self.found["direct"] = told = player.summary()
+        self.levels[L0] = 0
+        objective, idle, silent = str(self.goal.objective), 0, 0
+        while True:
+            told.update(player.summary())
+            if objective == "actions" and self.confirmed >= (self.goal.target_value or 1):
+                raise _End(Outcome.GOAL_REACHED, "actions")
+            if objective == "reach_value" and player.score is not None and self.goal.target_value is not None \
+                    and player.score >= self.goal.target_value:
+                raise _End(Outcome.GOAL_REACHED, objective)
+            self._check_stops()
+            self._afford()
+            before = await self.surface.capture()
+            looked = time.monotonic()
+            self.shots += 1
+            self.last_png = before
+            if self.watch is not None:
+                await self.watch.seen(before)
+            left = {"inputs": self.budget.max_actions - self.used,
+                    "seconds": None if self._left() is None else round(self._left())}
+            try:
+                answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left))
+            except Exception as error:
+                log.info("the model could not be asked for a move: %s", error)
+                self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
+                answer = None
+            told.update(player.summary())
+            if answer is None:
+                silent += 1
+                if silent >= MAX_SILENT:
+                    raise _End(Outcome.GAVE_UP, "model_no_answer", player.situation)
+                continue
+            silent = 0
+            action = answer["action"]
+            if action["kind"] == direct.DONE:
+                won = action["end"] == WON
+                raise _End(Outcome.GOAL_REACHED if won and objective == "play_until_end" else Outcome.GAME_OVER,
+                           WON if won else "end_screen", player.situation)
+            if action["kind"] == direct.GIVE_UP:
+                raise _End(Outcome.GAVE_UP, "model_gave_up", player.situation)
+            if self.watch is not None:
+                await self.watch.sending(self.used + 1, action, None, action, looked)
+            await direct.send(self.surface, action)
+            self.used += 1
+            if self.watch is not None:
+                await self.watch.sent()
+            changed = player.saw(answer, before, await direct.settled(self.surface))
+            self.levels[L0] += 1
+            self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": answer["told"], "level": L0,
+                               "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
+                               "expected": answer["expect"], "at_s": round(time.monotonic() - self.started, 2)})
+            if changed or action["kind"] == direct.WAIT:
+                self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT), 0
+            else:
+                idle += 1
+                if idle >= MAX_IDLE:
+                    raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
+
     def _won_meets_goal(self) -> bool:
         """Whether the game's own win message, with nothing under it read, is the goal reached: the rule
         model's to say (a win is the family's own target, which a run may have set higher)."""
@@ -870,16 +946,17 @@ class Agent:
             return False
         self.tries, self.stalled, self.shrugged = 0, 0, False
         if not await self._next_family():
-            raise _End(Outcome.UNSUPPORTED, "game_not_identified", self._situation())
+            await self._play_direct(self._situation())
         return True
 
 
 async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-               writer: Model | None = None, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               writer: Model | None = None, direct: bool = True, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
-                       hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer).run()
+                       hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
+                       direct=direct).run()

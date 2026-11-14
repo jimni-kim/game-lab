@@ -328,7 +328,8 @@ async def main(args: argparse.Namespace) -> int:
     if args.viewport:
         site = {**site, "resize": args.viewport}
     # with --identify nobody says which game the page shows: the harness finds out from the screen
-    family_id = None if args.identify else site["family"]
+    # (a site whose entry names no family is always found out so)
+    family_id = None if args.identify else site.get("family")
     client, model = measure.vision_model(args)
     if model is None:
         raise SystemExit("a game is played with a model: name one with --vision-model")

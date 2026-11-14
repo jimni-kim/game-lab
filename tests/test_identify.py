@@ -78,11 +78,18 @@ async def test_a_family_the_board_cannot_be_read_as_is_passed_over_with_no_move_
     assert not fake.keys and made["identified"]["family"] == "minesweeper"
 
 
-async def test_a_game_of_no_known_family_is_not_played(tmp_path):
-    fake, guide, played, made = await mines([[]], tmp_path)
+async def test_a_game_of_no_known_family_is_not_played_when_the_model_may_not_play_it_itself(tmp_path):
+    """With `direct` off a game no family fits ends unplayed (with it on, the model plays it: test_direct.py)."""
+    async def unplayed(answers):
+        fake = Mines()
+        guide = Guide(Reader(fake, [mines_source()]), answers)
+        played, made = await play_adaptive(fake, guide, None, goal=GoalSpec("play_until_end"),
+                                           budget=Budget(60, COMPUTE, 300), store=Store(tmp_path), direct=False)
+        return fake, guide, played, made
+    fake, guide, played, made = await unplayed([[]])
     assert (played.record["outcome"], played.record["reason"]) == ("unsupported", "game_not_identified")
     assert made["failed"] == "game_not_identified" and not fake.taps and len(guide.asked) == 1
-    wrong, guide, played, made = await mines([["slide_merge"]], tmp_path)
+    wrong, guide, played, made = await unplayed([["slide_merge"]])
     assert (played.record["outcome"], played.record["reason"]) == ("unsupported", "game_not_identified")
     assert made["identified"]["tried"] == ["slide_merge"] and made["identified"]["family"] is None and not wrong.taps
 

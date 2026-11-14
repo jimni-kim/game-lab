@@ -15,13 +15,14 @@ def test_a_misspelt_perturbation_fails_before_any_game(text):
 
 
 def test_the_site_settings_are_ones_a_run_can_start_from():
-    """Every evaluation site has a window size, its page and a known family: `--site` alone starts a run."""
+    """Every evaluation site has a window size and its page, and a known family unless it is a game of none
+    (which the harness finds out and leaves to the model): `--site` alone starts a run."""
     sites = json.loads(web.SITES.read_text(encoding="utf-8"))
     for name, site in sites.items():
         if name.startswith("_"):
             continue
         assert len(site["viewport"]) == 2, name
-        assert site["url"].startswith("https://") and site["family"] in catalog.MODELS, name
+        assert site["url"].startswith("https://") and site.get("family", "minesweeper") in catalog.MODELS, name
 
 
 def test_a_web_run_is_named_by_its_site_alone_and_old_commands_still_parse():
