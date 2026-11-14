@@ -118,3 +118,32 @@ async def test_a_game_played_by_keys_is_identified_the_same_way(tmp_path):
                                        store=Store(tmp_path))
     assert (played.record["outcome"], played.record["family"]) == ("goal_reached", "slide_merge"), (played.record, made)
     assert made["identified"]["tried"] == ["minesweeper", "slide_merge"] and not fake.taps
+
+
+class Unreachable(Guide):
+    """A model that cannot be reached the first `fails` times it is asked which game this is."""
+
+    def __init__(self, reader, answers, fails):
+        super().__init__(reader, answers)
+        self.fails = fails
+
+    async def complete(self, request):
+        if "families" in json.loads(request.messages[0].content[0]["text"]) and self.fails > 0:
+            self.fails -= 1
+            raise TimeoutError()
+        return await super().complete(request)
+
+
+async def test_a_model_not_reached_once_is_asked_again_which_game_this_is(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "IDENTIFY_RETRY_S", 0.0)
+    fake = Mines()
+    guide = Unreachable(Reader(fake, [mines_source()]), [["minesweeper"]], fails=1)
+    played, made = await play_adaptive(fake, guide, None, goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300),
+                                       store=Store(tmp_path))
+    assert (played.record["outcome"], played.record["family"]) == ("goal_reached", "minesweeper"), (played.record, made)
+    # a model that is never reached ends the game with nothing played, and says why
+    fake = Mines()
+    guide = Unreachable(Reader(fake, [mines_source()]), [["minesweeper"]], fails=10)
+    played, made = await play_adaptive(fake, guide, None, goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300),
+                                       store=Store(tmp_path / "other"))
+    assert (played.record["outcome"], played.record["reason"]) == ("gave_up", "model_failed") and not fake.taps

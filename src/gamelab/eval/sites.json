@@ -364,5 +364,22 @@
         "wait_ms": 2000
       }
     ]
+  },
+  "michaelbutler_mines": {
+    "url": "https://michaelbutler.github.io/minesweeper/",
+    "family": "minesweeper",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "An open-source (GPL-3.0) minesweeper drawn with page elements under a long page header: 9 by 9, 10 mines, small pale digits. First played 2026-11-14 (G11 review): the board's reading went wrong after the first move. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      }
+    ]
   }
 }

@@ -71,6 +71,10 @@ HELD_UNREAD = 2
 PLACE_MARGIN = 0.25
 RUN_TOLERANCE = 6
 MAX_RUNS = 120
+# a board the model places further than this share of a cell from where it was is taken to have moved
+BOARD_MOVED = 0.5
+# what a question that writes an adapter costs, roughly: its text's characters to a token, and a picture
+WRITE_CHARS, WRITE_PICTURE = 2, 800
 # the controls a game can be explored with before any adapter exists: a key per direction, a tap on the cell a
 # move names, a drag of the thing a move names (one entry of a state field, at the box the model gave for
 # it) onto the cells the move names, or, for a game whose board is no grid, taps on and drags between the
@@ -346,6 +350,12 @@ class Adaptation:
                 await asyncio.sleep(SETTLE_S)
                 continue
             found = answer.get("board") if board is None else board
+            if board is not None and shape and _moved(board, answer.get("board"), shape, size):
+                # the game is elsewhere on the screen than it was (the page was laid out anew): the grid drawn
+                # for the model lay beside the cells, so the screen is read once more with nothing drawn on it
+                again = await self.label(png, None, None)
+                if again is not None and check_layout({"board": again.get("board")}, size) is not None:
+                    answer, found = again, again["board"]
             if check_layout({"board": found}, size) is None:
                 problem = "board_off_screen"
                 continue
@@ -535,6 +545,11 @@ class Adaptation:
                 "examples": examples, **({"probes": probes(trace.train[0])} if gridded else {}),
                 **({"previous": {"module": previous[0], "problems": previous[1]}} if previous else {})}
 
+    def cost(self, trace: Trace, previous: tuple[str, list[str]] | None = None) -> int:
+        """About how many input tokens one question that writes an adapter from `trace` takes."""
+        text = len(json.dumps(self._context(trace, previous))) + len(_prompt("generate_adapter.md"))
+        return text // WRITE_CHARS + WRITE_PICTURE * len(trace.train)
+
     async def write(self, trace: Trace, previous: tuple[str, list[str]] | None = None) -> str:
         content = [{"type": "text", "text": json.dumps(self._context(trace, previous))},
                    *(_image(look.png) for look in trace.train)]
@@ -547,11 +562,12 @@ class Adaptation:
     async def make(self, trace: Trace, previous: tuple[str, list[str]] | None = None, allowed: Any = None) -> Made:
         """An adapter that passes every check on the trace, written in at most MAX_GENERATIONS attempts;
         `previous` is an earlier adapter and what is wrong with it now, to write from. `allowed`, when given,
-        says before each attempt whether one more may be asked for (a game's budget of questions)."""
+        is told before each attempt about what it costs (`cost`) and says whether it may be asked for (a
+        game's budget of tokens)."""
         started, before = time.monotonic(), self.questions
         attempts = []
         for generation in range(1, MAX_GENERATIONS + 1):
-            if allowed is not None and not allowed():
+            if allowed is not None and not allowed(self.cost(trace, previous)):
                 raise AdaptationFailed("budget", json.dumps(attempts))
             try:
                 source = await self.write(trace, previous)
@@ -664,8 +680,6 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
         # each look as the code reads it (marks and all, `samples`), and the samples it gives
         raws: list[dict[str, Any] | None] = []
         cuts: list[list[tuple[Any, list[bytes]]]] = []
-        # for each screen read otherwise than recorded: whether only what samples name differs
-        named: list[bool] = []
         for index, look in enumerate(trace.looks):
             raws.append(None)
             cuts.append([])
@@ -682,7 +696,6 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                 fail("read", index, f"{problem}; expected {json.dumps(_board(look.state))}")
                 continue
             raws[index], cuts[index] = raw, found
-        report["corrected"] = _settle_slips(trace, raws, cuts, family)
         states: list[dict[str, Any] | None] = []
         for index, look in enumerate(trace.looks):
             raw = raws[index]
@@ -700,7 +713,6 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
             unseen = samples.resolve(raw, look.png, others)
             marked = {path for path, _ in samples.marks(raw)}
             if not _agrees(_board(unseen), _board(look.state)):
-                named.append(all(path in marked for path in _differing(_board(unseen), _board(look.state))))
                 fail("state", index, f"read() gave {json.dumps(_board(unseen))}, expected {json.dumps(_board(look.state))}")
                 continue
             # by its own samples too: all of it, with nothing the code itself left unread
@@ -709,7 +721,6 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
             # empty till then): there the code may leave a value or two unread, as long as it reads nothing wrongly
             spared = look.held and _agrees(_board(own), _board(look.state)) and _unread_leaves(own) <= HELD_UNREAD
             if _board(own) != _board(look.state) and not spared:
-                named.append(all(path in marked for path in _differing(_board(own), _board(look.state))))
                 marked = bool(marked)
                 fail("read" if not marked else "samples", index,
                      (f"read() left cells unread: {json.dumps(_board(own))}" if not marked else
@@ -751,8 +762,6 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
     finally:
         adapter.close()
     report["passed"] = report["failed_check"] is None
-    # the code found everything where it is and only the names its samples give differ from a recorded reading
-    report["by_samples"] = bool(named) and all(named) and report["failed_check"] in ("state", "samples")
     return report
 
 
@@ -797,6 +806,17 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
     return left <= asked["x"] < left + width and top <= asked["y"] < top + height
 
 
+def _moved(board: list[int], said: Any, shape: tuple[int, int], size: list[int]) -> bool:
+    """Whether the box a model gives for the board lies elsewhere than the one it was told: an edge further
+    than BOARD_MOVED of a cell from where it was."""
+    if check_layout({"board": said}, size) is None:
+        return False
+    rows, cols = shape
+    across, down = board[2] / cols * BOARD_MOVED, board[3] / rows * BOARD_MOVED
+    return (abs(said[0] - board[0]) > across or abs(said[0] + said[2] - board[0] - board[2]) > across
+            or abs(said[1] - board[1]) > down or abs(said[1] + said[3] - board[1] - board[3]) > down)
+
+
 def _filled(read: Any, prior: Any) -> Any:
     """A reading with each unread value taken from `prior` where that has one at the same place."""
     if read is None:
@@ -806,45 +826,6 @@ def _filled(read: Any, prior: Any) -> Any:
     if isinstance(read, list) and isinstance(prior, list) and len(read) == len(prior):
         return [_filled(value, other) for value, other in zip(read, prior)]
     return read
-
-
-def _settle_slips(trace: Trace, raws: list[dict[str, Any] | None], cuts: list[list[tuple[Any, list[bytes]]]],
-                  family: Any) -> int:
-    """A model misreads a thing now and then. Where the very pixels one look's reading names one way are named
-    another way by at least two other looks and by more of them, that reading slipped: the look's state is put
-    right (when the rules still take it) and its samples are cut again. Returns how many values were put
-    right. The looks are the trace's own: what is put right stays right for whoever reads them next."""
-    seen = [samples.placed(raw, look.png) if raw is not None else [] for raw, look in zip(raws, trace.looks)]
-    votes: dict[bytes, dict[str, int]] = {}
-    for look, found in zip(trace.looks, seen):
-        for path, sample in found:
-            key = json.dumps(samples._at(look.state, path), sort_keys=True)
-            votes.setdefault(sample, {})[key] = votes.setdefault(sample, {}).get(key, 0) + 1
-    settled = 0
-    for index, (look, found) in enumerate(zip(trace.looks, seen)):
-        changed = False
-        for path, sample in found:
-            mine = json.dumps(samples._at(look.state, path), sort_keys=True)
-            said = votes[sample]
-            best = max(said, key=said.get)
-            if best != mine and said[best] >= 2 and said[best] > said[mine]:
-                fixed = samples.put(look.state, path, json.loads(best))
-                if not family.model.validate(fixed, family.rules):
-                    look.state, changed, settled = fixed, True, settled + 1
-        if changed:
-            cuts[index] = samples.learn(raws[index], look.state, [look.png, *look.frames])[0]
-    return settled
-
-
-def _differing(one: Any, other: Any, path: tuple = ()) -> list[tuple]:
-    """Where two readings of one shape differ, an unread value of the first differing from nothing."""
-    if one is None or one == other:
-        return []
-    if isinstance(one, dict) and isinstance(other, dict):
-        return [found for key in one for found in _differing(one[key], other.get(key), (*path, key))]
-    if isinstance(one, list) and isinstance(other, list) and len(one) == len(other):
-        return [found for index, (a, b) in enumerate(zip(one, other)) for found in _differing(a, b, (*path, index))]
-    return [path]
 
 
 def _unread_leaves(value: Any) -> int:

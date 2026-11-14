@@ -105,8 +105,21 @@ async def test_a_game_ends_when_its_questions_have_used_their_tokens():
     enough = Mines()
     reader = Costly(Reader(enough, [mines_source()]), 1000)
     played, made = await agent.play(enough, reader, "minesweeper", goal=GoalSpec("play_until_end"),
-                                    budget=Budget(60, COMPUTE, 300, max_input_tokens=8000))
+                                    budget=Budget(60, COMPUTE, 300, max_input_tokens=100_000))
     assert ending(played) == ("goal_reached", "play_until_end") and made["tokens"]["input"] == 8000
+
+
+async def test_an_adapter_is_not_written_when_what_is_left_of_the_tokens_cannot_pay_for_it():
+    """Seven readings leave 1,000 tokens of 8,000: the question that writes the adapter is far larger than
+    that (its examples and pictures), so it is not asked, and the game goes on read by the model to its limit."""
+    fake = Mines()
+    reader = Costly(Reader(fake, [mines_source()]), 1000)
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"),
+                                    budget=Budget(60, COMPUTE, 300, max_input_tokens=8000))
+    assert ending(played) == ("budget_exhausted", "tokens"), (played.record, made)
+    assert made["generations"] == 0 and made["tokens"]["input"] == 8000
+    assert [failure["reason"] for failure in made["generation_failures"]] == ["budget"]
+    assert not [kind for kind, _, _ in reader.model.asked if kind == "generate"]
 
 
 async def test_a_kept_adapter_reads_and_plays_the_game_in_the_sandbox_with_no_question(tmp_path, monkeypatch):
@@ -252,3 +265,102 @@ async def test_a_notice_before_the_first_board_of_a_site_played_before_is_got_pa
     assert made["reused"] and played.record["levels"]["L2"] == 0
     # the kept input is sent again at the same notice with no question (the first game met none: one question here)
     assert [kind for kind, _, _ in reader.asked] == ["label", "recover"]
+
+
+WRONG = ["def measure(picture):\n    return None\n"] * adaptation.MAX_GENERATIONS
+
+
+class Shifting(Mines):
+    """A page that lays itself out anew after `after` moves: everything on it lies `down` pixels lower."""
+
+    def __init__(self, after, down):
+        super().__init__()
+        self.after, self.down = after, down
+
+    @property
+    def shift(self):
+        return self.down if self.played >= self.after else 0
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image
+
+        from test_adaptation_mines import PAGE
+        with Image.open(BytesIO(await super().capture())) as drawn:
+            moved = Image.new("RGB", drawn.size, PAGE)
+            moved.paste(drawn, (0, self.shift))
+        out = BytesIO()
+        moved.save(out, format="PNG")
+        return out.getvalue()
+
+    async def tap(self, x, y, duration_ms):
+        await super().tap(x, y - self.shift, duration_ms)
+
+
+class Following(Reader):
+    """A model that says where the board is on the screen as it is now."""
+
+    async def complete(self, request):
+        import json
+
+        result = await super().complete(request)
+        answer = json.loads(result.text) if result.text.startswith("{") else None
+        if isinstance(answer, dict) and answer.get("board"):
+            answer["board"][1] += self.fake.shift
+            return TurnResult(text=json.dumps(answer))
+        return result
+
+
+async def test_a_board_that_moves_on_the_screen_is_played_where_it_is_now():
+    """After two moves the page is laid out anew and the board lies a whole cell lower. The model says where
+    it is; the game is read and played there, not at the first screen's box (where every tap would open the
+    cell above the one chosen)."""
+    fake = Shifting(after=2, down=48)
+    reader = Following(fake, WRONG)
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
+    assert ending(played) == ("goal_reached", "won"), (played.record, made)
+    # every tap opened a cell: none fell on one already open or beside the board
+    assert fake.played == len(fake.taps) and played.record["confirmed_actions"] == len(fake.taps)
+
+
+class Mistaken(Reader):
+    """A model that, from its `since`th reading on and `times` times, reads a board the last move cannot have
+    left: a far corner open that nothing opened."""
+
+    def __init__(self, fake, since, times):
+        super().__init__(fake, WRONG)
+        self.since, self.times = since, times
+
+    async def complete(self, request):
+        import json
+
+        result = await super().complete(request)
+        labels = sum(kind == "label" for kind, _, _ in self.asked)
+        if self.asked[-1][0] == "label" and labels > self.since and self.times > 0:
+            self.times -= 1
+            answer = json.loads(result.text)
+            answer["state"]["grid"] = [[9] * 9 for _ in range(9)]
+            answer["state"]["grid"][8][0] = 1
+            return TurnResult(text=json.dumps(answer))
+        return result
+
+
+async def test_no_move_is_chosen_from_a_reading_that_takes_the_last_move_back():
+    """The model misreads every screen after the second move. The reading is not one the move can have left,
+    and it stays refused when the screen is looked at again: no further move is played from it."""
+    fake = Mines()
+    reader = Mistaken(fake, since=2, times=10 ** 6)
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
+    assert ending(played) == ("gave_up", "inconsistent"), (played.record, made)
+    assert len(fake.taps) == 2
+
+
+async def test_a_result_read_late_is_still_the_last_moves_result():
+    """The second move's result is misread as often as it is asked about at first. The next look is held to
+    that move too, reads it right, and the game goes on from there to its end without playing the move again."""
+    fake = Mines()
+    reader = Mistaken(fake, since=2, times=1 + adaptation.LABEL_RETRIES)
+    reader.recovering = [{"kind": "none"}]
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
+    assert ending(played) == ("goal_reached", "won"), (played.record, made)
+    assert fake.played == len(fake.taps)

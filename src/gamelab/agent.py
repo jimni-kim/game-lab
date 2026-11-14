@@ -27,8 +27,8 @@ import time
 from typing import Any, Protocol
 
 from . import adaptation, catalog
-from .adaptation import (HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made, Store, Trace,
-                         _agrees, _board, _shape, adopt, explorable, identify)
+from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
+                         Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
 from .carry import Carrier
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
@@ -58,9 +58,12 @@ ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
 # as small grey pictures that may differ this much on average (of 255), and for no longer than this
 STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
-# readings of the model's an adapter's samples may speak against in a row before the adapter is written again,
-# and the share of a game's tokens after which it is not written again at all
-MAX_DISPUTES, REWRITE_SHARE = 3, 0.5
+# an adapter earns being written again by reading moves: one that read fewer than EARNED confirmed moves since
+# it was last written is churning, and after MAX_CHURN such rewrites in a row the game goes on read by the
+# model (writing costs about what EXPLORE_MOVES readings do)
+EARNED, MAX_CHURN = EXPLORE_MOVES, 2
+# the question of which game this is, asked again when the model could not be reached
+IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 # a state reached this many times by confirmed moves ends the game as going nowhere
 MAX_VISITS = 3
 # moves kept in the record and told to a model asked about a screen
@@ -168,9 +171,10 @@ class Agent:
         self.used = self.confirmed = self.stalled = self.tries = self.shots = self.sequence = 0
         self.shrugged = False
         self.ineffective: dict[str, Any] | None = None
-        # screens a model read that an adopted adapter's samples spoke against, in a row, and how many looks
-        # the adapter last passed its check on
-        self.disputes = self.checked = 0
+        # confirmed moves the adapter read since it was last written, and rewrites in a row it had not earned
+        self.earned = self.churn = 0
+        # a move whose result nobody read yet, with the board it was played from: the next reading is held to it
+        self.unread_move: tuple[Reading, dict[str, Any]] | None = None
         self.visits: dict[str, int] = {}
         self.trial = 0
         self.rested: list[float] = []
@@ -238,13 +242,27 @@ class Agent:
             if kept:
                 self.candidates, self.found["identified"] = kept[:1], {"family": kept[0], "source": "kept", "questions": 0}
             else:
-                asked = await identify(self.surface, self.model, Recovery(self.model, None, known=[]), hint=self.hint)
+                asked = await self._identify()
                 self.candidates, self.named = list(asked["families"]), True
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
         if not await self._next_family():
             raise _End(Outcome.UNSUPPORTED, "game_not_identified", self.found.get("identified", {}).get("situation") or "")
+
+    async def _identify(self) -> dict[str, Any]:
+        """Which families the game may be, as a model sees it; asked again when the model could not be reached
+        (a gateway's timeout is not the game's end)."""
+        for attempt in range(1 + IDENTIFY_RETRIES):
+            try:
+                return await self._asking(identify(self.surface, self.model, Recovery(self.model, None, known=[]),
+                                                   hint=self.hint))
+            except Exception as error:
+                log.info("the game could not be asked about: %s", error)
+                self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
+                if attempt == IDENTIFY_RETRIES:
+                    raise _End(Outcome.GAVE_UP, "model_failed", f"{type(error).__name__}: {error}"[:2000]) from None
+                await asyncio.sleep(IDENTIFY_RETRY_S)
 
     async def _next_family(self) -> bool:
         """The next family the game may be, taken when its board reads from the screen."""
@@ -256,7 +274,7 @@ class Agent:
     async def _take(self, family_id: str) -> bool:
         if self.adapter is not None:
             self.adapter.close()
-        self.adapter = self.trace = self.made = self.board = self.carried = self.unproven = None
+        self.adapter = self.trace = self.made = self.board = self.carried = self.unproven = self.unread_move = None
         try:
             self.policy = check(self.goal, self.budget, family_id, self.asked_policy)
             self.recovery = Recovery(self.model, family_id, accept_consent=self.accept_consent,
@@ -289,10 +307,16 @@ class Agent:
         self._check_stops()
         before, self.carried = self.carried, None
         if before is None:
-            before = await self._read(None)
+            # a move whose result nobody read is still what this screen must be the result of: no move is
+            # chosen from a reading that takes the last one back
+            held, self.unread_move = self.unread_move, None
+            before = await self._read(held)
             if before is None:
+                self.unread_move = held
                 await self._unstick(self.why)
                 return
+            if held is not None and self._effect(held[0].state, held[1], before.state) == "absent":
+                self._spent(held[0].id, held[1])
         self.state = before.state
         self._judge(before.state)
         excluded = self.ineffective["actions"] if self.ineffective and self.ineffective["state"] == before.id else []
@@ -323,14 +347,14 @@ class Agent:
         self._remember(before, action, effect, after)
         if self.over:
             raise _End(Outcome.GAME_OVER, "terminal")
+        if after is None:
+            self.unread_move = (before, action)
         if effect == "confirmed":
             await self._confirmed(before, action, sent, after, sent_at)
             return
         self.stalled += 1
         if effect == "absent":
-            kept = self.ineffective if self.ineffective and self.ineffective["state"] == before.id else \
-                {"state": before.id, "actions": []}
-            self.ineffective = {**kept, "actions": [*kept["actions"], action]}
+            self._spent(before.id, action)
         if before.look is not None and before.look is self.unproven:
             self._drop_unproven()
         if after is None and self.why == "label_failed":
@@ -341,6 +365,11 @@ class Agent:
         # one after the move (a place it takes for empty) as the one before
         if L3 in (before.by, after.by if after else None) and (self.trial > 0 or self.stalled >= MAX_STALLED):
             self._doubt()
+
+    def _spent(self, state: str, action: dict[str, Any]) -> None:
+        """A move this board did not take: left out when the next is chosen from the same board."""
+        kept = self.ineffective if self.ineffective and self.ineffective["state"] == state else {"state": state, "actions": []}
+        self.ineffective = {**kept, "actions": [*kept["actions"], action]}
 
     async def _confirmed(self, before: Reading, action: dict[str, Any], sent: dict[str, Any], after: Reading,
                          sent_at: float) -> None:
@@ -354,7 +383,7 @@ class Agent:
         if self.visits[after.id] >= MAX_VISITS:
             raise _End(Outcome.GAME_OVER, "no_progress")
         if before.by == L3 and after.by == L3:
-            self.disputes = 0
+            self.earned += 1
         if before.by == L3 and after.by == L3 and self.trial > 0:
             self.trial -= 1
             self._time_trial(self.rested_at - sent_at)
@@ -415,13 +444,10 @@ class Agent:
     def _left(self) -> float | None:
         return None if self.budget.max_seconds is None else self.budget.max_seconds - (time.monotonic() - self.started)
 
-    def _affordable_rewrite(self) -> bool:
-        """Whether an adapter may be written again: not once the game's questions have used REWRITE_SHARE of
-        their tokens, so that what is left reads the game."""
-        return self.budget.max_input_tokens is None or self.model.input < self.budget.max_input_tokens * REWRITE_SHARE
-
-    def _affordable(self) -> bool:
-        return self.budget.max_input_tokens is None or self.model.input < self.budget.max_input_tokens
+    def _affordable(self, cost: int = 0) -> bool:
+        """Whether a question of about `cost` input tokens still fits the game's budget of them."""
+        return self.budget.max_input_tokens is None or self.model.input + cost <= self.budget.max_input_tokens \
+            and self.model.input < self.budget.max_input_tokens
 
     def _afford(self) -> None:
         """Before a model is asked anything: a game whose questions used up their tokens ends there."""
@@ -581,8 +607,10 @@ class Agent:
             return None
         self.last_png = png
         if first:
-            self.trace, self.board = Trace(self.family_id, rules, self.site), board
+            self.trace = Trace(self.family_id, rules, self.site)
             self.family = catalog.family(self.family_id).bind({"rules": rules})
+        # where the board is now: the first screen's box, or another when the game has moved on the screen
+        self.board = board
         look = Look(png, state, self.board, frames=tool.frames, sources=tool.sources)
         self.trace.looks.append(look)
         if expect is None and partial is None:
@@ -638,7 +666,7 @@ class Agent:
         self.adapter.keep(self.trace.looks)
         self.settling = Settling(**self.adapter.played.get("settling", {}))
         self.distrusted, self.blind, self.trial, self.rested, self.carried = False, False, TRIAL_MOVES, [], None
-        self.checked = len(self.trace.looks)
+        self.earned = 0
 
     def _demote(self, reason: str) -> None:
         """No adapter reads this game: the model reads it from here on."""
@@ -660,22 +688,18 @@ class Agent:
             self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
             if self.store is not None:
                 self.store.save(self.trace, self.made)
-        elif report.get("by_samples") and self.disputes < MAX_DISPUTES and len(self.trace.looks) > self.checked >= 1:
-            # the code names what it sees from screens read before, and those say otherwise than this one: the
-            # reading just made is doubted before the code is (a model misreads a card now and then), and is
-            # not kept; only when it keeps happening is the code written again
-            self.disputes += 1
-            self.trace.looks = self.trace.looks[:self.checked]
-            self.unproven = None
-            self.distrusted, self.blind, self.trial, self.carried = False, False, TRIAL_MOVES, None
-            return
         else:
-            if not self._affordable_rewrite():
-                self._demote("rewrite_budget")
-                return
+            # an adapter that read few moves since it was written and must be written again is churning: the
+            # screens it cannot keep up with are the model's to read
+            if self.earned < EARNED:
+                if self.churn >= MAX_CHURN:
+                    self._demote("rewrite_churn")
+                    return
+                self.churn += 1
+            else:
+                self.churn = 0
             self.rewrites += 1
             await self._generate((self.made.source, report["problems"]))
-        self.checked = len(self.trace.looks)
 
     async def _generate(self, previous: tuple[str, list[str]] | None) -> bool:
         """An adapter written from the looks so far and adopted when it passes on all of them. When none
@@ -793,6 +817,8 @@ class Agent:
                                                     timeout_s=self._left())):
             if self.blind:
                 self.distrusted = self.blind = False
+            # an input of the model's stands between the last move and this screen: it is read for itself
+            self.unread_move = None
             return
         action = self.recovery.log[-1]["action"] or {}
         if action.get("kind") == GIVE_UP and "end" in action:
