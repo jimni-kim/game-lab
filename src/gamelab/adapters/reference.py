@@ -19,6 +19,7 @@ from io import BytesIO
 from typing import Any
 
 from .. import catalog, discovery, geometry, perception, pixels, profiles
+from .. import registered
 from ..contracts import NeedObservation, Observation, StateEstimate
 from ..execution import MappedAction
 from ..families import GridFamily
@@ -143,7 +144,7 @@ class ReferenceAdapter:
         controls = checked.data.get("controls")
         if controls is None:
             raise ValueError("controls_unregistered")
-        tool, arguments, preview = catalog.CONTROLS[checked.family_id].map_action(
+        tool, arguments, preview = registered.CONTROLS[checked.family_id].map_action(
             action, state.payload, checked.layout, controls, png)
         return MappedAction(tool, arguments, checked.geometry_ref, preview)
 

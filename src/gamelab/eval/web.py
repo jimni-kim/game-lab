@@ -51,8 +51,8 @@ from typing import Any
 
 from pathlib import Path
 
-from .. import profiles
-from ..adaptation import Store, play_adaptive
+from .. import agent, baseline, profiles
+from ..adaptation import Store
 from ..environments.web import WebSurface, browser
 from ..play import play
 from . import measure
@@ -312,8 +312,10 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
             # the game is read by an adapter a model wrote for this site: the one kept for it or one made now
             # from the game's first moves, and made again whenever play stops at a screen it cannot read
             reader = options.pop("model")
-            run, adapted = await play_adaptive(WebSurface(page), reader, family_id, store=Store(args.adapter_store),
-                                               fresh=args.regenerate, **({"loop": args.loop} if getattr(args, "loop", None) else {}), **options)
+            # by the agent's own loop, or (--loop session) the session-driven one kept as the baseline
+            played_by = baseline.play_adaptive if getattr(args, "loop", None) == "session" else agent.play
+            run, adapted = await played_by(WebSurface(page), reader, family_id, store=Store(args.adapter_store),
+                                           fresh=args.regenerate, **options)
         else:
             run = await play(WebSurface(page), **options,
                              **({"profile": profile} if profile is not None else {"family_id": family_id}))

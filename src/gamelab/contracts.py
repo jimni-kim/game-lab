@@ -68,6 +68,11 @@ class Scope(StrEnum):
     CURRENT_LEVEL = "current_level"
 
 
+# why a game ends when its board is found but some of its cells are a look the reading does not know: nothing
+# is in the way (no model is asked about the screen), the reading itself must learn them
+CELLS_UNREAD = "cells_unread"
+
+
 @dataclass(frozen=True)
 class Observation:
     id: str

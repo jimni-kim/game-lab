@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import time
 from typing import Any
 
-from .screen import DRAG, KEYS, TAP
+from ..surface import DRAG, KEYS, TAP
 
 # a held pointer moves this often along a drag
 INTERPOLATION_INTERVAL_MS = 16

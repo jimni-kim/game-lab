@@ -9,7 +9,8 @@ from copy import deepcopy
 import pytest
 
 from gamelab import adaptation, recovery
-from gamelab.adaptation import Adaptation, Store, play_adaptive
+from gamelab.adaptation import Adaptation, Store
+from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.recovery import Recovery, check
 from gamelab.session import MAX_COVERS

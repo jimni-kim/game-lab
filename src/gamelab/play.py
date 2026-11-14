@@ -16,32 +16,20 @@ from typing import Any
 import uuid
 
 from . import catalog, profiles
+from . import registered
 from .adapters import SiteAdapter
 from .adapters.reference import ReferenceAdapter
 from .contracts import Budget, GoalSpec, Outcome
 from .environments.screen import ScreenEnvironment, Surface, Watch
 from .model import Model
 from .recovery import Recovery
+from .run import Run, check  # noqa: F401
 from .session import GameSession, SettlingPolicy, ended
 from .vision import DEFAULT_VISION, CorrectionReader, VisionBudget
 
 # the first moves of a game played by a profile made in the run that must each do what the rules predict
 # before play goes on: a misread value, a wrong size or a key the page ignores shows in them
 TRIAL_MOVES = 3
-
-
-@dataclass
-class Run:
-    record: dict[str, Any]
-    # every move the session recorded (its own record keeps only the last few)
-    moves: list[dict[str, Any]] = field(default_factory=list)
-    geometry: dict[str, Any] | None = None
-    made_profile: dict[str, Any] | None = None
-    vision: dict[str, Any] | None = None
-    looks: int = 0
-    last_screen: bytes | None = None
-    # each time play stopped on a screen and what a model did about it (`recovery.Recovery.log`)
-    recoveries: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _Guards:
@@ -53,19 +41,6 @@ class _Guards:
 
     async def lease_held(self) -> bool:
         return True
-
-
-def check(goal: GoalSpec, budget: Budget, family_id: str, policy: str | None) -> str:
-    """The policy a run plays, once its goal, budget and policy are ones the family can be run with."""
-    if goal.objective in ("reach_value", "actions") and goal.target_value is None:
-        raise ValueError("goal_target_missing")
-    if budget.max_seconds is not None and not (math.isfinite(budget.max_seconds) and budget.max_seconds > 0):
-        raise ValueError("invalid_budget")
-    family = catalog.family(family_id)
-    policy = policy or family.descriptor["default_policy"]
-    if policy not in family.policies():
-        raise ValueError("policy_unknown")
-    return policy
 
 
 async def play(surface: Surface, *, profile: profiles.Profile | None = None, family_id: str | None = None,
@@ -85,7 +60,7 @@ async def play(surface: Surface, *, profile: profiles.Profile | None = None, fam
         raise ValueError("give a profile or a family")
     unregistered = profile is None
     family_id = family_id or profile.family_id
-    if adapter is None and unregistered and family_id not in catalog.DISCOVERY:
+    if adapter is None and unregistered and family_id not in registered.DISCOVERY:
         raise ValueError("family_not_discoverable")
     if not unregistered and (profile.data["fixture_only"] or "controls" not in profile.data):
         raise ValueError("profile_not_registered")

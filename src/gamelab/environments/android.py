@@ -16,7 +16,7 @@ import re
 from typing import Any, Awaitable, Callable
 
 from .. import pixels
-from .screen import DRAG, KEYS, TAP
+from ..surface import DRAG, KEYS, TAP
 
 SDK = Path("/opt/homebrew/share/android-commandlinetools")
 ADB_VARIABLE = "GAMELAB_ADB"

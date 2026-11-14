@@ -35,12 +35,12 @@ from ..contracts import (
 )
 from ..errors import Denied
 from ..execution import MappedAction, map_action, tap
+from ..surface import DRAG, KEYS, TAP, Surface  # noqa: F401 (named here by what plays through this environment)
 from ..session import (ACCEPT_CONSENT, CELLS_UNREAD, CLOSE_COVER, DECLINE_CONSENT, INPUT_VALID_S, STALLED, START_GAME,
                        UNCOVERING)
 
 log = logging.getLogger("gamelab.screen")
 
-KEYS, TAP, DRAG = "keys", "tap", "drag"
 INPUT_KIND_UNSUPPORTED = "input_kind_unsupported"
 PAGE_READ_UNAVAILABLE = "page_read_unavailable"
 # looks at a screen that shows none of the profile's boards before the game is refused: enough to
@@ -54,35 +54,6 @@ UNREAD_ASK_S = 3.0
 SWIPES = {"ArrowLeft": (-1, 0), "ArrowRight": (1, 0), "ArrowUp": (0, -1), "ArrowDown": (0, 1)}
 SWIPE_SPAN = 0.6
 SWIPE_MS = 120
-
-
-class Surface(Protocol):
-    """A screen the harness may look at and touch. Coordinates are the pixels of its captures."""
-    name: str
-    # the inputs it carries out: KEYS, TAP, DRAG
-    kinds: frozenset[str]
-    # whether `elements` reads the page under the picture
-    reads_dom: bool
-
-    async def size(self) -> list[int]:
-        """The whole screen's [width, height]."""
-
-    async def capture(self, region: list[int] | None = None) -> bytes:
-        """The screen as a PNG, or only `region` ([left, top, right, bottom]) of it."""
-
-    async def elements(self, queries: list[dict[str, Any]]) -> dict[str, Any] | None:
-        """For each query (`name`, CSS `selector`, `max`): `{"count", "truncated", "items": [{"classes", "text"}]}`,
-        an item's text being its own text nodes; None when the page cannot be read."""
-
-    async def address(self) -> str:
-        """Where the game is: the page's URL, or the app (`android://<package>`)."""
-
-    async def key(self, key: str) -> None: ...
-    async def tap(self, x: float, y: float, duration_ms: int) -> None: ...
-    async def drag(self, x0: float, y0: float, x1: float, y1: float, duration_ms: int) -> None: ...
-
-    async def release(self) -> None:
-        """Let go of anything an interrupted input may still hold."""
 
 
 class Watch(Protocol):

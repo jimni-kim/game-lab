@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 from .. import catalog, model
 from ..contracts import Budget, GoalSpec, InputReceipt, Observation, PreparedInput
 from ..execution import MappedAction
-from ..play import Run
+from ..run import Run
 
 ROOT = Path(__file__).resolve().parents[3]
 # a progress line every this many inputs, so a long game can be followed while it runs

@@ -8,7 +8,8 @@ import json
 import pytest
 
 from gamelab import adaptation, recovery
-from gamelab.adaptation import Store, explorable, play_adaptive
+from gamelab.adaptation import Store, explorable
+from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
 from test_adaptation import Author

@@ -2,7 +2,7 @@
 perception plan §3).
 
 A family is listed here by code, not by a manifest or setting: adding one is a rule model under `rules/`,
-a solver under `solvers/`, its screen pieces under `families/<id>/` and a descriptor in
+a solver under `solvers/` and a descriptor in
 `blueprint/families/<id>.json`, checked against `blueprint/family.schema.json` when it is loaded. A
 descriptor names the rule parameters its rule model implements, with the values a profile may give each,
 and the policies its solver offers; a mismatch, or a module without a function the session calls, stops
@@ -17,10 +17,6 @@ from typing import Any
 
 from . import resources, rules, solvers
 from .families import GridFamily
-from .families.block_placement import controls as block_placement_controls, reader as block_placement_reader
-from .families.minesweeper import controls as minesweeper_controls, reader as minesweeper_reader
-from .families.slide_merge import (controls as slide_merge_controls, discover as slide_merge_discover,
-                                   reader as slide_merge_reader)
 from .rules import block_placement, minesweeper, slide_merge
 from .solvers import (block_placement as block_placement_solver, minesweeper as minesweeper_solver,
                       slide_merge as slide_merge_solver)
@@ -32,22 +28,6 @@ SCHEMA = FRAGMENT / "family.schema.json"
 MODELS: dict[str, ModuleType] = {"block_placement": block_placement, "minesweeper": minesweeper, "slide_merge": slide_merge}
 SOLVERS: dict[str, ModuleType] = {"block_placement": block_placement_solver, "minesweeper": minesweeper_solver,
                                   "slide_merge": slide_merge_solver}
-# each family's reader beside its rule model: the state's BOARD key, read(image, …), tile (a value a cell may
-# hold), check_profile, check_correction and, where its pages can be read, check_reading, dom_queries and
-# read_dom
-READERS: dict[str, ModuleType] = {"block_placement": block_placement_reader, "minesweeper": minesweeper_reader,
-                                   "slide_merge": slide_merge_reader}
-# each family's controls: the input KIND its profiles register, check (of a profile's controls) and
-# map_action (a planned action as one surface input)
-CONTROLS: dict[str, ModuleType] = {"block_placement": block_placement_controls, "minesweeper": minesweeper_controls,
-                                    "slide_merge": slide_merge_controls}
-# the families whose games are set up from a look with no registered profile (plan §4.5), each with
-# rules (the rule values a board's size sets) and palette (its colours from the cells' values, or why it
-# cannot be made); their descriptors carry `discovery`. A descriptor may carry `discovery` without a module
-# here: the block also says how a family is explored while an adapter is made for it (`adaptation`), which
-# needs no palette
-DISCOVERY: dict[str, ModuleType] = {"slide_merge": slide_merge_discover}
-
 
 def descriptor_ids() -> list[str]:
     return sorted(p.name.removesuffix(".json") for p in (FRAGMENT / "families").iterdir()
@@ -80,9 +60,7 @@ def descriptor(family_id: str) -> dict[str, Any]:
     if set(data["policies"]) != set(solver.POLICIES) \
             or not {data["baseline_policy"], data["default_policy"]} <= set(solver.POLICIES):
         problems.append("policies differ from the solver's")
-    if family_id in DISCOVERY and "discovery" not in data:
-        problems.append("the code sets games up from a look but the descriptor has no discovery")
-    elif not set(data.get("discovery", {}).get("rules", {})) <= set(model.DEFAULT_RULES):
+    if not set(data.get("discovery", {}).get("rules", {})) <= set(model.DEFAULT_RULES):
         problems.append("discovery sets rules the rule model does not implement")
     if problems:
         raise ValueError(f"game family {family_id}: " + "; ".join(problems))

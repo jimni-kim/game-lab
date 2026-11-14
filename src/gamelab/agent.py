@@ -34,7 +34,7 @@ from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
 from .model import Model, TurnRequest, TurnResult
-from .play import Run, check
+from .run import Run, check
 from .recovery import GIVE_UP, MAX_TRIES, NONE, Recovery
 
 log = logging.getLogger("gamelab.agent")

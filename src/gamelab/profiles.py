@@ -15,6 +15,7 @@ import math
 from typing import Any
 
 from . import catalog, resources
+from . import registered
 from .pixels import MAX_IMAGE_PIXELS
 
 MIN_CELL_PIXELS = 12
@@ -68,9 +69,9 @@ def validate(data: dict[str, Any]) -> Profile:
     if not data["fixture_only"] and "source" not in data:
         raise ValueError("missing_profile_source")
     family = catalog.family(data["family_id"]).bind(data)
-    reader = catalog.READERS[family.id]
+    reader = registered.READERS[family.id]
     if controls := data.get("controls"):
-        played = catalog.CONTROLS[family.id]
+        played = registered.CONTROLS[family.id]
         if controls["kind"] != played.KIND:
             raise ValueError("control_family_mismatch")
         played.check(controls, data)

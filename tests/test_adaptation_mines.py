@@ -11,7 +11,8 @@ from PIL import Image, ImageDraw
 import pytest
 
 from gamelab import adaptation, catalog, recovery
-from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt, cell_box, play_adaptive
+from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt, cell_box
+from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
 from gamelab.recovery import Recovery

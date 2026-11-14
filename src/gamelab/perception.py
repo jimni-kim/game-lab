@@ -19,6 +19,7 @@ import re
 from typing import Any, Callable
 
 from . import catalog, pixels, profiles
+from . import registered
 from .contracts import NeedObservation, Observation, StateEstimate
 
 # a page's score as its own text: digits only, anything else is not a score
@@ -47,7 +48,7 @@ def dom_scope(profile: profiles.Profile) -> dict[str, Any]:
     reading = profile.data["reading"]
     elements = [{"name": "scene", "selector": reading["scene"]["selector"], "max": 1},
                 {"name": "score", "selector": reading["score"]["selector"], "max": 1},
-                *catalog.READERS[profile.family_id].dom_queries(reading)]
+                *registered.READERS[profile.family_id].dom_queries(reading)]
     if profile.layout is None:
         return {"elements": elements}
     left, top, width, height = profile.layout["board"]["rect"]
@@ -90,7 +91,7 @@ def estimate_dom(observation: Observation, elements: Any, png: bytes, profile: p
     except ValueError as error:
         return NeedObservation(str(error))
     with image:
-        payload = catalog.READERS[checked.family_id].read_dom(elements, checked.layout, scene, score, image)
+        payload = registered.READERS[checked.family_id].read_dom(elements, checked.layout, scene, score, image)
     if payload is None:
         return NeedObservation("elements_unreadable")
     bound = replace(observation, geometry_ref=checked.geometry_ref, public_facts={"state": payload})
@@ -139,7 +140,7 @@ def read(image: Any, profile: profiles.Profile) -> dict | NeedObservation:
     was measured."""
     if not framed(image, profile.layout):
         return NeedObservation("board_unframed")
-    return catalog.READERS[profile.family_id].read(image, profile.layout)
+    return registered.READERS[profile.family_id].read(image, profile.layout)
 
 
 def framed(image: Any, layout: dict) -> bool:
@@ -281,7 +282,7 @@ def _correct(payload: dict, proposal: dict, observation: Observation, png: bytes
             payload["scene"] != "playing" or not isinstance(revised["scene"], str) or revised["scene"] not in scenes
             or not catalog.family(profile.family_id).model.unknown_fields(payload)):
         return None
-    reader = catalog.READERS[profile.family_id]
+    reader = registered.READERS[profile.family_id]
     if not _grid_correction(payload[reader.BOARD], revised[reader.BOARD], reader.tile):
         return None
     if not reader.check_correction(payload, revised, profile.data):

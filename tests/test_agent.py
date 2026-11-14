@@ -228,3 +228,17 @@ async def test_a_notice_before_the_first_board_of_a_site_played_before_is_got_pa
     assert made["reused"] and played.record["levels"]["L2"] == 0
     # the kept input is sent again at the same notice with no question (the first game met none: one question here)
     assert [kind for kind, _, _ in reader.asked] == ["label", "recover"]
+
+
+def test_the_agents_loop_loads_nothing_of_the_baseline():
+    """The session, its screen environment, the registered profiles and the hand-written readers are the
+    baseline's (PLAN §10, G6): the agent's loop on a browser page or a phone runs without any of them."""
+    import subprocess
+    import sys
+    listed = subprocess.run([sys.executable, "-c", "import sys, gamelab.agent, gamelab.environments.web, "
+                             "gamelab.environments.android; print(' '.join(sorted(sys.modules)))"],
+                            capture_output=True, text=True, check=True).stdout.split()
+    baseline = ("session", "play", "baseline", "vision", "perception", "geometry", "profiles", "discovery", "registered",
+                "environments.screen", "adapters.reference")
+    ours = [name.removeprefix("gamelab.") for name in listed if name.startswith("gamelab.")]
+    assert ours and not [name for name in ours if name in baseline or name.endswith(".reader")]

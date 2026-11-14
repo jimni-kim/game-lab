@@ -34,6 +34,7 @@ from .contracts import (
     ActionPlan,
     Assessment,
     Budget,
+    CELLS_UNREAD,
     Delivery,
     Effect,
     EnvironmentAdapter,
@@ -71,9 +72,6 @@ INPUT_REFUSED = "input_refused"
 ANIMATION_MARGIN_S = 0.1
 # why a game ends on a scene whose button (keep playing) could not be found on its screen
 BUTTON_UNSEEN = "button_unseen"
-# why a game ends when its board is found but some of its cells are a look the reading does not know: nothing
-# is in the way (no model is asked about the screen), the reading itself must learn them
-CELLS_UNREAD = "cells_unread"
 # why a game that reached its goal ends on the game's own win message
 WON = "won"
 # why a game ends when a trial move does not do what the rules predict

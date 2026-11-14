@@ -26,6 +26,7 @@ from typing import Any
 from PIL import Image, ImageChops
 
 from . import catalog, perception, pixels, profiles
+from . import registered
 from .contracts import NeedObservation
 
 # the frame is found on blocks of this many pixels a side, any block mostly frame-coloured joining
@@ -94,7 +95,7 @@ def confirm(image: Any, profile: profiles.Profile, board: list[int]) -> profiles
     if isinstance(payload, NeedObservation):
         return payload
     board = measured.layout["board"]
-    cells = payload[catalog.READERS[measured.family_id].BOARD]
+    cells = payload[registered.READERS[measured.family_id].BOARD]
     if sum(value is not None for values in cells for value in values) < REGISTERED_SHARE * board["rows"] * board["cols"]:
         return NeedObservation("board_unconfirmed")
     # a page-reading profile takes its cells from the page, not their colours: its board is confirmed by

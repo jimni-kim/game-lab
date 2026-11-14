@@ -26,11 +26,10 @@ import logging
 from typing import Any
 
 from .. import catalog, pixels
-from ..contracts import NeedObservation, Observation, StateEstimate
+from ..contracts import CELLS_UNREAD, NeedObservation, Observation, StateEstimate
 from ..execution import TAP_MS, MappedAction
 from ..families import GridFamily
 from ..sandbox import Sandbox, SandboxError
-from ..session import CELLS_UNREAD
 
 log = logging.getLogger("gamelab.generated")
 
@@ -57,7 +56,7 @@ class GeneratedAdapter:
         self._family = catalog.family(family_id).bind({"rules": rules or {}})
         # how the game is played and waited for: the family's starting values unless the site's are known
         start = catalog.descriptor(family_id).get("discovery", {})
-        self._played = {"controls": controls or start.get("controls") or {"kind": catalog.CONTROLS[family_id].KIND},
+        self._played = {"controls": controls or start.get("controls") or {"kind": _registered_kind(family_id)},
                         "settling": settling if settling is not None else start.get("settling", {})}
         self.sandbox = Sandbox(source, **({"call_timeout_s": call_timeout_s} if call_timeout_s else {}))
         self.layout: dict[str, Any] | None = None
@@ -238,6 +237,12 @@ class GeneratedAdapter:
 
     def close(self) -> None:
         self.sandbox.close()
+
+
+def _registered_kind(family_id: str) -> str:
+    """The input kind of a family whose descriptor names no starting controls: its hand-written controls'."""
+    from .. import registered
+    return registered.CONTROLS[family_id].KIND
 
 
 def _number(value: Any) -> bool:

@@ -6,7 +6,9 @@ import json
 import pytest
 
 from gamelab import adaptation
-from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adapter_for, adopt, play_adaptive
+from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt
+from gamelab.agent import play as play_adaptive
+from gamelab.baseline import adapter_for
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
 from gamelab.play import play
