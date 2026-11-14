@@ -36,7 +36,8 @@ DEFAULT_MAX_MOVES = 3000
 # compute budgets (evaluated boards per decision) worth comparing: the low end is what the first
 # live runs used, the high end where a decision still takes well under a second in Python
 # (minesweeper's is the layouts its solver may count for one guess)
-DEFAULT_COMPUTE = {"slide_merge": (50, 500, 2000), "block_placement": (50, 200, 1000), "minesweeper": (20000,)}
+DEFAULT_COMPUTE = {"slide_merge": (50, 500, 2000), "block_placement": (50, 200, 1000), "minesweeper": (20000,),
+                   "match3": (200,)}
 # 2048-style milestones whose reach rate is reported
 TILE_MILESTONES = (512, 1024, 2048, 4096)
 

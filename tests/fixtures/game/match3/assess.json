@@ -1,0 +1,427 @@
+{
+ "op": "assess",
+ "cases": [
+  {
+   "name": "the predicted cells with any new pieces is the move taken",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "swap",
+     "cell": [
+      0,
+      0
+     ],
+     "to": [
+      1,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       2,
+       4,
+       2,
+       4
+      ],
+      [
+       2,
+       2,
+       3,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    }
+   },
+   "expected": {
+    "effect": "confirmed",
+    "settled_as_predicted": true
+   }
+  },
+  {
+   "name": "the same board is the move not taken",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "swap",
+     "cell": [
+      0,
+      0
+     ],
+     "to": [
+      1,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    }
+   },
+   "expected": {
+    "effect": "absent"
+   }
+  },
+  {
+   "name": "a settled board that differs where new pieces set off more is still the move",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "swap",
+     "cell": [
+      0,
+      0
+     ],
+     "to": [
+      1,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       2,
+       4,
+       2,
+       4
+      ],
+      [
+       4,
+       2,
+       4,
+       2
+      ],
+      [
+       2,
+       4,
+       2,
+       4
+      ],
+      [
+       4,
+       2,
+       4,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    }
+   },
+   "expected": {
+    "effect": "confirmed",
+    "settled_as_predicted": false
+   }
+  },
+  {
+   "name": "a board with a line still standing is not a result",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "swap",
+     "cell": [
+      0,
+      0
+     ],
+     "to": [
+      1,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       4
+      ],
+      [
+       2,
+       1,
+       3,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "an unread cell cannot confirm a move",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "swap",
+     "cell": [
+      0,
+      0
+     ],
+     "to": [
+      1,
+      0
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       null,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    }
+   },
+   "expected": {
+    "effect": "unknown"
+   }
+  }
+ ]
+}

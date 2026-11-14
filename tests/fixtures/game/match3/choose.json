@@ -1,0 +1,229 @@
+{
+ "op": "choose",
+ "cases": [
+  {
+   "name": "the baseline takes the first move",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       5,
+       5,
+       2,
+       3
+      ],
+      [
+       1,
+       2,
+       5,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       5,
+       5,
+       4,
+       5
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "policy": "first",
+    "budget": 50
+   },
+   "expected": {
+    "action": {
+     "kind": "swap",
+     "cell": [
+      0,
+      2
+     ],
+     "to": [
+      1,
+      2
+     ]
+    },
+    "nodes": 1
+   }
+  },
+  {
+   "name": "greedy takes the swap that removes the most",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       5,
+       5,
+       2,
+       3
+      ],
+      [
+       1,
+       2,
+       5,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       5,
+       5,
+       4,
+       5
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "policy": "greedy",
+    "budget": 50
+   },
+   "expected": {
+    "action": {
+     "kind": "swap",
+     "cell": [
+      3,
+      2
+     ],
+     "to": [
+      3,
+      3
+     ]
+    },
+    "nodes": 3
+   }
+  },
+  {
+   "name": "a move the screen showed had no effect is left out",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "policy": "greedy",
+    "budget": 50,
+    "excluded": [
+     {
+      "kind": "swap",
+      "cell": [
+       0,
+       0
+      ],
+      "to": [
+       1,
+       0
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "action": {
+     "kind": "swap",
+     "cell": [
+      2,
+      1
+     ],
+     "to": [
+      3,
+      1
+     ]
+    },
+    "nodes": 3
+   }
+  },
+  {
+   "name": "a policy nobody registered",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "policy": "clever",
+    "budget": 50
+   },
+   "error": "unknown_policy"
+  }
+ ]
+}

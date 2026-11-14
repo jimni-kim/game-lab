@@ -227,7 +227,7 @@ class Adaptation:
         """What the model reads on one screen: `{"board", "rules", "state"}` or None when it shows no board
         or the answer is no answer. The rule model checks the state afterwards."""
         context = {"family": self.descriptor, **({"board": board} if board else {}),
-                   **({"sources": self.controls["source"]} if self.controls["kind"] == "drag" else {})}
+                   **({"sources": self.controls["source"]} if "source" in self.controls else {})}
         content = [{"type": "text", "text": json.dumps(context)}, _image(png)]
         if board and shape:
             content.append(_image(overlay(png, board, *shape)))
@@ -324,7 +324,7 @@ class Adaptation:
                 problem = "transition_refused"
                 await asyncio.sleep(SETTLE_S)
                 continue
-            if self.controls["kind"] == "drag":
+            if "source" in self.controls:
                 self.sources = self._sources(answer.get("sources"), state.payload, size)
                 if self.sources is None:
                     problem = "sources_refused"
@@ -382,6 +382,11 @@ class Adaptation:
         controls = self.controls
         if controls["kind"] == "keys":
             return {"kind": "key", "key": controls["keys"][action["direction"]]}
+        if controls["kind"] == "drag" and "source" not in controls:
+            # from one cell of the board to another: the middle of each
+            one, other = cell_box(board, shape, action[controls["from"]]), cell_box(board, shape, action[controls["to"]])
+            return {"kind": "drag", "x0": one[0] + one[2] / 2, "y0": one[1] + one[3] / 2,
+                    "x1": other[0] + other[2] / 2, "y1": other[1] + other[3] / 2, "ms": controls["duration_ms"]}
         if controls["kind"] == "drag":
             index = action[controls["index"]]
             return drag_for(sources[index], board, shape, state[controls["source"]][index], action[controls["onto"]],
@@ -625,7 +630,8 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                 if not _same_input(asked, look, adapter.layout["board"]):
                     fail("target", index, f"target() gave {json.dumps(asked)} for {json.dumps(look.action)}, expected {json.dumps(look.sent)}"
                                           + {"tap": " (a tap anywhere inside that cell)",
-                                             "drag": " (from anywhere on that piece to the middle of the cells it is to cover)"
+                                             "drag": (" (from anywhere on that piece to the middle of the cells it is to cover)"
+                                                      if look.sources else " (from inside the one cell to inside the other)")
                                              }.get(look.sent["kind"], ""))
         for index, look in enumerate(trace.looks[:-1]):
             before, after = states[index], states[index + 1]
@@ -648,6 +654,15 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
     code that picks another point of it plays the same move)."""
     if not isinstance(asked, dict) or asked.get("kind") != look.sent["kind"] or look.sent["kind"] == "key":
         return asked == look.sent
+    if look.sent["kind"] == "drag" and not look.sources:
+        # between two cells of the board: each end inside the cell the recorded drag's end was in, on the board
+        # as the code measured it
+        rows, cols = _shape(None, look.state)
+
+        def cell(x: float, y: float, box: list[int]) -> tuple[int, int]:
+            return int((y - box[1]) // (box[3] / rows)), int((x - box[0]) // (box[2] / cols))
+        return (cell(asked["x0"], asked["y0"], board) == cell(look.sent["x0"], look.sent["y0"], look.board)
+                and cell(asked["x1"], asked["y1"], board) == cell(look.sent["x1"], look.sent["y1"], look.board))
     if look.sent["kind"] == "drag":
         # the same thing picked up (a point on it, or near: the box around it is a model's estimate) and taken
         # to the same cells: its middle within a third of a cell of theirs, on the board as the code measured it

@@ -705,6 +705,8 @@ class Agent:
                 await surface.drag(x - reach_x, y - reach_y, x + reach_x, y + reach_y, SWIPE_MS)
         elif sent["kind"] == "tap":
             await surface.tap(sent["x"], sent["y"], TAP_MS)
+        elif "source" not in self.adaptation.controls:
+            await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])      # between two cells: nothing is carried
         else:
             self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
 

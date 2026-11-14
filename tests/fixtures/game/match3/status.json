@@ -1,0 +1,242 @@
+{
+ "op": "status",
+ "cases": [
+  {
+   "name": "a game in play",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "the game's own win message",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "won"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "the game's own end message",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 0,
+     "scene": "over"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "a score goal on the score as read",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": 120,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "goal": {
+     "objective": "reach_value",
+     "target_value": 100
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "a score goal with no score read",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       2,
+       3,
+       4
+      ],
+      [
+       2,
+       1,
+       1,
+       3
+      ],
+      [
+       3,
+       2,
+       4,
+       1
+      ],
+      [
+       4,
+       3,
+       2,
+       2
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 4,
+     "cols": 4,
+     "colours": 4
+    },
+    "goal": {
+     "objective": "reach_value",
+     "target_value": 100
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "unknown"
+   }
+  }
+ ]
+}

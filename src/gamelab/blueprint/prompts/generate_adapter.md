@@ -18,12 +18,15 @@ The host already has the game's rules (`family` and `rule_model` in the context)
         say which inputs exist. Return {"kind": "key", "key": NAME} for a key, or {"kind": "tap", "x": X,
         "y": Y} for a tap, in whole-screen pixels, at the middle of the cell the action names, computed
         from the board box and cell sizes your measure() found (never from the example boxes). For a game
-        played by drags return {"kind": "drag", "x0": X0, "y0": Y0, "x1": X1, "y1": Y1, "ms": 500}: (X0, Y0)
-        a point on the thing the action picks up, where your code finds it on the screen, and (X1, Y1) the
-        middle of the board cells the whole thing is to cover (the middle of its bounding box once placed).
-        The host makes up for how the game draws a held thing; do not. Every point of an input must lie
-        inside the board box or inside one of layout["regions"]: for such a game measure() also returns
-        "regions": [[left, top, width, height], ...] around where the things to drag wait.
+        played by drags return {"kind": "drag", "x0": X0, "y0": Y0, "x1": X1, "y1": Y1, "ms": MS} with MS
+        as the examples' `sent` have it. When the action moves a piece from one board cell to another, the
+        drag goes from the middle of the one cell to the middle of the other. When it picks up something
+        that waits outside the board (the examples have `sources`), (X0, Y0) is a point on that thing,
+        where your code finds it on the screen, and (X1, Y1) the middle of the board cells the whole thing
+        is to cover (the middle of its bounding box once placed): the host makes up for how the game draws
+        a held thing; do not. Every point of an input must lie inside the board box or inside one of
+        layout["regions"]: for such a game measure() also returns "regions": [[left, top, width, height],
+        ...] around where the things to drag wait.
 
 `picture` is a helpers.Picture (see `helpers` for its methods). The code runs in a sandbox: no files, no network, no environment, no printing; each call must finish well within a second. Module-level constants (a colour table, measured sizes) are fine.
 
