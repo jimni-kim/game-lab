@@ -652,8 +652,7 @@ class Agent:
             self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
             if self.store is not None:
                 self.store.save(self.trace, self.made)
-        elif (report["failed_check"] in ("state", "samples") and len(self.adapter.bank) and self.disputes < MAX_DISPUTES
-              and len(self.trace.looks) > self.checked >= 1):
+        elif report.get("by_samples") and self.disputes < MAX_DISPUTES and len(self.trace.looks) > self.checked >= 1:
             # the code names what it sees from screens read before, and those say otherwise than this one: the
             # reading just made is doubted before the code is (a model misreads a card now and then), and is
             # not kept; only when it keeps happening is the code written again

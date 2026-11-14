@@ -664,6 +664,8 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
         # each look as the code reads it (marks and all, `samples`), and the samples it gives
         raws: list[dict[str, Any] | None] = []
         cuts: list[list[tuple[Any, bytes]]] = []
+        # for each screen read otherwise than recorded: whether only what samples name differs
+        named: list[bool] = []
         for index, look in enumerate(trace.looks):
             raws.append(None)
             cuts.append([])
@@ -695,7 +697,9 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                     if other != index and not trace.looks[other].held:
                         others.add(label, sample)
             unseen = samples.resolve(raw, look.png, others)
+            marked = {path for path, _ in samples.marks(raw)}
             if not _agrees(_board(unseen), _board(look.state)):
+                named.append(all(path in marked for path in _differing(_board(unseen), _board(look.state))))
                 fail("state", index, f"read() gave {json.dumps(_board(unseen))}, expected {json.dumps(_board(look.state))}")
                 continue
             # by its own samples too: all of it, with nothing the code itself left unread
@@ -704,7 +708,8 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
             # empty till then): there the code may leave a value or two unread, as long as it reads nothing wrongly
             spared = look.held and _agrees(_board(own), _board(look.state)) and _unread_leaves(own) <= HELD_UNREAD
             if _board(own) != _board(look.state) and not spared:
-                marked = any(True for _ in samples.marks(raw))
+                named.append(all(path in marked for path in _differing(_board(own), _board(look.state))))
+                marked = bool(marked)
                 fail("read" if not marked else "samples", index,
                      (f"read() left cells unread: {json.dumps(_board(own))}" if not marked else
                       "different things look the same inside the boxes read() left to the host (or read() left a "
@@ -745,6 +750,8 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
     finally:
         adapter.close()
     report["passed"] = report["failed_check"] is None
+    # the code found everything where it is and only the names its samples give differ from a recorded reading
+    report["by_samples"] = bool(named) and all(named) and report["failed_check"] in ("state", "samples")
     return report
 
 
@@ -798,6 +805,17 @@ def _filled(read: Any, prior: Any) -> Any:
     if isinstance(read, list) and isinstance(prior, list) and len(read) == len(prior):
         return [_filled(value, other) for value, other in zip(read, prior)]
     return read
+
+
+def _differing(one: Any, other: Any, path: tuple = ()) -> list[tuple]:
+    """Where two readings of one shape differ, an unread value of the first differing from nothing."""
+    if one is None or one == other:
+        return []
+    if isinstance(one, dict) and isinstance(other, dict):
+        return [found for key in one for found in _differing(one[key], other.get(key), (*path, key))]
+    if isinstance(one, list) and isinstance(other, list) and len(one) == len(other):
+        return [found for index, (a, b) in enumerate(zip(one, other)) for found in _differing(a, b, (*path, index))]
+    return [path]
 
 
 def _unread_leaves(value: Any) -> int:
