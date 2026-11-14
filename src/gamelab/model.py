@@ -179,9 +179,12 @@ class Recorded:
     """A model as the harness asks it, keeping what each question was, what came back and its tokens: a
     run's record keeps only that a question was asked, and a failed look is otherwise explained by guesswork."""
 
-    def __init__(self, model: Model, prompts: dict[str, str] | None = None) -> None:
-        # prompts: each known system prompt's text by its name, so an answer says which question it answered
-        self.model, self.prompts, self.answers = model, {text: name for name, text in (prompts or {}).items()}, []
+    def __init__(self, model: Model, prompts: dict[str, str] | None = None,
+                 answers: list[dict[str, Any]] | None = None) -> None:
+        # prompts: each known system prompt's text by its name, so an answer says which question it answered;
+        # answers: another recorder's list, so the questions of two models asked in one game are kept together
+        self.model, self.prompts = model, {text: name for name, text in (prompts or {}).items()}
+        self.answers = answers if answers is not None else []
 
     async def complete(self, request: TurnRequest) -> TurnResult:
         asked = {"prompt": self.prompts.get(request.system_stable, "other"), "at_s": round(time.monotonic(), 1)}

@@ -114,11 +114,26 @@ class Metered:
         self.model, self.input, self.output, self.questions = model, 0, 0, 0
 
     async def complete(self, request: TurnRequest) -> TurnResult:
+        return await self.ask(self.model, request)
+
+    async def ask(self, model: Model, request: TurnRequest) -> TurnResult:
         self.questions += 1
-        result = await self.model.complete(request)
+        result = await model.complete(request)
         self.input += result.usage.input_tokens
         self.output += result.usage.output_tokens
         return result
+
+    def also(self, model: Model) -> Model:
+        """Another model whose questions are counted here too (one that writes adapters)."""
+        return _Also(self, model)
+
+
+class _Also:
+    def __init__(self, meter: Metered, model: Model) -> None:
+        self.meter, self.model = meter, model
+
+    async def complete(self, request: TurnRequest) -> TurnResult:
+        return await self.meter.ask(self.model, request)
 
 
 class _End(Exception):
@@ -130,8 +145,11 @@ class _End(Exception):
 class Agent:
     def __init__(self, surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
-                 watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False) -> None:
+                 watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
+                 writer: Model | None = None) -> None:
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
+        # the model that writes adapters, when it is another: its questions count in the game's as the reader's do
+        self.writer = self.model.also(writer) if writer is not None else None
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
         self.asked_policy, self.watch, self.cancel, self.accept_consent = policy, watch, cancel, accept_consent
         self.started = time.monotonic()
@@ -279,7 +297,8 @@ class Agent:
             self.policy = check(self.goal, self.budget, family_id, self.asked_policy)
             self.recovery = Recovery(self.model, family_id, accept_consent=self.accept_consent,
                                      known=self.store.recoveries(self.site, family_id) if self.store else None)
-            self.adaptation = Adaptation(self.model, family_id, policy=self.policy, compute=self.budget.compute)
+            self.adaptation = Adaptation(self.model, family_id, policy=self.policy, compute=self.budget.compute,
+                                         writer=self.writer)
         except AdaptationFailed as error:
             raise _End(Outcome.UNSUPPORTED, error.reason, error.detail) from None
         except ValueError as error:
@@ -858,8 +877,9 @@ class Agent:
 async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-               **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               writer: Model | None = None, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
-    adapter, the looks, the model's questions and what the game was found to be)."""
+    adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
+    asked to write the adapters and `model` everything else."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
-                       hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent).run()
+                       hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer).run()

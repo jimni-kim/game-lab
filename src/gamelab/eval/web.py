@@ -12,6 +12,8 @@ and are not counted as the harness's moves.
 The model is `--vision-model` (AGENTIC_OPENAI_MODEL unless given; a name the LiteLLM proxy serves, or another
 OpenAI-compatible API's with `--model-base`; the key is AGENTIC_OPENAI_KEY). It reads the first moves, writes
 the adapter and gets play past screens the adapter cannot read; a game cannot be played without one.
+`--writer-model` sends the questions that write the adapter to another model; they count in the game's
+questions and tokens as the reader's do.
 
 `--perturb KIND@N[:ARG]` (repeatable) disturbs a game after the harness's Nth input, as a person or a site
 would; the harness is not told:
@@ -290,7 +292,7 @@ def perturbed(game: Game, recorder: measure.Recorder) -> list[dict[str, Any]]:
 
 
 async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, url: str,
-                   family_id: str | None, site: dict[str, Any], model: Any) -> dict[str, Any]:
+                   family_id: str | None, site: dict[str, Any], model: Any, writer: Any = None) -> dict[str, Any]:
     goal, budget = measure.goal_and_budget(args)
     name = f"{name}-{number:02d}"
     answered = len(model.answers)
@@ -304,7 +306,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
         # from the game's first moves, and made again whenever play stops at a screen it cannot read
         run, adapted = await agent.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
                                         store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
-                                        watch=recorder, accept_consent=args.accept_consent)
+                                        watch=recorder, accept_consent=args.accept_consent, writer=writer)
     finally:
         await game.tidy()
     elapsed = time.monotonic() - started
@@ -330,16 +332,18 @@ async def main(args: argparse.Namespace) -> int:
     client, model = measure.vision_model(args)
     if model is None:
         raise SystemExit("a game is played with a model: name one with --vision-model")
+    writer_client, writer = measure.writer_model(args, model)
     results = []
     try:
         async with browser(viewport=site["viewport"], headless=not args.headed, scale=args.scale) as page:
             for number in range(1, args.games + 1):
-                result = await play_one(args, number, page, args.site, site["url"], family_id, site, model)
+                result = await play_one(args, number, page, args.site, site["url"], family_id, site, model, writer)
                 results.append(result)
                 print(json.dumps(result, ensure_ascii=False), flush=True)
     finally:
-        if client is not None:
-            await client.close()
+        for opened in (client, writer_client):
+            if opened is not None:
+                await opened.close()
         if results:
             measure.write_summary(args.out, args, results, site=args.site)
     return 0

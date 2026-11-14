@@ -364,3 +364,16 @@ async def test_a_result_read_late_is_still_the_last_moves_result():
     played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
     assert ending(played) == ("goal_reached", "won"), (played.record, made)
     assert fake.played == len(fake.taps)
+
+
+async def test_a_writer_model_is_asked_only_to_write_the_adapter_and_its_questions_count_in_the_games():
+    """Adapters may be written by another model than the one that reads: only the questions that write go to
+    it, and the game's questions, tokens and budget hold both."""
+    fake = Screen()
+    reader, writer = Author(fake, []), Author(fake, [source(fake)])
+    played, made = await agent.play(fake, Costly(reader, 100), "slide_merge", goal=GoalSpec("actions", 10),
+                                    budget=Budget(20, 20, 60), writer=Costly(writer, 1000))
+    assert ending(played) == ("goal_reached", "actions"), (played.record, made)
+    assert {kind for kind, _, _ in reader.asked} == {"label"} and [kind for kind, _, _ in writer.asked] == ["write"]
+    assert made["generations"] == 1 and played.record["levels"]["L3"] > 0
+    assert made["questions"] == len(reader.asked) + 1 and made["tokens"]["input"] == 100 * len(reader.asked) + 1000

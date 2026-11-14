@@ -41,12 +41,19 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-input-tokens", type=int, default=300_000,
                         help="the tokens one game's model questions may send together (0: no limit)")
     parser.add_argument("--out", type=Path, required=True, help="results and screenshots (out/ is not tracked)")
-    parser.add_argument("--vision-model", default=model.default_model(),
-                        help=f"the model that reads the game, writes its adapter and gets play past screens ({model.MODEL_VARIABLE} unless given)")
-    parser.add_argument("--model-base", default=model.api_base(),
-                        help=f"an OpenAI-compatible API's base URL ({model.BASE_VARIABLE}, else {model.DEFAULT_BASE})")
+    model_arguments(parser)
     parser.add_argument("--accept-consent", action="store_true",
                         help="agree to a site's terms when it offers no refusal (else the game stops there)")
+
+
+def model_arguments(parser: argparse.ArgumentParser) -> None:
+    """The models asked and where: one that reads the game and gets play past screens, and one that writes adapters."""
+    parser.add_argument("--vision-model", default=model.default_model(),
+                        help=f"the model that reads the game, writes its adapter and gets play past screens ({model.MODEL_VARIABLE} unless given)")
+    parser.add_argument("--writer-model",
+                        help="another model to write the adapters (the --vision-model unless given)")
+    parser.add_argument("--model-base", default=model.api_base(),
+                        help=f"an OpenAI-compatible API's base URL ({model.BASE_VARIABLE}, else {model.DEFAULT_BASE})")
 
 
 def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
@@ -64,6 +71,21 @@ def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, mod
         raise SystemExit(f"asking {args.vision_model} needs a key: set {model.KEY_VARIABLE}")
     client = model.ChatClient(args.vision_model, key, base=args.model_base)
     return client, model.Recorded(client, model.prompts(catalog.FRAGMENT / "prompts"))
+
+
+def writer_model(args: argparse.Namespace, vision: model.Recorded | None, *,
+                 apart: bool = False) -> tuple[model.ChatClient | None, model.Recorded | None]:
+    """The model that writes adapters, when `--writer-model` names another than `--vision-model`, and the
+    recorder around it: its questions are kept with the reader's (`vision.answers`), or in a list of their own
+    with `apart`. Neither when it is the same model (the reader writes too)."""
+    if not getattr(args, "writer_model", None) or args.writer_model == args.vision_model:
+        return None, None
+    key = model.api_key()
+    if not key:
+        raise SystemExit(f"asking {args.writer_model} needs a key: set {model.KEY_VARIABLE}")
+    client = model.ChatClient(args.writer_model, key, base=args.model_base)
+    return client, model.Recorded(client, model.prompts(catalog.FRAGMENT / "prompts"),
+                                  answers=None if apart or vision is None else vision.answers)
 
 
 class Recorder:

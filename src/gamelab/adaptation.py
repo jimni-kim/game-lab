@@ -232,8 +232,9 @@ def drag_for(source: list[int], board: list[int], shape: tuple[int, int], piece:
 
 class Adaptation:
     def __init__(self, model: Model, family_id: str, *, policy: str | None = None, compute: int = 200,
-                 recovery: Recovery | None = None) -> None:
-        self.model, self.family_id = model, family_id
+                 recovery: Recovery | None = None, writer: Model | None = None) -> None:
+        # `writer`: the model asked to write adapters, when it is another than the one that reads screens
+        self.model, self.writer, self.family_id = model, writer or model, family_id
         # the model's way past a screen that shows no board (a notice over it), and the last board read
         self.recovery, self.last_state = recovery, None
         # the other captures of the screen last read (FRAMES)
@@ -554,7 +555,7 @@ class Adaptation:
         content = [{"type": "text", "text": json.dumps(self._context(trace, previous))},
                    *(_image(look.png) for look in trace.train)]
         self.questions += 1
-        result = await self.model.complete(TurnRequest(system_stable=_prompt("generate_adapter.md"),
+        result = await self.writer.complete(TurnRequest(system_stable=_prompt("generate_adapter.md"),
                                                        max_tokens=GENERATE_TOKENS, timeout_s=GENERATE_TIMEOUT_S,
                                                        messages=[Msg("user", content)]))
         return result.text or ""
@@ -874,13 +875,22 @@ class Store:
 
     def load(self, site: str, family_id: str) -> tuple[str, dict[str, Any], Trace] | None:
         """The adapter kept for a site: its code, how it was made, and the looks it was made from."""
-        path = self._path(site, family_id)
+        return self.read(self._path(site, family_id))
+
+    def kept(self) -> list[Path]:
+        """The folder of every adapter kept here, whatever site it is for (`read` reads one)."""
+        return sorted(path.parent for path in self.folder.glob("*/*/adapter.py")) if self.folder.is_dir() else []
+
+    @staticmethod
+    def read(path: Path) -> tuple[str, dict[str, Any], Trace] | None:
+        """The adapter kept in one folder of a store: its code, how it was made, and the looks it was made from."""
         if not (path / "adapter.py").is_file():
             return None
         meta = json.loads((path / "adapter.json").read_text(encoding="utf-8"))
         looks = [Look((path / f"look-{index}.png").read_bytes(), **{**look, "frames": [
                      (path / f"look-{index}-frame-{number}.png").read_bytes() for number in range(look.get("frames", 0))]})
                  for index, look in enumerate(meta["trace"])]
+        family_id = meta.get("family") or path.name
         return (path / "adapter.py").read_text(encoding="utf-8"), meta, Trace(family_id, meta["rules"], meta["site"], looks)
 
     def save(self, trace: Trace, made: Made) -> Path:
@@ -940,16 +950,18 @@ def explorable() -> list[str]:
             if catalog.descriptor(family_id).get("discovery", {}).get("controls", {}).get("kind") in EXPLORED_WITH]
 
 
-async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: str | None = None) -> dict[str, Any]:
+async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: str | None = None,
+                   tries: int = MAX_TRIES) -> dict[str, Any]:
     """Which families the game on the screen may be, as a model sees it (PLAN §10, game identification):
     `{"families": [ids, likeliest first], "questions", "situation"}`. A screen that shows no game in play is
-    not the end of it: the model gets past it with inputs of its own, and the screen is asked about again.
-    The answer is a guess; the caller checks it by reading the board and playing moves by the family's rules."""
+    not the end of it: the model gets past it with inputs of its own (`tries` at most; none: one question and
+    no input), and the screen is asked about again. The answer is a guess; the caller checks it by reading the
+    board and playing moves by the family's rules."""
     listed = [{key: descriptor[key] for key in ("id", "summary", "board", "actions")}
               for descriptor in map(catalog.descriptor, explorable())]
     known = {family["id"] for family in listed}
     found: dict[str, Any] = {"families": [], "questions": 0, "situation": None}
-    for tries in range(MAX_TRIES + 1):
+    for tried in range(tries + 1):
         png = await surface.capture()
         context = {"families": listed, **({"hint": hint} if hint else {})}
         found["questions"] += 1
@@ -964,7 +976,7 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
         found["families"] = list(dict.fromkeys(name for name in named if name in known))[:MOST_CANDIDATES]
         if found["families"] or answer.get("screen") == "game":
             break
-        if tries == MAX_TRIES:
+        if tried == tries:
             break
         if not await recovery.attempt(surface, "game_not_shown", {"state": None, "recent": []}):
             # nothing to press is not nothing to come: a screen still loading is looked at again, unless the

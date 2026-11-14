@@ -82,6 +82,7 @@ async def main(args: argparse.Namespace) -> int:
     client, model = measure.vision_model(args)
     if model is None:
         raise SystemExit("a game is played with a model: name one with --vision-model")
+    writer_client, writer = measure.writer_model(args, model)
     base = args.package or args.family
     results = []
     try:
@@ -95,7 +96,8 @@ async def main(args: argparse.Namespace) -> int:
             # read by an adapter a model writes for this app, by the agent's own loop (as `eval web`)
             run, adapted = await agent.play(surface, model, None if args.identify else args.family, goal=goal,
                                             budget=budget, policy=args.policy, store=Store(args.adapter_store),
-                                            fresh=args.regenerate, watch=recorder, accept_consent=args.accept_consent)
+                                            fresh=args.regenerate, watch=recorder, accept_consent=args.accept_consent,
+                                            writer=writer)
             result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, adaptation=adapted)
             request = {"family": args.family, "app": await surface.address(),
                        "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
@@ -107,8 +109,9 @@ async def main(args: argparse.Namespace) -> int:
             results.append(result)
             print(json.dumps(result, ensure_ascii=False), flush=True)
     finally:
-        if client is not None:
-            await client.close()
+        for opened in (client, writer_client):
+            if opened is not None:
+                await opened.close()
         if results:
             measure.write_summary(args.out, args, results, family=args.family, package=args.package)
     return 0

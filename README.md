@@ -48,6 +48,8 @@ eval/                       평가 CLI (policies, web, android)
 # Android (에뮬레이터를 먼저 켠다: emulator -avd army-game)
 .venv/bin/python -m gamelab.eval android --check --out out/device        # 연결 확인과 캡처 한 장
 .venv/bin/python -m gamelab.eval android --family slide_merge --package PKG --compute 500 --out out/app
+
+.venv/bin/python -m gamelab.eval offline --vision-model MODEL --out out/offline/MODEL   # 사이트 없이 보관된 화면으로 모델을 잼
 ```
 
 옛 명령의 `--generate`는 받기만 한다(이제 늘 어댑터를 쓴다). `--profile`, `--unregistered`, `--loop`는 없앴다.
