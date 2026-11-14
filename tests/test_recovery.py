@@ -24,6 +24,8 @@ KINDS = frozenset({"keys", "tap", "drag"})
 def quick(monkeypatch):
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
+    # the adapters here are the ones a model writes: the host's plain one is tried in test_plain.py
+    monkeypatch.setattr(adaptation, "PLAIN_INSETS", ())
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
     monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
 

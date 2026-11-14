@@ -29,6 +29,9 @@ MARK = "look"
 NEAR, SPREAD, FAR, APART = 6.0, 1.5, 24.0, 3.0
 # a sample keeps its box's pixels as they are up to this many, and is compared in parts this many pixels a side
 MOST, PART = 4096, 6
+# what is drawn on a sample's ground: pixels further than this (a channel, of 255) from its commonest colour;
+# two drawings are held against each other when their boxes are the same size within GLYPH_SLACK pixels
+INK, GLYPH_SLACK = 24, 1
 
 
 def is_mark(value: Any) -> bool:
@@ -104,6 +107,43 @@ def distance(one: bytes, other: bytes) -> float:
     return max(sums) / (PART * PART * 3)
 
 
+def _picture(sample: bytes) -> Any:
+    from PIL import Image
+
+    return Image.frombytes("RGB", (sample[0], sample[1]), sample[2:])
+
+
+def glyph(sample: bytes) -> tuple[tuple[int, int, int], Any]:
+    """A sample as its ground (its commonest colour) and what is drawn on it, cut to the drawing's own box
+    (None for a plain one): the same wherever in the sample's box the thing was drawn."""
+    from PIL import Image, ImageChops
+
+    image = _picture(sample)
+    ground = max(image.getcolors(image.width * image.height))[1]
+    bands = [band.point(lambda value: 255 if value > INK else 0)
+             for band in ImageChops.difference(image, Image.new("RGB", image.size, ground)).split()]
+    box = ImageChops.lighter(ImageChops.lighter(bands[0], bands[1]), bands[2]).getbbox()
+    return ground, image.crop(box) if box else None
+
+
+def shifted(one: tuple[tuple[int, int, int], Any], other: tuple[tuple[int, int, int], Any]) -> float:
+    """How unlike two samples are once what is drawn on each is laid over the other's (`glyph`): the larger
+    of how far their grounds are apart and the most a part of the drawings differs. A grid divided evenly
+    over a board with gutters cuts the same tile a few pixels off from cell to cell; this does not care."""
+    from PIL import Image, ImageChops
+
+    (ground, drawn), (other_ground, other_drawn) = one, other
+    apart = float(max(abs(a - b) for a, b in zip(ground, other_ground)))
+    if drawn is None or other_drawn is None:
+        return apart if drawn is None and other_drawn is None else 255.0
+    if abs(drawn.width - other_drawn.width) > GLYPH_SLACK or abs(drawn.height - other_drawn.height) > GLYPH_SLACK:
+        return 255.0
+    width, height = min(drawn.width, other_drawn.width), min(drawn.height, other_drawn.height)
+    differing = ImageChops.difference(drawn.crop((0, 0, width, height)), other_drawn.crop((0, 0, width, height)))
+    parts = differing.resize((max(1, width // PART), max(1, height // PART)), Image.BOX)
+    return max(apart, max(sum(pixel) / 3 for pixel in parts.get_flattened_data()))
+
+
 class Bank:
     """The samples kept for one adapter, by the value each was read as."""
 
@@ -112,6 +152,8 @@ class Bank:
         self.exact: dict[bytes, str | None] = {}
         # how much one and the same thing was seen to differ between captures of one screen, by value
         self.jitter: dict[str, float] = {}
+        # each kept sample as its ground and drawing (`glyph`), made when first needed
+        self._glyphs: dict[bytes, tuple[Any, Any]] = {}
 
     def __len__(self) -> int:
         return sum(len(cuts) for cuts in self.samples.values())
@@ -140,11 +182,24 @@ class Bank:
         if sample in self.exact:
             key = self.exact[sample]
             return (True, json.loads(key)) if key is not None else (False, None)
-        near = sorted((min(distance(sample, kept) for kept in cuts), key) for key, cuts in self.samples.items())
-        near = [(far, key) for far, key in near if far <= self._reach(key)]
+        near = self._near(lambda kept: distance(sample, kept))
+        if not near:
+            # like none as it lies in its box: perhaps the same thing drawn a few pixels off
+            mine = glyph(sample)
+            near = self._near(lambda kept: shifted(mine, self._glyph(kept)))
         if not near or (len(near) > 1 and near[1][0] - near[0][0] < APART):
             return False, None
         return True, json.loads(near[0][1])
+
+    def _glyph(self, kept: bytes) -> tuple[Any, Any]:
+        if kept not in self._glyphs:
+            self._glyphs[kept] = glyph(kept)
+        return self._glyphs[kept]
+
+    def _near(self, far: Any) -> list[tuple[float, str]]:
+        """The values whose nearest sample is within reach by `far`, nearest first."""
+        found = sorted((min(far(kept) for kept in cuts), key) for key, cuts in self.samples.items())
+        return [(least, key) for least, key in found if least <= self._reach(key)]
 
 
 def learn(raw: Any, state: dict[str, Any], pngs: list[bytes]) -> tuple[list[tuple[Any, list[bytes]]], str | None]:

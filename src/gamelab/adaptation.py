@@ -73,6 +73,10 @@ RUN_TOLERANCE = 6
 MAX_RUNS = 120
 # a board the model places further than this share of a cell from where it was is taken to have moved
 BOARD_MOVED = 0.5
+# the part of a cell the plain adapter leaves to the samples: this share of the cell is left out on every side
+# (its edges, where a neighbour's border, a gutter or a highlight shows), the first of these that passes on the
+# game's screens; none left out last, for a game whose cells differ only at their edges
+PLAIN_INSETS = (0.2, 0.1, 0.0)
 # what a question that writes an adapter costs, roughly: its text's characters to a token, and a picture
 WRITE_CHARS, WRITE_PICTURE = 2, 800
 # the controls a game can be explored with before any adapter exists: a key per direction, a tap on the cell a
@@ -569,6 +573,15 @@ class Adaptation:
         game's budget of tokens)."""
         started, before = time.monotonic(), self.questions
         attempts = []
+        # a board that is a grid and nothing else needs no code written for it: the plain adapter is tried first
+        for inset in PLAIN_INSETS:
+            if (source := plain(trace, self.controls, inset)) is None:
+                break
+            report = adopt(source, trace)
+            attempts.append({**{key: report[key] for key in ("passed", "failed_check", "transitions")}, "plain": inset,
+                             "problems": [problem[:300] for problem in report["problems"]]})
+            if report["passed"]:
+                return Made(report["source"], 0, False, {**report, "attempts": attempts}, time.monotonic() - started, 0)
         for generation in range(1, MAX_GENERATIONS + 1):
             if allowed is not None and not allowed(self.cost(trace, previous)):
                 raise AdaptationFailed("budget", json.dumps(attempts))
@@ -587,6 +600,65 @@ class Adaptation:
                             time.monotonic() - started, self.questions - before)
             previous = (report["source"], report["problems"])
         raise AdaptationFailed("no_adapter_passed", json.dumps(attempts))
+
+
+PLAIN = """# The plain adapter (written by the host, not by a model): the board is the grid the first screen's reader
+# boxed, divided evenly; what each cell holds is left to the host's samples.
+BOARD, ROWS, COLS, FIELD, OTHERS, INSET = {board}, {rows}, {cols}, {field!r}, {others!r}, {inset}
+CONTROLS = {controls!r}
+
+
+def _cell(row, col):
+    left, top, width, height = BOARD
+    return left + col * width / COLS, top + row * height / ROWS, width / COLS, height / ROWS
+
+
+def _middle(cell):
+    x, y, across, down = _cell(*cell)
+    return round(x + across / 2), round(y + down / 2)
+
+
+def measure(picture):
+    left, top, width, height = BOARD
+    return {{"board": BOARD}} if left + width <= picture.width and top + height <= picture.height else None
+
+
+def read(picture, layout):
+    grid = []
+    for row in range(ROWS):
+        cells = []
+        for col in range(COLS):
+            x, y, across, down = _cell(row, col)
+            cells.append({{"look": [round(x + across * INSET), round(y + down * INSET),
+                                   round(across * (1 - 2 * INSET)), round(down * (1 - 2 * INSET))]}})
+        grid.append(cells)
+    return {{FIELD: grid, **OTHERS}}
+
+
+def target(action, state, layout):
+    if CONTROLS["kind"] == "keys":
+        return {{"kind": "key", "key": CONTROLS["keys"][action["direction"]]}}
+    if CONTROLS["kind"] == "tap":
+        x, y = _middle(action["cell"])
+        return {{"kind": "tap", "x": x, "y": y}}
+    (x0, y0), (x1, y1) = _middle(action[CONTROLS["from"]]), _middle(action[CONTROLS["to"]])
+    return {{"kind": "drag", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "ms": CONTROLS["duration_ms"]}}
+"""
+
+
+def plain(trace: Trace, controls: dict[str, Any], inset: float = PLAIN_INSETS[0]) -> str | None:
+    """The adapter no model need write: for a game whose state is one grid (and a score and scene, which it
+    leaves unread and in play) played by keys, a tap on a cell or a drag from cell to cell. The board is the
+    box the model gave on the first screen; every cell's value is left to the samples (`samples`), cut from
+    the middle of the cell. None for any other game."""
+    state = trace.looks[0].state
+    grid = _grid(state)
+    field_ = next((name for name, value in state.items() if value is grid), None) if grid is not None else None
+    others = {name: {"score": None, "scene": "playing"}.get(name, ...) for name in state if name != field_}
+    if field_ is None or ... in others.values() or controls["kind"] not in ("keys", "tap", "drag") or "source" in controls:
+        return None
+    return PLAIN.format(board=list(trace.looks[0].board), rows=len(grid), cols=len(grid[0]), field=field_, others=others,
+                        inset=inset, controls={key: value for key, value in controls.items() if key != "then"})
 
 
 def _size(png: bytes) -> list[int]:

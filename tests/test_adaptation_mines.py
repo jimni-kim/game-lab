@@ -37,6 +37,8 @@ MINED_CENTRE = [[0, 0], [0, 8], [2, 2], [4, 4], [5, 0], [6, 6], [7, 1], [8, 3], 
 @pytest.fixture(autouse=True)
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
+    # the adapters here are the ones a model writes: the host's plain one is tried in test_plain.py
+    monkeypatch.setattr(adaptation, "PLAIN_INSETS", ())
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
     monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
