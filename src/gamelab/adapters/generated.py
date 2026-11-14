@@ -167,11 +167,12 @@ class GeneratedAdapter:
     def checked_input(self, asked: Any) -> MappedAction:
         """The input the code asked for, as one the surface may be given: ValueError when it is none."""
         kind = asked.get("kind") if isinstance(asked, dict) else None
-        allowed = self._played["controls"]["kind"]
-        if kind == "key" and allowed == "keys" and asked.get("key") in KEYS and set(asked) == {"kind", "key"}:
+        # a game played among places (no grid) is given taps and drags both
+        allowed = {"places": ("tap", "drag")}.get(self._played["controls"]["kind"], (self._played["controls"]["kind"],))
+        if kind == "key" and "keys" in allowed and asked.get("key") in KEYS and set(asked) == {"kind", "key"}:
             return MappedAction("browser_press", {"keys": [asked["key"]]}, self.geometry_ref)
         points = {"tap": ("x", "y"), "drag": ("x0", "y0", "x1", "y1")}.get(kind)
-        if points is None or kind != allowed or not all(_number(asked.get(name)) for name in points):
+        if points is None or kind not in allowed or not all(_number(asked.get(name)) for name in points):
             raise ValueError("input_refused")
         values = [float(asked[name]) for name in points]
         if not all(self._inside(x, y) for x, y in zip(values[::2], values[1::2])):

@@ -1,0 +1,269 @@
+{
+ "op": "status",
+ "cases": [
+  {
+   "name": "a game in play",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "every foundation at its king is the game won",
+   "input": {
+    "state": {
+     "stock": 0,
+     "waste": "0",
+     "foundations": [
+      "KS",
+      "KH",
+      "KD",
+      "KC"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 0,
+       "up": []
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "the game's own end message",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "over"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "nothing left to move at all",
+   "input": {
+    "state": {
+     "stock": 0,
+     "waste": "0",
+     "foundations": [
+      "0",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "2H"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "2D"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "2C"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "4S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "4H"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "6D"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "not_reached"
+   }
+  }
+ ]
+}

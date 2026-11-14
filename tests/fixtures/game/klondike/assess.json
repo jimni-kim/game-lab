@@ -1,0 +1,650 @@
+{
+ "op": "assess",
+ "cases": [
+  {
+   "name": "the card turned up is the game's to choose",
+   "input": {
+    "before": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "from": [
+      "tableau",
+      2,
+      1
+     ],
+     "to": [
+      "foundation",
+      0
+     ]
+    },
+    "after": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "2S",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "7D"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a card gone from where the move did not take it is not the move",
+   "input": {
+    "before": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "from": [
+      "tableau",
+      2,
+      1
+     ],
+     "to": [
+      "foundation",
+      0
+     ]
+    },
+    "after": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "2S",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "7D"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "the same screen is the move not taken",
+   "input": {
+    "before": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "from": [
+      "tableau",
+      2,
+      1
+     ],
+     "to": [
+      "foundation",
+      0
+     ]
+    },
+    "after": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": {
+    "effect": "absent"
+   }
+  },
+  {
+   "name": "a turn of the stock shows another card on the waste",
+   "input": {
+    "before": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "draw"
+    },
+    "after": {
+     "stock": 1,
+     "waste": "8S",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a pile left without its turned-up card read cannot confirm the move",
+   "input": {
+    "before": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "from": [
+      "tableau",
+      2,
+      1
+     ],
+     "to": [
+      "foundation",
+      0
+     ]
+    },
+    "after": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "2S",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        null
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": {
+    "effect": "unknown"
+   }
+  }
+ ]
+}

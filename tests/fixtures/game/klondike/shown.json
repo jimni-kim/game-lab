@@ -1,0 +1,129 @@
+{
+ "op": "shown",
+ "cases": [
+  {
+   "name": "the deal as a screen shows it",
+   "input": {
+    "state": {
+     "stock": [
+      "3C",
+      "4D"
+     ],
+     "waste": [
+      "9S",
+      "2H"
+     ],
+     "foundations": [
+      "0",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": [],
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": [
+        "5S"
+       ],
+       "up": []
+      },
+      {
+       "down": [
+        "5S",
+        "5S"
+       ],
+       "up": []
+      },
+      {
+       "down": [
+        "5S",
+        "5S",
+        "5S"
+       ],
+       "up": []
+      },
+      {
+       "down": [
+        "5S",
+        "5S",
+        "5S",
+        "5S"
+       ],
+       "up": []
+      },
+      {
+       "down": [
+        "5S",
+        "5S",
+        "5S",
+        "5S",
+        "5S"
+       ],
+       "up": []
+      },
+      {
+       "down": [
+        "5S",
+        "5S",
+        "5S",
+        "5S",
+        "5S",
+        "5S"
+       ],
+       "up": []
+      }
+     ],
+     "scene": "playing"
+    }
+   },
+   "expected": {
+    "stock": 1,
+    "waste": "2H",
+    "foundations": [
+     "0",
+     "0",
+     "0",
+     "0"
+    ],
+    "tableau": [
+     {
+      "down": 0,
+      "up": [
+       "KD"
+      ]
+     },
+     {
+      "down": 1,
+      "up": []
+     },
+     {
+      "down": 2,
+      "up": []
+     },
+     {
+      "down": 3,
+      "up": []
+     },
+     {
+      "down": 4,
+      "up": []
+     },
+     {
+      "down": 5,
+      "up": []
+     },
+     {
+      "down": 6,
+      "up": []
+     }
+    ],
+    "scene": "playing"
+   }
+  }
+ ]
+}

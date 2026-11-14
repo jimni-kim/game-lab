@@ -17,14 +17,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from gamelab.rules import block_placement, match3, minesweeper, slide_merge
-from gamelab.solvers import (block_placement as block_placement_solver, match3 as match3_solver,
+from gamelab.rules import block_placement, klondike, match3, minesweeper, slide_merge
+from gamelab.solvers import (block_placement as block_placement_solver, klondike as klondike_solver, match3 as match3_solver,
                           minesweeper as minesweeper_solver, slide_merge as slide_merge_solver)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests/fixtures/game"
-MODELS = {"block_placement": block_placement, "match3": match3, "minesweeper": minesweeper, "slide_merge": slide_merge}
-SOLVERS = {"block_placement": block_placement_solver, "match3": match3_solver, "minesweeper": minesweeper_solver,
+MODELS = {"block_placement": block_placement, "klondike": klondike, "match3": match3, "minesweeper": minesweeper, "slide_merge": slide_merge}
+SOLVERS = {"block_placement": block_placement_solver, "klondike": klondike_solver, "match3": match3_solver, "minesweeper": minesweeper_solver,
            "slide_merge": slide_merge_solver}
 # modules a pure rule model or solver may not import even from the standard library: IO, time, randomness, logging
 IO_MODULES = {"os", "io", "time", "random", "logging", "pathlib", "socket", "datetime", "asyncio",

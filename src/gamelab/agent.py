@@ -58,6 +58,8 @@ ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
 # as small grey pictures that may differ this much on average (of 255), and for no longer than this
 STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
+# a state reached this many times by confirmed moves ends the game as going nowhere
+MAX_VISITS = 3
 # moves kept in the record and told to a model asked about a screen
 HISTORY_KEPT = 8
 # a direction key on a surface without keys is a swipe across the board
@@ -163,6 +165,7 @@ class Agent:
         self.used = self.confirmed = self.stalled = self.tries = self.shots = self.sequence = 0
         self.shrugged = False
         self.ineffective: dict[str, Any] | None = None
+        self.visits: dict[str, int] = {}
         self.trial = 0
         self.rested: list[float] = []
         self.rested_at = 0.0
@@ -335,6 +338,11 @@ class Agent:
         self.stalled = self.tries = 0
         self.shrugged, self.ineffective, self.carried, self.state = False, None, after, after.state
         self.recovery.succeeded()
+        # a game that keeps coming back to the same state by its own moves is going nowhere (a stock turned
+        # round and round with nothing to play): it is over, whatever moves it still offers
+        self.visits[after.id] = self.visits.get(after.id, 0) + 1
+        if self.visits[after.id] >= MAX_VISITS:
+            raise _End(Outcome.GAME_OVER, "no_progress")
         if before.by == L3 and after.by == L3 and self.trial > 0:
             self.trial -= 1
             self._time_trial(self.rested_at - sent_at)
@@ -563,7 +571,8 @@ class Agent:
         from io import BytesIO
         from PIL import Image
 
-        boxes = [self.board, *(box for look in self.trace.looks[-1:] for box in look.sources or [] if box)]
+        boxes = [self.board, *(box for look in self.trace.looks[-1:] if isinstance(look.sources, list)
+                               for box in look.sources if box)]
         left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
         right, bottom = max(box[0] + box[2] for box in boxes), max(box[1] + box[3] for box in boxes)
         previous, deadline = None, time.monotonic() + STILL_TIMEOUT_S

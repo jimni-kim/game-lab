@@ -1,0 +1,128 @@
+{
+ "op": "unknown_fields",
+ "cases": [
+  {
+   "name": "every unread value is named",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": null,
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        null
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    }
+   },
+   "expected": [
+    "waste",
+    "tableau[0].up[0]"
+   ]
+  },
+  {
+   "name": "nothing under an end screen is waited for",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": null,
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "won"
+    }
+   },
+   "expected": []
+  }
+ ]
+}

@@ -50,7 +50,8 @@
       "properties": {
         "shape": {
           "enum": [
-            "grid"
+            "grid",
+            "piles"
           ]
         },
         "cells": {
@@ -77,7 +78,6 @@
     },
     "state_fields": {
       "type": "object",
-      
       "description": "each field of the state the family's code reads and writes, with what its values mean: how a cell or piece is written, which value marks one nobody read (what a correction may fill) and which values look empty but are not unread",
       "additionalProperties": {
         "type": "string",
@@ -205,7 +205,7 @@
     "default_compute": {
       "type": "integer",
       "minimum": 1,
-      "description": "boards the default policy evaluates per move when a task asks in words and names no budget: what played its registered sites within the per-move time measured in plan §13"
+      "description": "boards the default policy evaluates per move when a task asks in words and names no budget: what played its registered sites within the per-move time measured in plan \u00a713"
     },
     "verify_every": {
       "type": "integer",
@@ -214,7 +214,7 @@
     },
     "discovery": {
       "type": "object",
-      "description": "how a game of this family with no registered profile is set up from one look (plan §4.5): the rule values its code plays, read off the board, and the controls, settling and colour tolerance a session profile starts from; a family without it plays registered profiles only",
+      "description": "how a game of this family with no registered profile is set up from one look (plan \u00a74.5): the rule values its code plays, read off the board, and the controls, settling and colour tolerance a session profile starts from; a family without it plays registered profiles only",
       "required": [
         "rules",
         "controls",

@@ -1,0 +1,395 @@
+{
+ "op": "choose",
+ "cases": [
+  {
+   "name": "the baseline takes the first move the rules list",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "policy": "first",
+    "budget": 50
+   },
+   "expected": {
+    "action": {
+     "kind": "draw"
+    },
+    "nodes": 1
+   }
+  },
+  {
+   "name": "greedy turns a card up before anything else",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "policy": "greedy",
+    "budget": 50
+   },
+   "expected": {
+    "action": {
+     "kind": "move",
+     "from": [
+      "tableau",
+      6,
+      1
+     ],
+     "to": [
+      "foundation",
+      1
+     ]
+    },
+    "nodes": 7
+   }
+  },
+  {
+   "name": "a move the screen showed had no effect is left out",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "policy": "greedy",
+    "budget": 50,
+    "excluded": [
+     {
+      "kind": "move",
+      "from": [
+       "tableau",
+       2,
+       1
+      ],
+      "to": [
+       "foundation",
+       0
+      ]
+     },
+     {
+      "kind": "move",
+      "from": [
+       "tableau",
+       6,
+       1
+      ],
+      "to": [
+       "foundation",
+       1
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "action": {
+     "kind": "move",
+     "from": [
+      "tableau",
+      6,
+      1
+     ],
+     "to": [
+      "tableau",
+      2
+     ]
+    },
+    "nodes": 5
+   }
+  },
+  {
+   "name": "with nothing to gain the stock is turned",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "9S",
+     "foundations": [
+      "0",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "KS"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "3H"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "5H"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "7H"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "JH"
+       ]
+      },
+      {
+       "down": 0,
+       "up": [
+        "4C"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "policy": "greedy",
+    "budget": 50
+   },
+   "expected": {
+    "action": {
+     "kind": "draw"
+    },
+    "nodes": 3
+   }
+  },
+  {
+   "name": "a policy nobody registered",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    },
+    "policy": "clever",
+    "budget": 50
+   },
+   "error": "unknown_policy"
+  }
+ ]
+}

@@ -28,6 +28,8 @@ The host already has the game's rules (`family` and `rule_model` in the context)
         layout["regions"]: for such a game measure() also returns "regions": [[left, top, width, height],
         ...] around where the things to drag wait.
 
+A game whose board is not a grid (the examples have `places`: the approximate box of each place its things lie in, named as `controls.places` describes) has no `cells` or `probes`. For it, "board" is the box around all the places; target() returns a tap at the middle of the place an action names (`controls.tap`), or a drag from the middle of the thing it takes (the visible part of the deepest thing taken from a pile) to the middle of the place it goes to (the top thing of the pile, or the empty place), as the examples' `sent` show.
+
 `picture` is a helpers.Picture (see `helpers` for its methods). The code runs in a sandbox: no files, no network, no environment, no printing; each call must finish well within a second. Module-level constants (a colour table, measured sizes) are fine.
 
 What you know about the site:

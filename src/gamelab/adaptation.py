@@ -64,12 +64,16 @@ OVERLAY_SIDE, OVERLAY_CELL, OVERLAY_MOST = 800, 56, 2400
 # a drag the code asks for plays a recorded one when it starts within this share of the dragged thing's size
 # around the box the model gave for it, and ends within this share of a cell of the recorded end
 DRAG_FROM_MARGIN, DRAG_ONTO = 0.35, 0.34
+# an input among a game's places plays a recorded one when each of its ends lies within this share of the
+# place's size around the box the model gave for it
+PLACE_MARGIN = 0.25
 RUN_TOLERANCE = 6
 MAX_RUNS = 120
 # the controls a game can be explored with before any adapter exists: a key per direction, a tap on the cell a
-# move names, or a drag of the thing a move names (one entry of a state field, at the box the model gave for
-# it) onto the cells the move names
-EXPLORED_WITH = ("keys", "tap", "drag")
+# move names, a drag of the thing a move names (one entry of a state field, at the box the model gave for
+# it) onto the cells the move names, or, for a game whose board is no grid, taps on and drags between the
+# places the family names and the model gave boxes for (`place`)
+EXPLORED_WITH = ("keys", "tap", "drag", "places")
 
 
 class AdaptationFailed(Exception):
@@ -185,6 +189,28 @@ def cell_box(board: list[int], shape: tuple[int, int], cell: list[int]) -> list[
     return [left + col * across, top + row * down, across, down]
 
 
+def place(places: dict[str, Any], named: list[Any], *, taking: bool) -> list[int]:
+    """The box of the place a move names, among the boxes given for a game's places. `named` is the place's
+    name, then, where the place is a list, which of them, then, where that is a pile of things, how many are
+    taken from its top. Of a pile it is the box of the deepest thing taken, or, to put something on it, of its
+    top one."""
+    found = places[named[0]]
+    if len(named) > 1 and isinstance(found[0], list):
+        found = found[named[1]]
+    if isinstance(found[0], list):
+        found = found[-named[2]] if taking and len(named) > 2 else found[-1]
+    return found
+
+
+def _middle(box: list[int]) -> tuple[float, float]:
+    return box[0] + box[2] / 2, box[1] + box[3] / 2
+
+
+def _within(point: tuple[float, float], box: list[int], margin: float) -> bool:
+    return (box[0] - box[2] * margin <= point[0] < box[0] + box[2] * (1 + margin)
+            and box[1] - box[3] * margin <= point[1] < box[1] + box[3] * (1 + margin))
+
+
 def drag_for(source: list[int], board: list[int], shape: tuple[int, int], piece: list[list[int]],
              anchor: list[int], ms: int) -> dict[str, Any]:
     """The drag that puts `piece` (its cells, from the box `source` around it) on the board with its first row
@@ -229,7 +255,8 @@ class Adaptation:
         # a large screen is shown smaller (`view`): boxes go to the model and come back in what it is shown
         shown, scale = view(png)
         context = {"family": self.descriptor, **({"board": [round(value * scale) for value in board]} if board else {}),
-                   **({"sources": self.controls["source"]} if "source" in self.controls else {})}
+                   **({"sources": self.controls["source"]} if "source" in self.controls else {}),
+                   **({"places": self.controls["places"]} if "places" in self.controls else {})}
         content = [{"type": "text", "text": json.dumps(context)}, _image(shown)]
         if board and shape:
             content.append(_image(overlay(png, board, *shape)))
@@ -338,6 +365,11 @@ class Adaptation:
                 if self.sources is None:
                     problem = "sources_refused"
                     continue
+            if "places" in self.controls:
+                self.sources = self._places(answer.get("places"), size)
+                if self.sources is None:
+                    problem = "places_refused"
+                    continue
             self.told.append(self._told(answer.get("rules")))
             return png, state.payload, found, chosen
         raise AdaptationFailed("label_failed", problem)
@@ -352,6 +384,19 @@ class Adaptation:
             return None
         boxes = [box if entry else None for box, entry in zip(seen, listed)]
         return boxes if all(_box(box, size) for box, entry in zip(boxes, listed) if entry) else None
+
+    def _places(self, seen: Any, size: list[int]) -> dict[str, Any] | None:
+        """The boxes the model gave for the places the family names, when every one is there and lies on the
+        screen (a place may be one box, a list of them, or a list of lists); None otherwise."""
+        from .adapters.generated import _box
+
+        def boxes(value: Any, depth: int = 0) -> bool:
+            if _box(value, size):
+                return True
+            return depth < 2 and isinstance(value, list) and bool(value) and all(boxes(part, depth + 1) for part in value)
+        if not isinstance(seen, dict) or set(seen) != set(self.controls["places"]):
+            return None
+        return seen if all(boxes(value) for value in seen.values()) else None
 
     def _unknowable(self) -> list[str]:
         """The rule values a game may be played without knowing: those the family lets be null."""
@@ -391,6 +436,13 @@ class Adaptation:
         controls = self.controls
         if controls["kind"] == "keys":
             return {"kind": "key", "key": controls["keys"][action["direction"]]}
+        if controls["kind"] == "places":
+            if action["kind"] in controls["tap"]:
+                x, y = _middle(place(sources, controls["tap"][action["kind"]], taking=False))
+                return {"kind": "tap", "x": x, "y": y}
+            start, end = controls["drag"][action["kind"]]
+            (x0, y0), (x1, y1) = _middle(place(sources, action[start], taking=True)), _middle(place(sources, action[end], taking=False))
+            return {"kind": "drag", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "ms": controls["duration_ms"]}
         if controls["kind"] == "drag" and "source" not in controls:
             # from one cell of the board to another: the middle of each
             one, other = cell_box(board, shape, action[controls["from"]]), cell_box(board, shape, action[controls["to"]])
@@ -467,12 +519,15 @@ class Adaptation:
 
     def _context(self, trace: Trace, previous: tuple[str, list[str]] | None) -> dict[str, Any]:
         family = catalog.family(self.family_id)
-        examples = [{"state": look.state, "board": look.board, "cells": cells(look), "action": look.action,
-                     "sent": look.sent, **({"sources": look.sources} if look.sources else {})} for look in trace.train]
+        gridded = _grid(trace.looks[0].state) is not None
+        examples = [{"state": look.state, "board": look.board, **({"cells": cells(look)} if gridded else {}),
+                     "action": look.action, "sent": look.sent,
+                     **({"places" if isinstance(look.sources, dict) else "sources": look.sources} if look.sources else {})}
+                    for look in trace.train]
         return {"family": self.descriptor, "rules": trace.rules, "controls": self.controls,
                 "rule_model": Path(family.model.__file__).read_text(encoding="utf-8"),
                 "helpers": (Path(__file__).parent / "sandbox" / "helpers.py").read_text(encoding="utf-8"),
-                "examples": examples, "probes": probes(trace.train[0]),
+                "examples": examples, **({"probes": probes(trace.train[0])} if gridded else {}),
                 **({"previous": {"module": previous[0], "problems": previous[1]}} if previous else {})}
 
     async def write(self, trace: Trace, previous: tuple[str, list[str]] | None = None) -> str:
@@ -663,6 +718,15 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
     code that picks another point of it plays the same move)."""
     if not isinstance(asked, dict) or asked.get("kind") != look.sent["kind"] or look.sent["kind"] == "key":
         return asked == look.sent
+    if isinstance(look.sources, dict):
+        # among a game's places: each end of the input in or near the box (a model's estimate) the recorded end was in
+        def near(point: tuple[float, float], recorded: tuple[float, float]) -> bool:
+            boxes = [box for box in _flat(look.sources) if _within(recorded, box, 0.0)]
+            return any(_within(point, box, PLACE_MARGIN) for box in boxes)
+        if look.sent["kind"] == "tap":
+            return near((asked["x"], asked["y"]), (look.sent["x"], look.sent["y"]))
+        return (near((asked["x0"], asked["y0"]), (look.sent["x0"], look.sent["y0"]))
+                and near((asked["x1"], asked["y1"]), (look.sent["x1"], look.sent["y1"])))
     if look.sent["kind"] == "drag" and not look.sources:
         # between two cells of the board: each end inside the cell the recorded drag's end was in, on the board
         # as the code measured it
@@ -687,6 +751,15 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
                 and abs(asked["x1"] - goal[0]) <= across * DRAG_ONTO and abs(asked["y1"] - goal[1]) <= down * DRAG_ONTO)
     left, top, width, height = cell_box(board, _shape(None, look.state), look.action["cell"])
     return left <= asked["x"] < left + width and top <= asked["y"] < top + height
+
+
+def _flat(places: Any) -> list[list[int]]:
+    """Every box among a game's places."""
+    if isinstance(places, dict):
+        return [box for value in places.values() for box in _flat(value)]
+    if isinstance(places, list) and places and isinstance(places[0], list):
+        return [box for value in places for box in _flat(value)]
+    return [places] if isinstance(places, list) and places else []
 
 
 def _agrees(partial: Any, whole: Any) -> bool:

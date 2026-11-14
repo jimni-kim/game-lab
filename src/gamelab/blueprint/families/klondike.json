@@ -1,0 +1,121 @@
+{
+  "id": "klondike",
+  "revision": 1,
+  "summary": "Klondike patience with one deck. Seven piles of cards, the lower cards face down; a stock of face-down cards, a waste beside it and four foundations. Face-up cards are moved between piles on to a card one rank higher of the other colour, a king on to an empty pile, and to the foundations by suit from the ace up. Turning the stock puts its next card face up on the waste. The game is won when every card is on the foundations.",
+  "state_schema": "klondike.v1",
+  "board": {
+    "shape": "piles",
+    "cells": [
+      {
+        "kind": "card",
+        "looks": "a face-up card: its rank and suit, written as rank then suit letter (AS, 10H, JD, KC; suits S spades, H hearts, D diamonds, C clubs)"
+      },
+      {
+        "kind": "face_down",
+        "looks": "a card showing its back"
+      },
+      {
+        "kind": "empty",
+        "looks": "a place for cards that holds none (an outline, a faint symbol)"
+      }
+    ]
+  },
+  "state_fields": {
+    "stock": "1 while the stock holds face-down cards, 0 when it is empty (an outline or a turn-over symbol), null when it cannot be told",
+    "waste": "the card on top of the waste (the face-up cards beside the stock; the top one is the one fully in view), \"0\" when the waste is empty, null when it cannot be read",
+    "foundations": "four entries from the left: the top card of each foundation, \"0\" for an empty one, null for one that cannot be read",
+    "tableau": "seven entries from the left, one per pile: {\"down\": how many cards lie face down in it, \"up\": its face-up cards from the deepest one to the top one}; a pile with no cards is {\"down\": 0, \"up\": []}; null for a card or count that cannot be read",
+    "scene": "the id of the scene the screen shows"
+  },
+  "actions": [
+    {
+      "kind": "draw",
+      "input": "tap",
+      "description": "turn the stock: tap it"
+    },
+    {
+      "kind": "recycle",
+      "input": "tap",
+      "description": "put the waste back as the stock when the stock is empty: tap the stock's place"
+    },
+    {
+      "kind": "move",
+      "input": "drag",
+      "description": "drag from `from` ([\"waste\"], or [\"tableau\", pile, how many of its top cards]) to `to` ([\"tableau\", pile] or [\"foundation\", index])"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "playing",
+      "looks": "the piles at rest"
+    },
+    {
+      "id": "won",
+      "looks": "the game's own message that it is won"
+    },
+    {
+      "id": "over",
+      "looks": "the game's own message that no move is left"
+    }
+  ],
+  "meta_actions": [
+    {
+      "id": "new_game",
+      "description": "deal another game"
+    }
+  ],
+  "rule_parameters": {
+    "draw": {
+      "description": "how many cards one turn of the stock moves to the waste (only the simulated game deals by it)",
+      "values": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3
+      }
+    }
+  },
+  "discovery": {
+    "rules": {},
+    "controls": {
+      "kind": "places",
+      "duration_ms": 400,
+      "places": {
+        "stock": "the stock, or the place it leaves when empty",
+        "waste": "the top card of the waste, or its empty place",
+        "foundation": "a list of four: each foundation's top card, or its empty place",
+        "tableau": "a list of seven: for each pile the list of the boxes of its face-up cards, deepest first, each box the part of the card that is in view; for a pile with no face-up card a list of one box, its empty place"
+      },
+      "tap": {
+        "draw": [
+          "stock"
+        ],
+        "recycle": [
+          "stock"
+        ]
+      },
+      "drag": {
+        "move": [
+          "from",
+          "to"
+        ]
+      }
+    },
+    "settling": {
+      "timeout_s": 5,
+      "interval_s": 0.15,
+      "stable_s": 0.3,
+      "animation_s": 0.4,
+      "still": true
+    },
+    "tolerance": 4
+  },
+  "policies": [
+    "first",
+    "greedy"
+  ],
+  "baseline_policy": "first",
+  "default_policy": "greedy",
+  "default_compute": 200,
+  "goal_value": "the cards on the foundations",
+  "verify_every": 1
+}

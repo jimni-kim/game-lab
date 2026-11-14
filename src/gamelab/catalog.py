@@ -17,17 +17,19 @@ from typing import Any
 
 from . import resources, rules, solvers
 from .families import GridFamily
-from .rules import block_placement, match3, minesweeper, slide_merge
-from .solvers import (block_placement as block_placement_solver, match3 as match3_solver,
+from .rules import block_placement, klondike, match3, minesweeper, slide_merge
+from .solvers import (block_placement as block_placement_solver, klondike as klondike_solver, match3 as match3_solver,
                       minesweeper as minesweeper_solver, slide_merge as slide_merge_solver)
 
 # the package's own blueprint (src/gamelab/blueprint)
 FRAGMENT = resources.FRAGMENT
 SCHEMA = FRAGMENT / "family.schema.json"
 # each family's rule model, the one the session trusts, and its solver, the registered policies over it
-MODELS: dict[str, ModuleType] = {"block_placement": block_placement, "match3": match3, "minesweeper": minesweeper,
+MODELS: dict[str, ModuleType] = {"block_placement": block_placement, "klondike": klondike, "match3": match3,
+                                 "minesweeper": minesweeper,
                                  "slide_merge": slide_merge}
-SOLVERS: dict[str, ModuleType] = {"block_placement": block_placement_solver, "match3": match3_solver,
+SOLVERS: dict[str, ModuleType] = {"block_placement": block_placement_solver, "klondike": klondike_solver,
+                                  "match3": match3_solver,
                                   "minesweeper": minesweeper_solver, "slide_merge": slide_merge_solver}
 
 def descriptor_ids() -> list[str]:

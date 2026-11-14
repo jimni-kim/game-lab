@@ -1,0 +1,382 @@
+{
+ "op": "legal_actions",
+ "cases": [
+  {
+   "name": "the stock, the foundations and the piles each offer their moves",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": [
+    {
+     "kind": "draw"
+    },
+    {
+     "kind": "move",
+     "from": [
+      "waste"
+     ],
+     "to": [
+      "tableau",
+      1
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      0,
+      1
+     ],
+     "to": [
+      "tableau",
+      3
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      2,
+      1
+     ],
+     "to": [
+      "foundation",
+      0
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      4,
+      2
+     ],
+     "to": [
+      "tableau",
+      0
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      6,
+      1
+     ],
+     "to": [
+      "foundation",
+      1
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      6,
+      1
+     ],
+     "to": [
+      "tableau",
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "an empty stock is turned over from the waste",
+   "input": {
+    "state": {
+     "stock": 0,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "8C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "3S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "7H"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": [
+    {
+     "kind": "recycle"
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      0,
+      1
+     ],
+     "to": [
+      "tableau",
+      3
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      1,
+      1
+     ],
+     "to": [
+      "tableau",
+      5
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      4,
+      1
+     ],
+     "to": [
+      "tableau",
+      0
+     ]
+    },
+    {
+     "kind": "move",
+     "from": [
+      "tableau",
+      6,
+      1
+     ],
+     "to": [
+      "tableau",
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a state with an unread card offers no move",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": null,
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "playing"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "error": "unknown_cells"
+  },
+  {
+   "name": "a game that is won offers no move",
+   "input": {
+    "state": {
+     "stock": 1,
+     "waste": "5H",
+     "foundations": [
+      "AS",
+      "0",
+      "0",
+      "0"
+     ],
+     "tableau": [
+      {
+       "down": 0,
+       "up": [
+        "KD"
+       ]
+      },
+      {
+       "down": 1,
+       "up": [
+        "6C"
+       ]
+      },
+      {
+       "down": 2,
+       "up": [
+        "2S"
+       ]
+      },
+      {
+       "down": 0,
+       "up": []
+      },
+      {
+       "down": 4,
+       "up": [
+        "QC",
+        "JD"
+       ]
+      },
+      {
+       "down": 5,
+       "up": [
+        "9D"
+       ]
+      },
+      {
+       "down": 6,
+       "up": [
+        "AH"
+       ]
+      }
+     ],
+     "scene": "won"
+    },
+    "rules": {
+     "draw": 1
+    }
+   },
+   "expected": []
+  }
+ ]
+}
