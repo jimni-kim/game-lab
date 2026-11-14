@@ -58,6 +58,9 @@ ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
 # as small grey pictures that may differ this much on average (of 255), and for no longer than this
 STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
+# readings of the model's an adapter's samples may speak against in a row before the adapter is written again,
+# and the share of a game's tokens after which it is not written again at all
+MAX_DISPUTES, REWRITE_SHARE = 3, 0.5
 # a state reached this many times by confirmed moves ends the game as going nowhere
 MAX_VISITS = 3
 # moves kept in the record and told to a model asked about a screen
@@ -165,6 +168,9 @@ class Agent:
         self.used = self.confirmed = self.stalled = self.tries = self.shots = self.sequence = 0
         self.shrugged = False
         self.ineffective: dict[str, Any] | None = None
+        # screens a model read that an adopted adapter's samples spoke against, in a row, and how many looks
+        # the adapter last passed its check on
+        self.disputes = self.checked = 0
         self.visits: dict[str, int] = {}
         self.trial = 0
         self.rested: list[float] = []
@@ -297,7 +303,7 @@ class Agent:
             return
         sent = self._aim(action, before)
         if sent is None:
-            self._doubt(before)
+            self._doubt()
             return
         if self.adapter is None or self.distrusted:
             self._afford()               # the move's result is the model's to read: none is sent that it cannot be asked about
@@ -331,8 +337,10 @@ class Agent:
             # the model saw no board where the move's result should be: what is in the way is dealt with now
             await self._unstick(self.why)
             return
-        if before.by == L3 and (self.trial > 0 or self.stalled >= MAX_STALLED):
-            self._doubt(before)
+        # the adapter is doubted for a move it read either side of: a board it read wrongly is as often the
+        # one after the move (a place it takes for empty) as the one before
+        if L3 in (before.by, after.by if after else None) and (self.trial > 0 or self.stalled >= MAX_STALLED):
+            self._doubt()
 
     async def _confirmed(self, before: Reading, action: dict[str, Any], sent: dict[str, Any], after: Reading,
                          sent_at: float) -> None:
@@ -345,6 +353,8 @@ class Agent:
         self.visits[after.id] = self.visits.get(after.id, 0) + 1
         if self.visits[after.id] >= MAX_VISITS:
             raise _End(Outcome.GAME_OVER, "no_progress")
+        if before.by == L3 and after.by == L3:
+            self.disputes = 0
         if before.by == L3 and after.by == L3 and self.trial > 0:
             self.trial -= 1
             self._time_trial(self.rested_at - sent_at)
@@ -362,9 +372,9 @@ class Agent:
         elif sum(look.action is not None for look in self.trace.looks) >= self.need and self.attempts <= RETRIES:
             await self._generate(None)
 
-    def _doubt(self, before: Reading) -> None:
+    def _doubt(self) -> None:
         """The adapter's reading may be what is wrong: the model reads the next screens."""
-        if before.by == L3 and self.adapter is not None:
+        if self.adapter is not None:
             if self.rewrites >= MAX_RELEARNS:
                 self._demote("relearn_limit")
             else:
@@ -404,6 +414,11 @@ class Agent:
 
     def _left(self) -> float | None:
         return None if self.budget.max_seconds is None else self.budget.max_seconds - (time.monotonic() - self.started)
+
+    def _affordable_rewrite(self) -> bool:
+        """Whether an adapter may be written again: not once the game's questions have used REWRITE_SHARE of
+        their tokens, so that what is left reads the game."""
+        return self.budget.max_input_tokens is None or self.model.input < self.budget.max_input_tokens * REWRITE_SHARE
 
     def _affordable(self) -> bool:
         return self.budget.max_input_tokens is None or self.model.input < self.budget.max_input_tokens
@@ -615,6 +630,7 @@ class Agent:
         self.adapter.keep(self.trace.looks)
         self.settling = Settling(**self.adapter.played.get("settling", {}))
         self.distrusted, self.blind, self.trial, self.rested, self.carried = False, False, TRIAL_MOVES, [], None
+        self.checked = len(self.trace.looks)
 
     def _demote(self, reason: str) -> None:
         """No adapter reads this game: the model reads it from here on."""
@@ -636,9 +652,23 @@ class Agent:
             self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
             if self.store is not None:
                 self.store.save(self.trace, self.made)
+        elif (report["failed_check"] in ("state", "samples") and len(self.adapter.bank) and self.disputes < MAX_DISPUTES
+              and len(self.trace.looks) > self.checked >= 1):
+            # the code names what it sees from screens read before, and those say otherwise than this one: the
+            # reading just made is doubted before the code is (a model misreads a card now and then), and is
+            # not kept; only when it keeps happening is the code written again
+            self.disputes += 1
+            self.trace.looks = self.trace.looks[:self.checked]
+            self.unproven = None
+            self.distrusted, self.blind, self.trial, self.carried = False, False, TRIAL_MOVES, None
+            return
         else:
+            if not self._affordable_rewrite():
+                self._demote("rewrite_budget")
+                return
             self.rewrites += 1
             await self._generate((self.made.source, report["problems"]))
+        self.checked = len(self.trace.looks)
 
     async def _generate(self, previous: tuple[str, list[str]] | None) -> bool:
         """An adapter written from the looks so far and adopted when it passes on all of them. When none
