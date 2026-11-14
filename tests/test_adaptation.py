@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from gamelab import adaptation
+from gamelab import adaptation, agent
 from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt
 from gamelab.agent import play as play_adaptive
 from gamelab.baseline import adapter_for
@@ -20,6 +20,7 @@ from test_screen import Screen, screen_reading  # noqa: F401
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
 
 
 class Author:

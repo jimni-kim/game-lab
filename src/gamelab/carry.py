@@ -33,6 +33,9 @@ OWN_COLOURS, OWN_SHARE, OWN_NEAR, OWN_KEPT = 6, 0.08, 36, 0.4
 # for the game to take the press as a drag, near enough that the held thing is not yet over the board
 FIRST_LEG, LEAST_LEG = (0.2, 0.5), 24.0
 LIFT_S, LEG_MS, REST_S = 0.25, 160, 0.08
+# once this many carries were measured, one whose thing was enlarged by a factor further than this share from
+# their middle one is not believed
+SCALES_TRUSTED, SCALES_KEPT, SCALE_NEAR = 3, 9, 0.2
 
 
 def _boxes(before: bytes, after: bytes) -> list[list[int]]:
@@ -106,7 +109,7 @@ def _own(before: bytes, during: bytes, origin: list[int], held: list[int]) -> li
         return box[0], box[1], box[0] + box[2], box[1] + box[3]
     with Image.open(BytesIO(before)) as one, Image.open(BytesIO(during)) as other:
         was, left_behind = one.convert("RGB").crop(corners(origin)), other.convert("RGB").crop(corners(origin))
-        drawn = other.convert("RGB").crop(corners(held))
+        under, drawn = one.convert("RGB").crop(corners(held)), other.convert("RGB").crop(corners(held))
     # its colours: those the place it left held before and holds no more
     now = dict((colour, count) for count, colour in left_behind.quantize(OWN_COLOURS * 2).convert("RGB").getcolors() or [])
     own = [colour for count, colour in sorted(was.quantize(OWN_COLOURS).convert("RGB").getcolors() or [], reverse=True)
@@ -120,6 +123,9 @@ def _own(before: bytes, during: bytes, origin: list[int], held: list[int]) -> li
         bands = [band.point(lambda value: 255 if value <= OWN_NEAR else 0) for band in far.split()]
         near = ImageChops.darker(ImageChops.darker(bands[0], bands[1]), bands[2])
         mask = near if mask is None else ImageChops.lighter(mask, near)
+    # and only where the screen changed: the board may hold blocks of the same colours that never moved
+    moved = [band.point(lambda value: 255 if value > CHANGED else 0) for band in ImageChops.difference(under, drawn).split()]
+    mask = ImageChops.darker(mask, ImageChops.lighter(ImageChops.lighter(moved[0], moved[1]), moved[2]))
     tight = mask.getbbox()
     # only when most of what was found is in those colours: a thing drawn held in other colours keeps its box
     if tight is None or (tight[2] - tight[0]) * (tight[3] - tight[1]) < held[2] * held[3] * OWN_KEPT:
@@ -134,10 +140,20 @@ class Carrier:
         self.surface = surface
         # the held drawing's middle minus the pointer, as last measured: all a surface that cannot hold is given
         self.offset: tuple[float, float] | None = None
+        # how many times larger than where it waited each held thing was drawn: a game enlarges them all alike,
+        # so a measurement far from the others measured something else (an animation still running)
+        self.scales: list[float] = []
         self.log: list[dict[str, Any]] = []
 
-    async def carry(self, before: bytes, start: tuple[float, float], goal: tuple[float, float], duration_ms: int
-                    ) -> dict[str, Any]:
+    def _plausible(self, origin: list[int], held: list[int]) -> bool:
+        scale = (held[2] / origin[2] + held[3] / origin[3]) / 2
+        usual = sorted(self.scales)[len(self.scales) // 2] if len(self.scales) >= SCALES_TRUSTED else None
+        if usual is not None and abs(scale / usual - 1) > SCALE_NEAR:
+            return False
+        self.scales = [*self.scales, scale][-SCALES_KEPT:]
+        return True
+
+    async def carry(self, start: tuple[float, float], goal: tuple[float, float], duration_ms: int) -> dict[str, Any]:
         """Drag what is at `start` so that its drawing's middle comes to `goal`. Returns what was measured
         (`origin`, `held`), where the pointer was let go (`end`) and whether a measurement placed it."""
         surface = self.surface
@@ -149,6 +165,7 @@ class Carrier:
             told["end"] = list(end)
             await surface.drag(*start, *end, duration_ms)
             return told
+        before = await surface.capture()
         await surface.press(*start)
         try:
             pointer = start
@@ -160,7 +177,7 @@ class Carrier:
                 await surface.move(*pointer, LEG_MS)
                 await asyncio.sleep(LIFT_S)
                 found = find(before, await surface.capture(), start, pointer)
-                if found is not None:
+                if found is not None and self._plausible(*found):
                     origin, held = found
                     middle = (held[0] + held[2] / 2, held[1] + held[3] / 2)
                     self.offset = (middle[0] - pointer[0], middle[1] - pointer[1])

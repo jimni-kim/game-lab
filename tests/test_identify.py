@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from gamelab import adaptation, recovery
+from gamelab import adaptation, agent, recovery
 from gamelab.adaptation import Store, explorable
 from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
@@ -22,6 +22,7 @@ from test_screen import Screen, screen_reading  # noqa: F401
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "GeneratedAdapter", partial(
         adaptation.GeneratedAdapter, settling={"timeout_s": 0.4, "interval_s": 0.05, "stable_s": 0.1}))

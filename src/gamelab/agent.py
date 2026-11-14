@@ -55,6 +55,9 @@ RETRY_LOOKS, RETRIES = 12, 2
 RESTLESS_S = 1.0
 # after its trial moves a still game waits the longest of them plus this margin, then looks once
 ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
+# a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
+# as small grey pictures that may differ this much on average (of 255), and for no longer than this
+STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
 # moves kept in the record and told to a model asked about a screen
 HISTORY_KEPT = 8
 # a direction key on a surface without keys is a swipe across the board
@@ -184,6 +187,7 @@ class Agent:
                 outcome, reason, detail = Outcome.GAVE_UP, "error", f"{type(error).__name__}: {error}"[:2000]
             if outcome in (Outcome.GOAL_REACHED, Outcome.GAME_OVER):
                 await self._keep_for_next()
+            self._keep_looks()
             record = {"version": RECORD_VERSION, "family": self.family_id, "phase": "ended", "outcome": str(outcome),
                       "reason": reason, "detail": detail, "goal": self.goal.to_json(), "budget": self.budget.to_json(),
                       "policy": self.policy, "actions_used": self.used, "confirmed_actions": self.confirmed,
@@ -519,6 +523,7 @@ class Agent:
         tool, first = self.adaptation, self.trace is None
         if expect is not None:
             await asyncio.sleep(adaptation.SETTLE_S)
+            await self._rest()
 
         def accept(state: dict[str, Any]) -> bool:
             return (partial is None or _agrees(_board(partial), _board(state))) and (
@@ -550,6 +555,27 @@ class Agent:
         if expect is None and partial is None:
             self.unproven = look
         return Reading(png, state, started, L2, look)
+
+    async def _rest(self) -> None:
+        """Wait until the game's part of the screen shows the same twice in a row: a move's result is read by
+        the model, and kept as a look to write an adapter from, once what the move set off (blocks clearing, a
+        banner flashing over the board) is over; not waited for longer than STILL_TIMEOUT_S."""
+        from io import BytesIO
+        from PIL import Image
+
+        boxes = [self.board, *(box for look in self.trace.looks[-1:] for box in look.sources or [] if box)]
+        left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
+        right, bottom = max(box[0] + box[2] for box in boxes), max(box[1] + box[3] for box in boxes)
+        previous, deadline = None, time.monotonic() + STILL_TIMEOUT_S
+        while True:
+            with Image.open(BytesIO(await self.surface.capture())) as image:
+                seen = list(image.convert("L").crop((left, top, right, bottom)).resize((STILL_SIDE, STILL_SIDE)).tobytes())
+            if previous is not None and sum(abs(a - b) for a, b in zip(seen, previous)) / len(seen) <= STILL_DISTANCE:
+                return
+            if time.monotonic() >= deadline:
+                return
+            previous = seen
+            await asyncio.sleep(STILL_GAP_S)
 
     def _drop_unproven(self) -> None:
         """A look nothing bore out is not one to write an adapter from."""
@@ -604,7 +630,7 @@ class Agent:
                 log.exception("no adapter could be written")
                 error = AdaptationFailed("model_failed", f"{type(error).__name__}: {error}")
             self.generations += MAX_GENERATIONS if error.reason == "no_adapter_passed" else 0
-            self.failures.append({"reason": error.reason, "detail": error.detail[:2000]})
+            self.failures.append({"reason": error.reason, "detail": error.detail[:8000]})
             self._demote(error.reason)
             return False
         self.generations += made.generations
@@ -635,6 +661,11 @@ class Agent:
             await self._generate(None)
         except Exception:
             log.exception("no adapter was kept for the next game")
+
+    def _keep_looks(self) -> None:
+        """A game no adapter was adopted for leaves its looks behind, for whoever looks into why."""
+        if self.store is not None and self.adapter is None and self.trace is not None and self.trace.looks and self.failures:
+            self.store.save_looks(self.trace)
 
     def _time_trial(self, rested_s: float) -> None:
         """A trial move's time to come to rest; after the last, a game that had to be still waits the longest
@@ -675,7 +706,7 @@ class Agent:
         elif sent["kind"] == "tap":
             await surface.tap(sent["x"], sent["y"], TAP_MS)
         else:
-            self.carried_as = await self.carrier.carry(before.png, (sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
+            self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
 
     # ── a screen that stopped play ────────────────────────────────────
 

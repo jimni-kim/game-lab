@@ -479,9 +479,16 @@ class Adaptation:
         for generation in range(1, MAX_GENERATIONS + 1):
             if allowed is not None and not allowed():
                 raise AdaptationFailed("budget", json.dumps(attempts))
-            source = await self.write(trace, previous)
+            try:
+                source = await self.write(trace, previous)
+            except Exception as error:
+                # a model that could not be reached this once (a gateway's timeout) cost one attempt, not all of them
+                log.info("no adapter was written: %s", error)
+                attempts.append({"passed": False, "failed_check": "model", "problems": [f"{type(error).__name__}: {error}"[:300]]})
+                continue
             report = adopt(source, trace)
-            attempts.append({key: report[key] for key in ("passed", "failed_check", "transitions")})
+            attempts.append({**{key: report[key] for key in ("passed", "failed_check", "transitions")},
+                             "problems": [problem[:300] for problem in report["problems"]]})
             if report["passed"]:
                 return Made(report["source"], generation, False, {**report, "attempts": attempts},
                             time.monotonic() - started, self.questions - before)
@@ -708,6 +715,21 @@ class Store:
                        "held": look.held, "frames": len(look.frames), "sources": look.sources}
                       for look in trace.looks]}, indent=2) + "\n",
             encoding="utf-8")
+        for index, look in enumerate(trace.looks):
+            (path / f"look-{index}.png").write_bytes(look.png)
+            for number, frame in enumerate(look.frames):
+                (path / f"look-{index}-frame-{number}.png").write_bytes(frame)
+        return path
+
+    def save_looks(self, trace: Trace) -> Path:
+        """The looks of a game no adapter was adopted for, kept apart from any adapter (`unadopted/`)."""
+        path = self._path(trace.site, trace.family_id) / "unadopted"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "trace.json").write_text(json.dumps({
+            "site": trace.site, "family": trace.family_id, "rules": trace.rules,
+            "trace": [{"state": look.state, "board": look.board, "action": look.action, "sent": look.sent,
+                       "held": look.held, "frames": len(look.frames), "sources": look.sources}
+                      for look in trace.looks]}, indent=2) + "\n", encoding="utf-8")
         for index, look in enumerate(trace.looks):
             (path / f"look-{index}.png").write_bytes(look.png)
             for number, frame in enumerate(look.frames):

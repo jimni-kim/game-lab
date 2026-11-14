@@ -8,7 +8,7 @@ from copy import deepcopy
 
 import pytest
 
-from gamelab import adaptation, recovery
+from gamelab import adaptation, agent, recovery
 from gamelab.adaptation import Adaptation, Store
 from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
@@ -26,6 +26,7 @@ def quick(monkeypatch):
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
 
 
 def middle(box):

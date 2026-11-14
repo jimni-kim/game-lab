@@ -23,6 +23,7 @@ SETTLING = {"timeout_s": 0.4, "interval_s": 0.05, "stable_s": 0.1}
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "GeneratedAdapter", partial(adaptation.GeneratedAdapter, settling=SETTLING))
 

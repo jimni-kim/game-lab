@@ -10,7 +10,7 @@ import json
 from PIL import Image, ImageDraw
 import pytest
 
-from gamelab import adaptation, catalog, recovery
+from gamelab import adaptation, agent, catalog, recovery
 from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt, cell_box
 from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
@@ -38,6 +38,7 @@ MINED_CENTRE = [[0, 0], [0, 8], [2, 2], [4, 4], [5, 0], [6, 6], [7, 1], [8, 3], 
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     # a short wait for a screen to settle: the fake is still at once
     monkeypatch.setattr(adaptation, "GeneratedAdapter", partial(

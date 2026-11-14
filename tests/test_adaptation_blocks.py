@@ -29,6 +29,7 @@ ANCHOR, OFFSET = (0.5, 0.85), (0.0, -1.7)
 def quick(monkeypatch):
     monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
     monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
     monkeypatch.setattr(carry, "LIFT_S", 0.0)
     monkeypatch.setattr(carry, "REST_S", 0.0)
