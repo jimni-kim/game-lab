@@ -773,6 +773,8 @@ class Store:
 
 # questions asked and inputs sent to reach a board before a game is given up as not shown
 IDENTIFY_TOKENS, IDENTIFY_TIMEOUT_S = 1000, 60.0
+# how long a screen that shows no game and offers nothing to press is left before it is asked about again
+IDENTIFY_WAIT_S = 2.0
 MOST_CANDIDATES = 3
 
 
@@ -806,8 +808,14 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
         found["families"] = list(dict.fromkeys(name for name in named if name in known))[:MOST_CANDIDATES]
         if found["families"] or answer.get("screen") == "game":
             break
-        if tries == MAX_TRIES or not await recovery.attempt(surface, "game_not_shown", {"state": None, "recent": []}):
+        if tries == MAX_TRIES:
             break
+        if not await recovery.attempt(surface, "game_not_shown", {"state": None, "recent": []}):
+            # nothing to press is not nothing to come: a screen still loading is looked at again, unless the
+            # model gave the game up
+            if ((recovery.log[-1]["action"] or {}).get("kind")) == "give_up":
+                break
+            await asyncio.sleep(IDENTIFY_WAIT_S)
     if found["families"]:
         recovery.succeeded()
     found["inputs"] = recovery.summary()["inputs"]
