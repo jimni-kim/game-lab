@@ -15,7 +15,7 @@ from gamelab.model import TurnResult
 from test_adaptation import Author
 from test_adaptation_mines import COMPUTE, Mines, Reader, middle, source as mines_source
 from test_generated import source as slide_source
-from test_screen import Screen, screen_reading  # noqa: F401
+from fake_screen import Screen
 
 
 @pytest.fixture(autouse=True)

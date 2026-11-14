@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .. import catalog, model
-from ..contracts import Budget, GoalSpec, InputReceipt, Observation, PreparedInput
-from ..execution import MappedAction
+from ..contracts import Budget, GoalSpec
 from ..run import Run
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -43,7 +42,7 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
                         help="the tokens one game's model questions may send together (0: no limit)")
     parser.add_argument("--out", type=Path, required=True, help="results and screenshots (out/ is not tracked)")
     parser.add_argument("--vision-model", default=model.default_model(),
-                        help=f"the model the bounded reader asks ({model.MODEL_VARIABLE} unless given; '' asks none)")
+                        help=f"the model that reads the game, writes its adapter and gets play past screens ({model.MODEL_VARIABLE} unless given)")
     parser.add_argument("--model-base", default=model.api_base(),
                         help=f"an OpenAI-compatible API's base URL ({model.BASE_VARIABLE}, else {model.DEFAULT_BASE})")
     parser.add_argument("--accept-consent", action="store_true",
@@ -57,7 +56,7 @@ def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
 
 
 def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, model.Recorded | None]:
-    """The model the bounded reader asks and the recorder around it; neither when no model is named."""
+    """The model a game is played with and the recorder around it; neither when no model is named."""
     if not args.vision_model:
         return None, None
     key = model.api_key()
@@ -77,26 +76,9 @@ class Recorder:
         self.name, self.truth, self.after, self.during = name, truth, after, during
         self.inputs: list[dict[str, Any]] = []
         self.shots = self.shot_bytes = 0
-        self.captured: dict[str, float] = {}
         self._open: dict[str, Any] | None = None
 
-    async def looked(self, observation: Observation, png: bytes) -> None:
-        self.shots += 1
-        self.shot_bytes += len(png)
-        self.captured[observation.id] = observation.captured_at
-
-    async def before_input(self, prepared: PreparedInput, state: dict[str, Any] | None, mapped: MappedAction) -> None:
-        self._open = {"tool": mapped.tool, "arguments": mapped.arguments, "action_id": prepared.action_id,
-                      "kind": prepared.steps[0].get("kind"), "planned_on": state,
-                      "truth": await self.truth() if self.truth else None,
-                      "observed_s": self.captured.get(prepared.input_ref), "sent_s": time.monotonic()}
-        if self.during is not None:
-            self.during(len(self.inputs) + 1)
-
-    async def after_input(self, receipt: InputReceipt) -> None:
-        await self._done(str(receipt.delivery))
-
-    # the agent's own loop (`agent.Watch`) tells of the same things without the session's types
+    # what the agent's loop tells (`agent.Watch`)
     async def seen(self, png: bytes) -> None:
         self.shots += 1
         self.shot_bytes += len(png)
@@ -110,11 +92,8 @@ class Recorder:
             self.during(len(self.inputs) + 1)
 
     async def sent(self) -> None:
-        await self._done("delivered")
-
-    async def _done(self, delivery: str) -> None:
         record, self._open = self._open, None
-        self.inputs.append({**record, "delivery": delivery, "done_s": time.monotonic()})
+        self.inputs.append({**record, "delivery": "delivered", "done_s": time.monotonic()})
         if len(self.inputs) % PROGRESS_EVERY == 0:
             truth = record["truth"] or {}
             print(json.dumps({"game": self.name, "inputs": len(self.inputs), "shots": self.shots,
@@ -173,9 +152,8 @@ def write_game(out: Path, name: str, summary: dict[str, Any], request: dict[str,
     and `NAME-final.png`, the screen it ended on."""
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{name}.json").write_text(json.dumps({
-        "result": summary, "request": request, "record": run.record, "made_profile": run.made_profile,
-        "geometry": run.geometry, "vision": run.vision, "recoveries": run.recoveries, "model_answers": answers, "moves": run.moves,
-        "inputs": recorder.inputs}, indent=2, default=str) + "\n", encoding="utf-8")
+        "result": summary, "request": request, "record": run.record, "geometry": run.geometry, "vision": run.vision,
+        "recoveries": run.recoveries, "model_answers": answers, "moves": run.moves, "inputs": recorder.inputs}, indent=2, default=str) + "\n", encoding="utf-8")
     if screen is not None:
         (out / f"{name}-final.png").write_bytes(screen)
 

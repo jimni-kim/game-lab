@@ -4,7 +4,7 @@ model's own choosing, the screen read again by the code, and play going on by th
 Regression this prevents: a game ended as unreadable or covered by a notice the code had no button for (a
 card shown whenever a new tile first appears), although one tap anywhere would have closed it.
 """
-from copy import deepcopy
+import json
 
 import pytest
 
@@ -12,11 +12,10 @@ from gamelab import adaptation, agent, recovery
 from gamelab.adaptation import Adaptation, Store
 from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
+from gamelab.model import TurnResult
 from gamelab.recovery import Recovery, check
-from gamelab.session import MAX_COVERS
+from fake_screen import Screen
 from test_adaptation import Author, source
-from test_screen import Screen, ending, run, screen_reading  # noqa: F401 (the fixture: the site read by its screen)
-from test_session import Run, single
 
 KINDS = frozenset({"keys", "tap", "drag"})
 
@@ -32,6 +31,35 @@ def quick(monkeypatch):
 def middle(box):
     left, top, width, height = box
     return [left + width / 2, top + height / 2]
+
+
+def ending(played):
+    return played.record["outcome"], played.record["reason"]
+
+
+class Scripted:
+    """The model: `author` reads and writes, and what it does about a screen play stopped on is each of
+    `recovering` in turn, then giving up."""
+
+    def __init__(self, author, recovering):
+        self.author, self.recovering, self.recover_calls = author, list(recovering), []
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if "tried" not in context:
+            return await self.author.complete(request)
+        self.recover_calls.append(context)
+        action = self.recovering.pop(0) if self.recovering else {"kind": "give_up"}
+        return TurnResult(text=json.dumps({"situation": "as drawn", "action": action}))
+
+
+async def covered_game(recovering, moves=1):
+    """A game whose first screen is a notice over the board, played by the agent's loop."""
+    fake = Screen()
+    fake.covered = True
+    model = Scripted(Author(fake, [source(fake)]), recovering(fake))
+    played, _ = await play_adaptive(fake, model, "slide_merge", goal=GoalSpec("actions", moves), budget=Budget(20, 20, 120))
+    return fake, model, played
 
 
 def covering(fake, after):
@@ -60,103 +88,36 @@ def test_an_input_the_surface_cannot_carry_out_is_not_taken():
     assert check({"kind": "key", "key": "Enter"}, (100, 100), frozenset({"tap", "drag"})) is None
 
 
-async def test_a_cover_the_code_has_no_button_for_is_got_past_by_the_models_own_input_and_play_goes_on():
-    """The bounded reader cannot tell what the screen shows, so the code has nothing to press and would end
-    the game as unreadable. The model is asked what to do instead, taps, and the code plays on."""
-    fake = Screen()
-    fake.covered, fake.screen = True, "unknown"
-    fake.recovering = [{"kind": "tap", "at": [5, 5]}, {"kind": "tap", "at": middle(fake.button)}]
-    played = await run(fake, moves=3)
+async def test_a_cover_nothing_reads_past_is_got_past_by_the_models_own_input_and_play_goes_on():
+    """No board can be read under the notice, so the game cannot begin. The model is asked what to do instead,
+    taps, and the game goes on."""
+    fake, model, played = await covered_game(lambda fake: [{"kind": "tap", "at": [5, 5]}, {"kind": "tap", "at": middle(fake.button)}],
+                                             moves=10)
     assert ending(played) == ("goal_reached", "actions"), played.record
-    assert len(fake.keys) == 3 and fake.taps == [(5, 5), tuple(middle(fake.button))]
+    assert len(fake.keys) == 10 and fake.taps == [(5, 5), tuple(middle(fake.button))]
     # the second question is told what the first input did
-    assert [call["tried"] for call in fake.recover_calls] == [
+    assert [call["tried"] for call in model.recover_calls] == [
         [], [{"action": {"kind": "tap", "at": [5.0, 5.0]}, "screen_changed": False}]]
-    assert fake.recover_calls[0]["reason"] == "board_not_found" and fake.recover_calls[0]["state"] is None
+    assert {call["reason"] for call in model.recover_calls} == {"label_failed"}
     assert [(r["source"], r["changed"], r.get("restored", False)) for r in played.recoveries] == [
         ("model", False, False), ("model", True, True)]
     # recovery inputs are not moves: they spend none of the game's actions
-    assert played.record["actions_used"] == 3 and played.record["recovery"] == {"tries": 0, "total": 2}
+    assert played.record["actions_used"] == 10
 
 
-async def test_the_input_that_got_past_a_screen_is_sent_again_without_asking_when_the_screen_comes_back():
-    fake = Screen()
-    fake.screen = "unknown"
-    fake.recovering = [{"kind": "tap", "at": middle(fake.button)}]
-    covering(fake, after={2, 4})
-    played = await run(fake, moves=6, max_actions=10)
-    assert ending(played) == ("goal_reached", "actions"), played.record
-    assert len(fake.recover_calls) == 1 and len(fake.taps) == 2
-    assert [r["source"] for r in played.recoveries] == ["model", "replay"]
-    assert played.recoveries[0]["reason"] == "unreadable" and fake.recover_calls[0]["state"] is not None
-
-
-async def test_a_model_that_gives_up_or_sees_nothing_in_the_way_ends_the_game_as_it_would_have_ended():
+async def test_a_model_that_gives_up_or_sees_nothing_in_the_way_ends_the_game_with_no_input():
     for action in ({"kind": "give_up"}, {"kind": "none"}, {"kind": "tap", "at": [-5, 0]}):
-        fake = Screen()
-        fake.covered, fake.screen = True, "unknown"
-        fake.recovering = [action]
-        played = await run(fake)
-        assert ending(played) == ("unsupported", "board_not_found"), played.record
-        assert len(fake.recover_calls) == 1 and not fake.taps and not fake.keys
+        fake, model, played = await covered_game(lambda fake: [action])
+        assert ending(played) == ("gave_up", "label_failed"), played.record
+        assert model.recover_calls and not fake.taps and not fake.keys
+        if action["kind"] != "none":
+            assert len(model.recover_calls) == 1
 
 
 async def test_inputs_that_never_bring_play_back_run_out():
-    fake = Screen()
-    fake.covered, fake.screen = True, "unknown"
-    fake.recovering = [{"kind": "tap", "at": [5 + n, 5]} for n in range(recovery.MAX_TRIES + 3)]
-    played = await run(fake)
-    assert ending(played) == ("unsupported", "board_not_found"), played.record
-    assert len(fake.taps) == recovery.MAX_TRIES and played.record["recovery"]["tries"] == recovery.MAX_TRIES
-
-
-async def test_without_a_model_a_game_ends_as_before():
-    fake = Screen()
-    fake.covered = True
-    played = await run(fake, model=False)
-    assert ending(played) == ("unsupported", "board_not_found") and played.recoveries == []
-
-
-async def test_covers_are_counted_in_a_row_so_a_game_that_shows_one_now_and_then_is_played_on():
-    """A page that keeps covering its board ends the game after MAX_COVERS closes in a row; a cover closed
-    between confirmed moves does not add up over a game. Regression: the fourth notice of a long game ended it."""
-    game = Run(goal=single(MAX_COVERS + 2))
-    ready, moved = game.env.ready, [0]
-
-    async def covered_again(observation):
-        # a notice comes up after each move, seen when the next one is about to be sent
-        if game.saved and game.saved[-1]["confirmed_actions"] > moved[0]:
-            moved[0] = game.saved[-1]["confirmed_actions"]
-            game.env.covered = 1
-            return False
-        return await ready(observation)
-    game.env.ready = covered_again
-    game.env.covered = 1
-    record = await game.run()
-    assert (record["outcome"], record["reason"]) == ("goal_reached", "actions"), record
-    assert record["covers"] > MAX_COVERS and record["covered_run"] == 0
-
-
-async def test_the_session_asks_its_environment_before_ending_on_a_screen_and_only_then():
-    """The loop itself: a game about to end as covered is carried on when the environment got past the screen,
-    and ends as it would have when it did not, or when the end is the game's own."""
-    game = Run(goal=single())
-    game.env.covered = MAX_COVERS + 2
-    asked = []
-
-    async def recover(reason, context):
-        asked.append((reason, deepcopy(context)))
-        return len(asked) == 1
-    game.env.recover = recover
-    record = await game.run()
-    assert (record["outcome"], record["reason"]) == ("goal_reached", "actions"), record
-    assert [reason for reason, _ in asked] == ["board_covered"] and record["recovery"] == {"tries": 0, "total": 1}
-    assert asked[0][1]["state"] is None and [m["kind"] for m in asked[0][1]["recent"]] == ["close_cover"] * MAX_COVERS
-
-    over = Run()
-    over.env.recover = recover
-    record = await over.run()
-    assert record["outcome"] == "game_over" and len(asked) == 1
+    fake, model, played = await covered_game(lambda fake: [{"kind": "tap", "at": [5 + n, 5]} for n in range(recovery.MAX_TRIES + 3)])
+    assert ending(played) == ("gave_up", "label_failed"), played.record
+    assert len(fake.taps) == len(model.recover_calls) == recovery.MAX_TRIES and not fake.keys
 
 
 async def test_a_notice_over_the_first_moves_is_got_past_while_the_model_still_reads_every_screen():
@@ -181,18 +142,6 @@ async def test_what_got_past_a_sites_screens_is_kept_with_its_adapter(tmp_path):
     assert made["recovery"]["restored"] == 1 and len(played.recoveries) == 1
     kept = Store(tmp_path).recoveries("https://unregistered.example/", "slide_merge")
     assert [known["action"] for known in kept] == [{"kind": "tap", "at": middle(fake.button)}]
-
-
-async def test_a_cover_the_reader_sees_no_button_on_goes_to_the_model_at_once():
-    """The bounded reader says a cover hides the board and shows no button to close it: there is nothing to
-    wait for, so the model is asked what to do after that one look, not after three unread ones. Regression:
-    each card of a site cost nine questions and half a minute before anything was tried."""
-    fake = Screen()
-    fake.covered, fake.buttonless = True, True
-    fake.recovering = [{"kind": "tap", "at": middle(fake.button)}]
-    played = await run(fake)
-    assert ending(played) == ("goal_reached", "actions"), played.record
-    assert len(fake.model_calls) == 1 and fake.recover_calls[0]["reason"] == "board_covered" and len(fake.taps) == 1
 
 
 async def test_a_value_the_adapter_takes_for_another_is_learned_again_when_its_moves_stop_making_sense(tmp_path, monkeypatch):
@@ -230,33 +179,6 @@ async def test_a_kept_input_is_sent_again_only_where_no_board_showed_and_is_forg
     # stuck again with nothing confirmed between: the kept input did not work here, and the model is asked
     assert not await replayed.attempt(fake, "unreadable", {"state": None, "recent": []})
     assert replayed.log[-1]["source"] == "model" and replayed.known == []
-
-
-async def test_a_board_found_with_cells_the_code_does_not_know_is_learned_not_asked_about():
-    """Generated code that finds the board but leaves a cell unread (a value it has not seen) ends play for the
-    reading to be learned again: no model is asked what the screen shows or what is in the way. Regression: each
-    new tile value on a site cost eight questions about the screen and one about getting past it."""
-    from test_generated import run as play_generated
-    fake = Screen()
-    fake.recovering = [{"kind": "give_up"}]
-    unread = source(fake, cell="cells.append(None if (row, col) == (0, 0) else (int(value) if far <= 12 else None))")
-    played, _ = await play_generated(fake, unread, model=fake)
-    assert ending(played) == ("unsupported", "cells_unread"), played.record
-    assert not fake.model_calls and not fake.recover_calls
-
-
-async def test_a_board_the_model_sees_and_the_code_cannot_place_is_asked_about_once(monkeypatch):
-    """Play has begun; then the code reads no board on a screen whose pixels keep moving, a new picture at every
-    look. Once the model said it shows a board and the code found nothing to read there, the looks after it are
-    not asked about again until a board reads. Regression: one such stop on a site cost eight questions."""
-    from gamelab.environments import screen
-    monkeypatch.setattr(screen, "UNREAD_ASK_S", 0.0)       # every look with new pixels may be asked about
-    fake = Screen()
-    fake.animated, fake.screen, fake.seen_board = True, "board", [10, 10, 100, 100]
-    covering(fake, after={1})
-    played = await run(fake, moves=3)
-    assert ending(played) == ("needs_recovery", "unreadable"), played.record
-    assert len(fake.model_calls) == 1 and len(fake.recover_calls) == 1
 
 
 async def test_a_large_screen_is_shown_smaller_and_what_the_model_points_at_is_sent_in_the_screens_pixels():

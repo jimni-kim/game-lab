@@ -1,4 +1,4 @@
-"""The package's own blueprint (family descriptors, profiles, schemas, prompts) and schema checks."""
+"""The package's own blueprint (family descriptors, their schema, prompts) and schema checks."""
 from __future__ import annotations
 
 from importlib.resources import files

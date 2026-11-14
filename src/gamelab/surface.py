@@ -1,5 +1,5 @@
-"""A screen the harness may look at and touch: a browser page or a phone. Whatever plays a game (the agent's
-loop, the baseline's session) sees it only through this."""
+"""A screen the harness may look at and touch: a browser page or a phone. The agent's loop sees it only
+through this."""
 from __future__ import annotations
 
 from typing import Any, Protocol

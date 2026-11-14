@@ -4,8 +4,8 @@ perception plan §3).
 A family is listed here by code, not by a manifest or setting: adding one is a rule model under `rules/`,
 a solver under `solvers/` and a descriptor in
 `blueprint/families/<id>.json`, checked against `blueprint/family.schema.json` when it is loaded. A
-descriptor names the rule parameters its rule model implements, with the values a profile may give each,
-and the policies its solver offers; a mismatch, or a module without a function the session calls, stops
+descriptor names the rule parameters its rule model implements, with the values a game may be bound to,
+and the policies its solver offers; a mismatch, or a module without a function the harness calls, stops
 the plugin rather than playing a game by rules nobody wrote.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .solvers import (block_placement as block_placement_solver, klondike as klo
 # the package's own blueprint (src/gamelab/blueprint)
 FRAGMENT = resources.FRAGMENT
 SCHEMA = FRAGMENT / "family.schema.json"
-# each family's rule model, the one the session trusts, and its solver, the registered policies over it
+# each family's rule model, the one the harness trusts, and its solver, the registered policies over it
 MODELS: dict[str, ModuleType] = {"block_placement": block_placement, "klondike": klondike, "match3": match3,
                                  "minesweeper": minesweeper,
                                  "slide_merge": slide_merge}
@@ -41,7 +41,7 @@ def descriptor(family_id: str) -> dict[str, Any]:
     data = json.loads((FRAGMENT / "families" / f"{family_id}.json").read_text(encoding="utf-8"))
     problems = resources.validate(data, json.loads(SCHEMA.read_text(encoding="utf-8")))
     model, solver = MODELS[family_id], SOLVERS[family_id]
-    # what the session calls is checked here, not when a game first reaches the missing function
+    # what the harness calls is checked here, not when a game first reaches the missing function
     for kind, module, functions, values in (("rule model", model, rules.RULE_FUNCTIONS, rules.RULE_VALUES),
                                             ("solver", solver, solvers.SOLVER_FUNCTIONS, solvers.SOLVER_VALUES)):
         if missing := [name for name in functions if not callable(getattr(module, name, None))] \
@@ -71,8 +71,8 @@ def descriptor(family_id: str) -> dict[str, Any]:
 
 
 def rules_schema(data: dict[str, Any]) -> dict[str, Any]:
-    """The rule values a profile of this family may set, from its descriptor: the profile schema leaves
-    `rules` to the family, so a new family needs no change there."""
+    """The rule values a game of this family may be bound to, from its descriptor: a new family needs no
+    schema of its own."""
     return {"type": "object", "additionalProperties": False,
             "properties": {name: parameter["values"] for name, parameter in data["rule_parameters"].items()}}
 

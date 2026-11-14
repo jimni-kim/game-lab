@@ -28,9 +28,10 @@ from pathlib import Path
 from typing import Any
 
 from .. import catalog, resources, solvers
-from ..environments.replay import DRAW_BITS
 from .measure import revision
 
+# the bits of each seeded draw a simulated game's chance (a new tile, a tray) is made from
+DRAW_BITS = 32
 # a block game played well can go on for a very long time; a capped game is reported as capped
 DEFAULT_MAX_MOVES = 3000
 # compute budgets (evaluated boards per decision) worth comparing: the low end is what the first

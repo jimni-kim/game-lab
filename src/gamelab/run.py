@@ -12,10 +12,9 @@ from .contracts import Budget, GoalSpec
 @dataclass
 class Run:
     record: dict[str, Any]
-    # every move the session recorded (its own record keeps only the last few)
+    # every move the game recorded (its own record keeps only the last few)
     moves: list[dict[str, Any]] = field(default_factory=list)
     geometry: dict[str, Any] | None = None
-    made_profile: dict[str, Any] | None = None
     vision: dict[str, Any] | None = None
     looks: int = 0
     last_screen: bytes | None = None

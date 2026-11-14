@@ -1,11 +1,10 @@
-"""A site adapter whose reading is generated code: played through the sandbox, and refused when it is wrong
-(adaptive perception plan §4.3, §6, stage 4). The code here is written by hand as a model would write it."""
+"""A site adapter whose reading is generated code: run in the sandbox, and refused when it is wrong (adaptive
+perception plan §4.3, §6, stage 4). The code here is written by hand as a model would write it."""
 import pytest
 
-from gamelab.adapters.generated import GeneratedAdapter, check_layout
-from gamelab.contracts import Budget, GoalSpec
-from gamelab.play import TRIAL_MOVES, play
-from test_screen import Screen, screen_reading  # noqa: F401
+from gamelab.adapters.generated import ADAPTER_FAILED, GeneratedAdapter, check_layout
+from gamelab.contracts import CELLS_UNREAD, NeedObservation, Observation
+from fake_screen import PALETTE, Screen
 
 ADAPTER = """
 from gamelab.sandbox.helpers import nearest
@@ -38,9 +37,8 @@ def target(action, state, layout):
 
 
 def source(fake, **changed):
-    board = fake.measured.layout["board"]
-    palette = {str(entry["value"]): entry["rgb"] for entry in board["palette"]}
-    text = ADAPTER.format(board=board["rect"], palette=palette)
+    palette = {str(value): list(rgb) for value, rgb in PALETTE.items()}
+    text = ADAPTER.format(board=fake.rect, palette=palette)
     for old, new in changed.items():
         assert OLD[old] in text
         text = text.replace(OLD[old], new)
@@ -54,48 +52,46 @@ OLD = {"cell": "cells.append(int(value) if far <= 12 else None)",
        "read": "    left, top, width, height = layout[\"board\"]\n    size = layout[\"size\"]"}
 
 
-async def run(fake, text, moves=TRIAL_MOVES + 1, model=None):
-    adapter = GeneratedAdapter("slide_merge", text, site="https://example.test/", call_timeout_s=1.0,
-                               settling={"timeout_s": 0.6, "interval_s": 0.05, "stable_s": 0.1})   # a short wait for a screen to settle
-    try:
-        played = await play(fake, adapter=adapter, goal=GoalSpec("actions", moves), budget=Budget(8, 20, 60), model=model)
-    finally:
-        adapter.close()
-    return played, adapter
-
-
-async def test_a_game_is_read_and_played_by_generated_code_in_the_sandbox():
-    fake = Screen()
-    played, adapter = await run(fake, source(fake))
-    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, adapter.last_error)
-    assert len(fake.keys) == TRIAL_MOVES + 1 and played.record["trial"] == 0 and played.vision["asked"] == 0
-    assert adapter.calls["failed"] == 0 and adapter.sandbox.restarts == 1
-    assert played.geometry["adapter"] == adapter.digest and played.geometry["board"] == fake.measured.layout["board"]["rect"]
-
-
-@pytest.mark.parametrize(("fault", "sent", "ending"), [
-    ({"cell": "cells.append(3)"}, 0, ("unsupported", "unreadable")),
-    ({"read": "    return [1, 2, 3]"}, 0, ("unsupported", "unreadable")),
-    ({"cell": "cells.append(None if (row, col) == (0, 0) else (int(value) if far <= 12 else None))"}, 0, ("unsupported", "cells_unread")),
-    ({"cell": "cells.append((int(value) if far <= 12 else None) if (row, col) != (0, 0) else 2)"}, 1, ("unsupported", "profile_unconfirmed")),
-    ({"read": "    while True:\n        pass"}, 0, ("unsupported", "unreadable")),
-    ({"read": "    import os\n    os._exit(1)"}, 0, ("unsupported", "unreadable")),
-    ({"read": "    open('/etc/hosts', 'a').write('x')\n" + OLD["read"]}, 0, ("unsupported", "unreadable")),
-    ({"layout": 'return {"board": [0, 0, 99999, 10], "size": 4}'}, 0, ("unsupported", "board_not_found")),
-    ({"layout": "return None"}, 0, ("unsupported", "board_not_found")),
-    ({"key": 'return {"kind": "key", "key": "F5"}'}, 0, ("needs_recovery", "input_refused")),
-    ({"key": 'return {"kind": "tap", "x": 5, "y": 5}'}, 0, ("needs_recovery", "input_refused")),
-    ({"key": 'return {"kind": "key", "key": "ArrowLeft", "then": "Enter"}'}, 0, ("needs_recovery", "input_refused")),
-], ids=["a state the rules do not allow", "a state that is no state", "a cell it cannot read", "a cell it reads wrongly",
-        "an endless loop", "a crash", "a write outside its folder", "a layout off the screen", "no layout",
+@pytest.mark.parametrize(("fault", "call", "reason"), [
+    ({"cell": "cells.append(3)"}, "read", "unreadable"),
+    ({"read": "    return [1, 2, 3]"}, "read", ADAPTER_FAILED),
+    ({"cell": "cells.append(None if (row, col) == (0, 0) else (int(value) if far <= 12 else None))"}, "read", CELLS_UNREAD),
+    ({"read": "    while True:\n        pass"}, "read", ADAPTER_FAILED),
+    ({"read": "    import os\n    os._exit(1)"}, "read", ADAPTER_FAILED),
+    ({"read": "    open('/etc/hosts', 'a').write('x')\n" + OLD["read"]}, "read", ADAPTER_FAILED),
+    ({"layout": 'return {"board": [0, 0, 99999, 10], "size": 4}'}, "measure", "board_not_found"),
+    ({"layout": "return None"}, "measure", "board_not_found"),
+    ({"key": 'return {"kind": "key", "key": "F5"}'}, "target", "input_refused"),
+    ({"key": 'return {"kind": "tap", "x": 5, "y": 5}'}, "target", "input_refused"),
+    ({"key": 'return {"kind": "key", "key": "ArrowLeft", "then": "Enter"}'}, "target", "input_refused"),
+], ids=["a state the rules do not allow", "a state that is no state", "a cell it cannot read", "an endless loop",
+        "a crash", "a write outside its folder", "a layout off the screen", "no layout",
         "a key no game is played with", "another kind of input than the game's", "more than one input"])
-async def test_wrong_generated_code_cannot_play_wrongly(fault, sent, ending):
-    """Whatever is wrong with the code, the result is a game not played: no input the rules and the layout
-    do not account for is ever sent."""
+async def test_wrong_generated_code_cannot_play_wrongly(fault, call, reason):
+    """Whatever is wrong with the code, it yields no layout, no state or no input: never a state the rules do
+    not account for or an input the layout does not. The right code yields each on the same screen."""
     fake = Screen()
-    played, adapter = await run(fake, source(fake, **fault))
-    assert (played.record["outcome"], played.record["reason"]) == ending, (played.record, adapter.last_error)
-    assert len(fake.keys) == sent and not fake.taps and not fake.drags
+    png = await fake.capture()
+    seen = Observation("look", 0, "fake", 1, 0.0, "clock")
+    right = GeneratedAdapter("slide_merge", source(fake), call_timeout_s=1.0)
+    wrong = GeneratedAdapter("slide_merge", source(fake, **fault), call_timeout_s=1.0)
+    try:
+        assert right.measure(png) is True and wrong.measure(png) in (True, NeedObservation("board_not_found"))
+        if call == "measure":
+            assert wrong.measure(png) == NeedObservation(reason) and not wrong.measured
+            return
+        state = right.read(seen, png)
+        assert state.payload == fake.board and not state.unknown_fields
+        assert right.target({"kind": "slide", "direction": "left"}, state, seen, png).arguments == {"keys": ["ArrowLeft"]}
+        read = wrong.read(seen, png)
+        if call == "read":
+            assert read == NeedObservation(reason), wrong.last_error
+            return
+        with pytest.raises(ValueError, match=reason):
+            wrong.target({"kind": "slide", "direction": "left"}, read, seen, png)
+    finally:
+        right.close()
+        wrong.close()
 
 
 def test_a_pointer_input_must_land_inside_the_layouts_regions():

@@ -8,10 +8,8 @@ import sys
 import pytest
 
 from gamelab import catalog, rules, solvers
-from gamelab.contracts import Budget, GoalSpec
-from gamelab.environments.replay import DRAW_BITS, ReplayEnvironment
+from gamelab.eval.policies import DRAW_BITS
 from gamelab.rules import block_placement, minesweeper, slide_merge
-from gamelab.session import GameSession
 from gamelab.solvers import expectimax
 from test_core import IO_MODULES
 
@@ -117,22 +115,15 @@ def test_it_plays_a_whole_game_better_than_the_baseline(family_id):
     assert sum(play(expectimax.NAME, seed) for seed in seeds) > sum(play(family.baseline_policy, seed) for seed in seeds)
 
 
-async def test_a_session_plays_by_the_general_solver_when_its_policy_is_named():
+def test_a_family_plays_by_the_general_solver_when_its_policy_is_named():
+    """The family's `choose` with the general solver's name: each move legal by the rules, and its result one
+    the rule model's own check confirms."""
     family = catalog.family("slide_merge")
-    now = [0.0]
-    env = ReplayEnvironment(family, seed=5, clock=lambda: now[0], target="replay")
-
-    async def save(record):
-        pass
-
-    class Guards:
-        async def cancelled(self):
-            return False
-
-        async def lease_held(self):
-            return True
-
-    session = GameSession.start(family, env, goal=GoalSpec("actions", 5), budget=Budget(8, 200), policy=expectimax.NAME,
-                                target="replay", clock=lambda: now[0], save=save, guards=Guards())
-    record = await session.run()
-    assert record["outcome"] == "goal_reached" and record["confirmed_actions"] == 5
+    rng = random.Random(5)
+    state = family.initial_state(rng.getrandbits(DRAW_BITS))
+    for _ in range(5):
+        action = family.choose(family.shown(state), expectimax.NAME, 200)
+        assert action in family.model.legal_actions(state, family.rules)
+        after = family.next_state(state, action, rng.getrandbits(DRAW_BITS))
+        assert family.model.assess(state, action, after, family.rules)["effect"] == "confirmed"
+        state = after

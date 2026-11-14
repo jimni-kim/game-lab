@@ -14,7 +14,7 @@ and returning JSON:
 
 Nothing it returns is believed: a layout must lie on the screen, a state is the rule model's to check, an
 input must be a key the game may be given or lie inside the layout's regions. Code that fails (an error, a
-hang, a wrong shape) reads nothing, which the session counts as a screen it could not read; it is never
+hang, a wrong shape) reads nothing, which the harness counts as a screen it could not read; it is never
 allowed to play wrongly instead.
 """
 from __future__ import annotations
@@ -55,8 +55,8 @@ class GeneratedAdapter:
         self.digest = hashlib.sha256(source.encode()).hexdigest()
         self._family = catalog.family(family_id).bind({"rules": rules or {}})
         # how the game is played and waited for: the family's starting values unless the site's are known
-        start = catalog.descriptor(family_id).get("discovery", {})
-        self._played = {"controls": controls or start.get("controls") or {"kind": _registered_kind(family_id)},
+        start = catalog.descriptor(family_id)["discovery"]
+        self._played = {"controls": controls or start["controls"],
                         "settling": settling if settling is not None else start.get("settling", {})}
         self.sandbox = Sandbox(source, **({"call_timeout_s": call_timeout_s} if call_timeout_s else {}))
         self.layout: dict[str, Any] | None = None
@@ -255,12 +255,6 @@ class GeneratedAdapter:
 
     def close(self) -> None:
         self.sandbox.close()
-
-
-def _registered_kind(family_id: str) -> str:
-    """The input kind of a family whose descriptor names no starting controls: its hand-written controls'."""
-    from .. import registered
-    return registered.CONTROLS[family_id].KIND
 
 
 def _number(value: Any) -> bool:

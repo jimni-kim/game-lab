@@ -8,12 +8,10 @@ import pytest
 from gamelab import adaptation, agent
 from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt
 from gamelab.agent import play as play_adaptive
-from gamelab.baseline import adapter_for
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
-from gamelab.play import play
+from fake_screen import Screen
 from test_generated import OLD, source
-from test_screen import Screen, screen_reading  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +52,7 @@ class Author:
         if self.misread and labels > 1:       # never the first look: nothing yet says a first reading is wrong
             self.misread -= 1
             grid[0][0] = 3 if self.misread % 2 else (grid[0][0] or 2) * 2
-        left, top, width, height = self.fake.measured.layout["board"]["rect"]
+        left, top, width, height = self.fake.rect
         return TurnResult(text=json.dumps({"screen": "board", "board": [left - 3, top + 2, width + 4, height - 3],
                                            "rules": {"size": 4, "target": 2048}, "state": {"grid": grid, "score": 0, "scene": "playing"}}))
 
@@ -119,33 +117,36 @@ async def test_a_failure_on_a_held_back_screen_is_not_described_to_the_writer():
 async def test_a_wrong_attempt_is_told_what_was_wrong_and_the_next_one_is_adopted_kept_and_played(tmp_path):
     fake = Screen()
     author = Author(fake, [wrong(fake), source(fake)])
-    adapter, made = await adapter_for(fake, author, "slide_merge", store=Store(tmp_path))
-    try:
-        assert made.generations == 2 and not made.reused and made.questions == adaptation.EXPLORE_MOVES + 1 + 2
-        first, second = [context for kind, context, _ in author.asked if kind == "write"]
-        assert "previous" not in first and second["previous"]["module"] == wrong(fake).strip()
-        assert any(problem.startswith("state on example") for problem in second["previous"]["problems"])
-        # the writer sees only the looks not held back, each with its picture
-        assert len(first["examples"]) == adaptation.EXPLORE_MOVES + 1 - adaptation.HELD_BACK
-        assert [images for kind, _, images in author.asked if kind == "write"] == [len(first["examples"])] * 2
-        assert first["examples"][0]["cells"][0]["cell"] == [0, 0] and first["probes"]["rows"] and "def nearest" in first["helpers"]
-        played = await play(fake, adapter=adapter, goal=GoalSpec("actions", 4), budget=Budget(8, 20, 60))
-        assert played.record["outcome"] == "goal_reached" and played.record["trial"] == 0, (played.record, adapter.last_error)
-    finally:
-        adapter.close()
-    # the next game on the same site asks no model
-    silent = Author(fake, [])
-    again, kept = await adapter_for(fake, silent, "slide_merge", store=Store(tmp_path))
-    again.close()
-    assert kept.reused and again.source == source(fake).strip() and not silent.asked
+    making = Adaptation(author, "slide_merge")
+    trace = await making.explore(fake)
+    made = await making.make(trace)
+    Store(tmp_path).save(trace, made)
+    assert made.generations == 2 and not made.reused and made.questions == 2
+    assert making.questions == adaptation.EXPLORE_MOVES + 1 + 2
+    first, second = [context for kind, context, _ in author.asked if kind == "write"]
+    assert "previous" not in first and second["previous"]["module"] == wrong(fake).strip()
+    assert any(problem.startswith("state on example") for problem in second["previous"]["problems"])
+    # the writer sees only the looks not held back, each with its picture
+    assert len(first["examples"]) == adaptation.EXPLORE_MOVES + 1 - adaptation.HELD_BACK
+    assert [images for kind, _, images in author.asked if kind == "write"] == [len(first["examples"])] * 2
+    assert first["examples"][0]["cells"][0]["cell"] == [0, 0] and first["probes"]["rows"] and "def nearest" in first["helpers"]
     assert len(list(tmp_path.rglob("look-*.png"))) == adaptation.EXPLORE_MOVES + 1
+    # the next game on the same site is played by the kept adapter and asks no model
+    silent = Author(fake, [])
+    played, kept = await play_adaptive(fake, silent, "slide_merge", goal=GoalSpec("actions", 4), budget=Budget(8, 20, 60),
+                                       store=Store(tmp_path))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, kept)
+    assert kept["reused"] and played.record["levels"] == {"L2": 0, "L3": 4} and not silent.asked
+    assert Store(tmp_path).load("https://unregistered.example/", "slide_merge")[0] == source(fake).strip()
 
 
 async def test_attempts_run_out_rather_than_play_by_an_adapter_that_never_passed():
     fake = Screen()
     author = Author(fake, [wrong(fake)] * adaptation.MAX_GENERATIONS)
+    making = Adaptation(author, "slide_merge")
+    trace = await making.explore(fake)
     with pytest.raises(AdaptationFailed, match="no_adapter_passed"):
-        await adapter_for(fake, author, "slide_merge")
+        await making.make(trace)
     assert len(fake.keys) == adaptation.EXPLORE_MOVES and not author.modules
 
 
@@ -165,6 +166,8 @@ async def test_a_value_the_game_had_not_shown_is_learned_from_one_more_look_and_
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
     assert played.record["confirmed_actions"] == 70 and max(map(max, fake.board["grid"])) >= 32
     assert made["relearned"] == 1 and made["generations"] == 2 and made["looks"] == adaptation.EXPLORE_MOVES + 2
+    # the cell left unread is learned, not asked about: no model is asked what is in the way
+    assert "recover" not in [kind for kind, _, _ in author.asked]
     second = [context for kind, context, _ in author.asked if kind == "write"][1]
     # the look that taught the new value is shown to the writer, with what the old code made of it
     assert any(value == 32 for row in second["examples"][-1]["state"]["grid"] for value in row)
@@ -181,7 +184,7 @@ def patched(png, fake, colour=(30, 30, 30)):
     from PIL import Image, ImageDraw
     image = Image.open(BytesIO(png)).convert("RGB")
     draw = ImageDraw.Draw(image)
-    left, top, width, height = fake.measured.layout["board"]["rect"]
+    left, top, width, height = fake.rect
     for row in range(4):
         for col in range(4):
             x, y = left + (col + 0.5) * width / 4, top + (row + 0.3) * height / 4

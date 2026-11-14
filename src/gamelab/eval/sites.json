@@ -1,6 +1,8 @@
 {
   "_comment": "Evaluation-only site setup (the window the person plays in and its first steps) and answer keys for tools/evaluate_game_live.py. Never read by the game plugin: setup stands in for the person starting a game, and the oracle reads the page only to score the plugin afterwards.",
   "ovolve_2048": {
+    "url": "https://ovolve.github.io/2048-AI/",
+    "family": "slide_merge",
     "viewport": [
       1280,
       1000
@@ -16,6 +18,8 @@
     "oracle": "() => { const size = 4, grid = Array.from({length: size}, () => Array(size).fill(0)); for (const tile of document.querySelectorAll('.tile')) { const value = +(/tile-(\\d+)\\b/.exec(tile.className) || [])[1]; const at = /tile-position-(\\d)-(\\d)/.exec(tile.className); if (value && at) { const row = +at[2] - 1, col = +at[1] - 1; grid[row][col] = Math.max(grid[row][col], value); } } const score = document.querySelector('.score-container'); const message = document.querySelector('.game-message'); return {grid, score: score ? +score.childNodes[0].textContent.trim() : null, over: !!message && message.classList.contains('game-over'), won: !!message && message.classList.contains('game-won')}; }"
   },
   "blockblast_org": {
+    "url": "https://blockblast.org/",
+    "family": "block_placement",
     "viewport": [
       1280,
       900
@@ -76,6 +80,8 @@
     ]
   },
   "play2048_co": {
+    "url": "https://play2048.co/",
+    "family": "slide_merge",
     "viewport": [
       1280,
       1000
@@ -236,11 +242,13 @@
     ]
   },
   "play2048_co_win_in_four": {
+    "url": "https://play2048.co/",
+    "family": "slide_merge",
     "viewport": [
       1280,
       1000
     ],
-    "_comment": "play2048.co four merges from its win screen (plan, stage 8a): on a first visit the site imports, once, a game the original open-source 2048 saved (localStorage gameState, grid.cells[x][y]). Here 1024, 512, 256, 128 on the bottom row and a 128 above the last: 2048 takes at least four moves, so a game with no profile wins only after its three trial moves (two 1024 side by side won on the second, ending the trial, 2026-11-13). The win screen keeps the board in view under 'You Win' with a Keep Going button. A returning player's welcome popup replaces the first visit's and is left for the plugin to close. Start with --profile play2048_co --site play2048_co_win_in_four.",
+    "_comment": "play2048.co four merges from its win screen (plan, stage 8a): on a first visit the site imports, once, a game the original open-source 2048 saved (localStorage gameState, grid.cells[x][y]). Here 1024, 512, 256, 128 on the bottom row and a 128 above the last: 2048 takes at least four moves, so a game with no profile wins only after its three trial moves (two 1024 side by side won on the second, ending the trial, 2026-11-13). The win screen keeps the board in view under 'You Win' with a Keep Going button. A returning player's welcome popup replaces the first visit's and is left for the plugin to close. Start with --site play2048_co_win_in_four.",
     "setup": [
       {
         "clear_storage": "https://play2048.co"
@@ -259,6 +267,8 @@
     ]
   },
   "tatham_mines": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/mines.html",
+    "family": "minesweeper",
     "viewport": [
       1280,
       900
@@ -280,11 +290,12 @@
   },
   "tatham_mines_guess": {
     "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/mines.html#9x9:4,4,u101110000a20004002800",
+    "family": "minesweeper",
     "viewport": [
       1280,
       900
     ],
-    "_comment": "A game the page opens from its game id, mines placed by hand: after the start cell's opening the numbers decide no cell, the solver's least likely guess is a mine, and the page states the loss. Played with --profile tatham_mines --site tatham_mines_guess.",
+    "_comment": "A game the page opens from its game id, mines placed by hand: after the start cell's opening the numbers decide no cell, the solver's least likely guess is a mine, and the page states the loss. Played with --site tatham_mines_guess.",
     "ending": {
       "selector": "#statusbar",
       "won": "COMPLETED",

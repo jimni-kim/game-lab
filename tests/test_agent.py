@@ -11,10 +11,10 @@ from gamelab.adaptation import Adaptation, Made, Store
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult, Usage
 from gamelab.rules.minesweeper import EXPLODED
+from fake_screen import Screen
 from test_adaptation import Author, wrong
 from test_adaptation_mines import COMPUTE, Mines, Reader, middle, source as mines_source
 from test_generated import source
-from test_screen import Screen, screen_reading  # noqa: F401
 
 SETTLING = {"timeout_s": 0.4, "interval_s": 0.05, "stable_s": 0.1}
 
@@ -107,6 +107,29 @@ async def test_a_game_ends_when_its_questions_have_used_their_tokens():
     played, made = await agent.play(enough, reader, "minesweeper", goal=GoalSpec("play_until_end"),
                                     budget=Budget(60, COMPUTE, 300, max_input_tokens=8000))
     assert ending(played) == ("goal_reached", "play_until_end") and made["tokens"]["input"] == 8000
+
+
+async def test_a_kept_adapter_reads_and_plays_the_game_in_the_sandbox_with_no_question(tmp_path, monkeypatch):
+    """The adapter kept for the site plays every move: each screen is read by the code in one sandbox worker,
+    no call of it fails and the model is asked nothing."""
+    fake = Screen()
+    earlier = Screen()
+    trace = await Adaptation(Author(earlier, []), "slide_merge").explore(earlier)
+    Store(tmp_path).save(trace, Made(source(fake).strip(), 1, False, {"passed": True}))
+    made_by, adapters = adaptation.GeneratedAdapter, []
+
+    def kept(*args, **options):
+        adapters.append(made_by(*args, **options))
+        return adapters[-1]
+    monkeypatch.setattr(adaptation, "GeneratedAdapter", kept)
+    author = Author(fake, [])
+    played, made = await agent.play(fake, author, "slide_merge", goal=GoalSpec("actions", agent.TRIAL_MOVES + 1),
+                                    budget=Budget(8, 20, 60), store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "actions"), (played.record, made)
+    assert len(fake.keys) == agent.TRIAL_MOVES + 1 and played.record["levels"] == {"L2": 0, "L3": agent.TRIAL_MOVES + 1}
+    assert made["reused"] and not author.asked and made["calls"]["failed"] == 0
+    adapter, = adapters
+    assert adapter.sandbox.restarts == 1 and made["digest"] == adapter.digest
 
 
 async def test_a_trial_move_the_rules_do_not_bear_out_sends_the_screen_to_the_model(tmp_path):
@@ -202,7 +225,7 @@ async def test_a_board_whose_pixels_never_rest_is_played_once_its_state_reads_th
         from PIL import Image
         count[0] += 1
         image = Image.open(BytesIO(await capture(region))).convert("RGB")
-        left, top, _, _ = fake.measured.layout["board"]["rect"]
+        left, top, _, _ = fake.rect
         image.putpixel((left + 1, top + 1), (count[0] % 250, 0, 0))
         out = BytesIO()
         image.save(out, format="PNG")
@@ -229,17 +252,3 @@ async def test_a_notice_before_the_first_board_of_a_site_played_before_is_got_pa
     assert made["reused"] and played.record["levels"]["L2"] == 0
     # the kept input is sent again at the same notice with no question (the first game met none: one question here)
     assert [kind for kind, _, _ in reader.asked] == ["label", "recover"]
-
-
-def test_the_agents_loop_loads_nothing_of_the_baseline():
-    """The session, its screen environment, the registered profiles and the hand-written readers are the
-    baseline's (PLAN §10, G6): the agent's loop on a browser page or a phone runs without any of them."""
-    import subprocess
-    import sys
-    listed = subprocess.run([sys.executable, "-c", "import sys, gamelab.agent, gamelab.environments.web, "
-                             "gamelab.environments.android; print(' '.join(sorted(sys.modules)))"],
-                            capture_output=True, text=True, check=True).stdout.split()
-    baseline = ("session", "play", "baseline", "vision", "perception", "geometry", "profiles", "discovery", "registered",
-                "environments.screen", "adapters.reference")
-    ours = [name.removeprefix("gamelab.") for name in listed if name.startswith("gamelab.")]
-    assert ours and not [name for name in ours if name in baseline or name.endswith(".reader")]

@@ -1,15 +1,17 @@
 """Play game sites end to end in Chromium and measure the harness ("real screen → input").
 
-Each game runs the real path: the session, the site's adapter, the solver, and a Playwright page for
-looks and inputs. Setup steps (reloading the page for a new game) stand in for the person starting a
-game and are not counted as the harness's moves.
+Each game runs the real path: the agent's loop (`agent.play`), the adapter a model writes for the site, the
+solver, and a Playwright page for looks and inputs. The site is named by its entry in `sites.json`, which
+gives the page (`url`) and the game's family (`family`); the harness is given only the family, or nothing
+with `--identify`. Setup steps (reloading the page for a new game) stand in for the person starting a game
+and are not counted as the harness's moves.
 
-  .venv/bin/python -m gamelab.eval web --profile ovolve_2048 --games 3 \\
+  .venv/bin/python -m gamelab.eval web --site ovolve_2048 --games 3 \\
       --objective reach_value --target 2048 --compute 500 --out out/ovolve
 
-The bounded model reader asks `--vision-model` (AGENTIC_OPENAI_MODEL unless given; a name the LiteLLM proxy
-serves, or another OpenAI-compatible API's with `--model-base`; the key is AGENTIC_OPENAI_KEY) about screens
-the code cannot read; with `--vision-model ''` no model is asked and such a screen stays unread.
+The model is `--vision-model` (AGENTIC_OPENAI_MODEL unless given; a name the LiteLLM proxy serves, or another
+OpenAI-compatible API's with `--model-base`; the key is AGENTIC_OPENAI_KEY). It reads the first moves, writes
+the adapter and gets play past screens the adapter cannot read; a game cannot be played without one.
 
 `--perturb KIND@N[:ARG]` (repeatable) disturbs a game after the harness's Nth input, as a person or a site
 would; the harness is not told:
@@ -30,14 +32,8 @@ N counts every input the harness sent, never the setup's.
 The site's answer key (`sites.json`, read from the page's DOM) only scores the run; the harness never
 sees it. A site whose board the page does not expose (a canvas) may name instead where the page states
 the game's end (`ending`), read once the game is over and compared with the end the harness judged
-(`page_end`, `end_agrees`). The registered sites are development sites: their results are not evidence
-that an unregistered site would play.
-
-A site no profile registers is evaluated with `--site NAME` alone: its entry names the page (`url`) and
-the game's family (`family`), and the harness is given only the family, as with `--unregistered`.
-
-  .venv/bin/python -m gamelab.eval web --site march2048_4x4 --games 3 \\
-      --objective reach_value --target 2048 --compute 500 --out out/march
+(`page_end`, `end_agrees`). The development sites (ovolve_2048, play2048_co, blockblast_org, tatham_mines)
+are where the harness was built: their results are not evidence that another site would play.
 """
 from __future__ import annotations
 
@@ -51,10 +47,9 @@ from typing import Any
 
 from pathlib import Path
 
-from .. import agent, baseline, profiles
+from .. import agent
 from ..adaptation import Store
 from ..environments.web import WebSurface, browser
-from ..play import play
 from . import measure
 
 SITES = files(__package__) / "sites.json"
@@ -295,102 +290,74 @@ def perturbed(game: Game, recorder: measure.Recorder) -> list[dict[str, Any]]:
 
 
 async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, url: str,
-                   profile: profiles.Profile | None, family_id: str, site: dict[str, Any], model: Any) -> dict[str, Any]:
+                   family_id: str | None, site: dict[str, Any], model: Any) -> dict[str, Any]:
     goal, budget = measure.goal_and_budget(args)
     name = f"{name}-{number:02d}"
-    answered = len(model.answers) if model else 0
+    answered = len(model.answers)
     started = time.monotonic()
-    adapted: dict[str, Any] | None = None
     await setup(page, url, site)
     cancel = asyncio.Event()
     game = Game(page, site, args.perturb, cancel)
     recorder = measure.Recorder(name, truth=game.oracle, after=game.after, during=game.during)
-    options = {"goal": goal, "budget": budget, "policy": args.policy, "model": model, "cancel": cancel, "watch": recorder,
-               "accept_consent": args.accept_consent, "run_id": name}
     try:
-        if args.generate:
-            # the game is read by an adapter a model wrote for this site: the one kept for it or one made now
-            # from the game's first moves, and made again whenever play stops at a screen it cannot read
-            reader = options.pop("model")
-            # by the agent's own loop, or (--loop session) the session-driven one kept as the baseline
-            played_by = baseline.play_adaptive if getattr(args, "loop", None) == "session" else agent.play
-            run, adapted = await played_by(WebSurface(page), reader, family_id, store=Store(args.adapter_store),
-                                           fresh=args.regenerate, **options)
-        else:
-            run = await play(WebSurface(page), **options,
-                             **({"profile": profile} if profile is not None else {"family_id": family_id}))
+        # the game is read by an adapter a model wrote for this site: the one kept for it or one made now
+        # from the game's first moves, and made again whenever play stops at a screen it cannot read
+        run, adapted = await agent.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
+                                        store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
+                                        watch=recorder, accept_consent=args.accept_consent)
     finally:
         await game.tidy()
     elapsed = time.monotonic() - started
     stated = await game.page_end() if site.get("ending") else None
     summary = measure.result(
         name, run, recorder, model, seconds=elapsed, final=await game.oracle(), perturbed=perturbed(game, recorder),
-        **({"adaptation": adapted} if adapted is not None else {}),
+        adaptation=adapted,
         **({"page_end": stated, "end_agrees": end_agrees(run.record.get("outcome"), stated)} if site.get("ending") else {}))
-    request = {"profile_id": profile.id if profile else None, "family": family_id, "url": url,
-               "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
-    measure.write_game(args.out, name, summary, request, run, recorder, model.answers[answered:] if model else [],
+    request = {"family": family_id, "url": url, "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
+    measure.write_game(args.out, name, summary, request, run, recorder, model.answers[answered:],
                        await page.screenshot(type="png", scale="css"))
     return summary
 
 
 async def main(args: argparse.Namespace) -> int:
-    if not (args.profile or args.site):
-        raise SystemExit("give --profile, --site or both")
-    site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site or args.profile)
+    site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site)
     if site is None:
-        raise SystemExit(f"no evaluation setup for {args.site or args.profile} in sites.json")
+        raise SystemExit(f"no evaluation setup for {args.site} in sites.json")
     if args.viewport:
         site = {**site, "resize": args.viewport}
-    registered = profiles.load(args.profile) if args.profile else None
-    if args.identify and not args.generate:
-        raise SystemExit("--identify plays by a generated adapter: give --generate")
-    if registered is None and ("url" not in site or not (args.identify or "family" in site)):
-        raise SystemExit(f"{args.site} in sites.json names no url and family: give --profile")
-    url = site.get("url") or registered.data["source"]["url"]
     # with --identify nobody says which game the page shows: the harness finds out from the screen
-    family_id = None if args.identify else (registered.family_id if registered else site["family"])
-    # with --unregistered the harness is given the game's family and no profile, and makes one from a look;
-    # the profile here only names the page
-    profile = None if args.unregistered else registered
+    family_id = None if args.identify else site["family"]
     client, model = measure.vision_model(args)
-    if args.generate and model is None:
-        raise SystemExit("--generate needs a model: name one with --vision-model")
-    name = args.site or args.profile
+    if model is None:
+        raise SystemExit("a game is played with a model: name one with --vision-model")
     results = []
     try:
         async with browser(viewport=site["viewport"], headless=not args.headed, scale=args.scale) as page:
             for number in range(1, args.games + 1):
-                result = await play_one(args, number, page, name, url, profile, family_id, site, model)
+                result = await play_one(args, number, page, args.site, site["url"], family_id, site, model)
                 results.append(result)
                 print(json.dumps(result, ensure_ascii=False), flush=True)
     finally:
         if client is not None:
             await client.close()
         if results:
-            measure.write_summary(args.out, args, results, profile=args.profile, site=args.site,
-                                  profile_revision=registered.data["revision"] if registered else None)
+            measure.write_summary(args.out, args, results, site=args.site)
     return 0
 
 
 def configure(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", help="the registered game to play (else --site names a site with none)")
-    parser.add_argument("--site", help="the setup in sites.json each game starts with (the profile's unless given)")
+    parser.add_argument("--site", required=True, help="the entry in sites.json: the page, the game's family and its setup")
     measure.game_arguments(parser)
     parser.add_argument("--viewport", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"),
                         help="resize the window to this after the site's setup, before the harness plays")
     parser.add_argument("--scale", type=float, help="the pages' device scale factor (devicePixelRatio)")
     parser.add_argument("--perturb", type=perturbation, action="append", default=[], metavar="KIND@N[:ARG]",
                         help="disturb each game after the harness's Nth input (repeatable; see above)")
-    parser.add_argument("--unregistered", action="store_true",
-                        help="give the harness no profile: it makes one from a look at the site")
     parser.add_argument("--headed", action="store_true", help="show the browser window")
     parser.add_argument("--generate", action="store_true",
-                        help="read the game by an adapter a model writes for this site (no profile, no hand-written reader)")
+                        help="accepted for old commands: the game is now always read by an adapter a model writes")
     parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "adapters",
                         help="where generated adapters are kept by site and reused")
     parser.add_argument("--regenerate", action="store_true", help="write a new adapter even when one is kept for the site")
-    parser.add_argument("--loop", choices=("agent", "session"),
-                        help="with --generate: the loop that plays (the agent's own unless told; session: the one kept as baseline)")
     parser.add_argument("--identify", action="store_true",
-                        help="with --generate: do not tell the harness the game's family; it is found from the screen")
+                        help="do not tell the harness the game's family; it is found from the screen")

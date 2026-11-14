@@ -1,7 +1,7 @@
 """The rule models: each game's pure rules, legal moves and transition check (adaptive perception plan §3, §4.1).
 
-A rule model is what the session trusts: its checks decide whether a reading is a state and whether a
-move did what the rules allow, so its policies (`solvers/`) and its screen reading (`families/<id>/`) stay
+A rule model is what the harness trusts: its checks decide whether a reading is a state and whether a
+move did what the rules allow, so its policies (`solvers/`) and its screen reading (a site's adapter) stay
 apart from it. Each one is standard library only, JSON in and out, no IO, no clock, no unseeded
 randomness (plan §3.2), and its cases are the shared fixtures in tests/fixtures/game/<id>/.
 """

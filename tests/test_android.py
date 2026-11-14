@@ -4,12 +4,14 @@ from io import BytesIO
 from PIL import Image
 import pytest
 
-from gamelab import pixels
+from gamelab import adaptation, agent, pixels, recovery
+from gamelab.adaptation import Adaptation, Made, Store
 from gamelab.contracts import Budget, GoalSpec
-from gamelab.environments import screen
 from gamelab.environments.android import AndroidSurface
-from gamelab.play import play
-from test_screen import Screen, screen_reading  # noqa: F401
+from gamelab.surface import KEYS
+from fake_screen import Screen
+from test_adaptation import Author
+from test_generated import source
 
 
 class Adb:
@@ -57,7 +59,7 @@ async def test_inputs_are_adb_input_commands_in_device_pixels():
     assert [run[1:] for run in adb.ran] == [["input", "tap", "100", "201"], ["input", "swipe", "5", "6", "5", "6", "800"],
                                            ["input", "swipe", "10", "20", "300", "20", "120"],
                                            ["input", "keyevent", "KEYCODE_DPAD_LEFT"]]
-    assert screen.KEYS in surface.kinds and screen.KEYS not in AndroidSurface(adb).kinds
+    assert KEYS in surface.kinds and KEYS not in AndroidSurface(adb).kinds
 
 
 async def test_the_size_and_the_app_are_asked_of_the_device():
@@ -68,10 +70,16 @@ async def test_the_size_and_the_app_are_asked_of_the_device():
     assert await surface.address() == "android://com.other"
 
 
-async def test_a_registered_game_is_played_on_a_device_by_swipes(screen_reading):
-    """The whole path on a device-shaped surface: a capture with alpha, read as the profile reads it, a
+async def test_a_game_is_played_on_a_device_by_swipes(tmp_path, monkeypatch):
+    """The whole path on a device-shaped surface: a capture with alpha, read by the adapter kept for the app, a
     direction sent as `input swipe` inside the board, and the result confirmed on the next capture."""
+    for module, name in ((adaptation, "SETTLE_S"), (adaptation, "FRAME_GAP_S"), (agent, "STILL_GAP_S"), (recovery, "SETTLE_S")):
+        monkeypatch.setattr(module, name, 0.0)
     game = Screen()
+    earlier = Screen()
+    trace = await Adaptation(Author(earlier, []), "slide_merge").explore(earlier)
+    trace.site = "android://com.example.game"
+    Store(tmp_path).save(trace, Made(source(game).strip(), 1, False, {"passed": True}))
 
     class Device(Adb):
         async def __call__(self, args):
@@ -82,6 +90,9 @@ async def test_a_registered_game_is_played_on_a_device_by_swipes(screen_reading)
             return await super().__call__(args)
 
     adb = Device()
-    played = await play(AndroidSurface(adb), profile=game.profile, goal=GoalSpec("actions", 2), budget=Budget(3, 20, 60))
-    assert played.record["outcome"] == "goal_reached" and played.record["confirmed_actions"] == 2, played.record
+    author = Author(game, [])
+    played, made = await agent.play(AndroidSurface(adb), author, "slide_merge", goal=GoalSpec("actions", 2),
+                                    budget=Budget(3, 20, 60), store=Store(tmp_path))
+    assert played.record["outcome"] == "goal_reached" and played.record["confirmed_actions"] == 2, (played.record, made)
+    assert made["reused"] and not author.asked
     assert len(game.drags) == 2 and sum(run[1:3] == ["input", "swipe"] for run in adb.ran) == 2
