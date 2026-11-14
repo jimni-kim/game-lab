@@ -25,7 +25,7 @@ import json
 import logging
 from typing import Any
 
-from .. import catalog, pixels
+from .. import catalog, pixels, samples
 from ..contracts import CELLS_UNREAD, NeedObservation, Observation, StateEstimate
 from ..execution import TAP_MS, MappedAction
 from ..families import GridFamily
@@ -67,6 +67,8 @@ class GeneratedAdapter:
         self.last_error: str | None = None
         # the last reading that left cells unread, as the code gave it
         self.partial: dict[str, Any] | None = None
+        # what the things the code leaves to the host looked like on screens a model read (`samples`)
+        self.bank = samples.Bank()
 
     # ── what the environment asks ─────────────────────────────────────
 
@@ -132,6 +134,19 @@ class GeneratedAdapter:
         self.layout, self.size = layout, size
         return changed
 
+    def raw(self, png: bytes) -> Any:
+        """The code's own reading of a screen it measured, marks and all; None when it failed."""
+        return self._call("read", png, layout=self.layout)
+
+    def keep(self, looks: list[Any]) -> None:
+        """Keep the samples every look gives: the boxes the code marks on it, each with the value read there."""
+        self.bank = samples.Bank()
+        for look in looks:
+            if isinstance(self.measure(look.png), NeedObservation) or not isinstance(raw := self.raw(look.png), dict):
+                continue
+            for label, sample in samples.learn(raw, look.state, [look.png, *look.frames])[0]:
+                self.bank.add(label, sample)
+
     def locate(self, png: bytes, box: list[int]) -> bool | None:
         return None
 
@@ -147,6 +162,8 @@ class GeneratedAdapter:
         payload = self._call("read", png, layout=self.layout)
         if not isinstance(payload, dict):
             return NeedObservation(ADAPTER_FAILED)
+        # what the code left to the host is named by the samples kept; a thing like none of them stays unread
+        payload = samples.resolve(payload, png, self.bank)
         state = self._family.estimate(replace(observation, public_facts={"state": payload}, geometry_ref=self.geometry_ref))
         if isinstance(state, StateEstimate) and state.unknown_fields:
             # what the code could not place is not a state to play on: the screen is looked at whole (the

@@ -12,6 +12,15 @@ The host already has the game's rules (`family` and `rule_model` in the context)
         The game's state on this screen, laid out as measure() returned: exactly the fields of
         `family.state_fields`, in the shapes the example states have. Use the family's empty value for an
         empty cell and null only for a cell you cannot read. Never guess: a wrong value is worse than null.
+        Where a value is told by a small drawing your code cannot tell apart reliably (a numeral, a
+        letter, a card's rank and suit, one of many kinds of piece), do not try: put {"look": [left, top,
+        width, height]} in the value's place, the box whose pixels show what it is. The host cuts that box
+        out and names it from samples it keeps of the screens it has seen read, and learns new ones itself.
+        Your code then only has to find where each thing is and how many there are (which cells are
+        filled, how many cards a pile shows face up and face down): take each box the same way every time
+        (the same part of every thing, the same size), so that the same thing gives the same pixels, and
+        take a part that shows what tells one thing from another. Values that are plainly told (an empty
+        place, a count, a colour that is the value) you still return yourself.
 
     def target(action, state, layout) -> dict
         How one of the rule model's actions is played from `state`: for this game the context's `controls`

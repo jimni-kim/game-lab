@@ -169,7 +169,9 @@ class Agent:
         self.trial = 0
         self.rested: list[float] = []
         self.rested_at = 0.0
-        self.relearned = self.generations = self.attempts = 0
+        # screens the model read for an adapter that could not (`relearned`), and how often the adapter then had to
+        # be written again: only that is bounded, since a screen that only adds samples costs one question
+        self.relearned = self.rewrites = self.generations = self.attempts = 0
         self.need = adaptation.EXPLORE_MOVES
         self.failures: list[dict[str, Any]] = []
         self.model_seconds = 0.0
@@ -363,7 +365,7 @@ class Agent:
     def _doubt(self, before: Reading) -> None:
         """The adapter's reading may be what is wrong: the model reads the next screens."""
         if before.by == L3 and self.adapter is not None:
-            if self.relearned >= MAX_RELEARNS:
+            if self.rewrites >= MAX_RELEARNS:
                 self._demote("relearn_limit")
             else:
                 self.distrusted = True
@@ -434,7 +436,7 @@ class Agent:
                 # what the screen leaves unread (an end notice over part of it) cannot undo an end the rules see
                 self.over = True
                 return None
-            if self.relearned >= MAX_RELEARNS:
+            if self.rewrites >= MAX_RELEARNS:
                 self._demote("relearn_limit")
             elif self.unread is None and expect is None:
                 # nothing vouches for what the model will read here until a move from it is confirmed
@@ -599,6 +601,7 @@ class Agent:
         if self.adapter is not None:
             self.adapter.close()
         self.adapter = adaptation.GeneratedAdapter(self.family_id, self.made.source, rules=self.trace.rules, site=self.site)
+        self.adapter.keep(self.trace.looks)
         self.settling = Settling(**self.adapter.played.get("settling", {}))
         self.distrusted, self.blind, self.trial, self.rested, self.carried = False, False, TRIAL_MOVES, [], None
 
@@ -617,10 +620,13 @@ class Agent:
         else written again from them."""
         report = adopt(self.made.source, self.trace)
         if report["passed"]:
+            # the look just read gave its samples: what the code leaves to the host is now known there too
+            self.adapter.keep(self.trace.looks)
             self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
             if self.store is not None:
                 self.store.save(self.trace, self.made)
         else:
+            self.rewrites += 1
             await self._generate((self.made.source, report["problems"]))
 
     async def _generate(self, previous: tuple[str, list[str]] | None) -> bool:

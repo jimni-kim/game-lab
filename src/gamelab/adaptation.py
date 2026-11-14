@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import logging
-from . import catalog, resources
+from . import catalog, resources, samples
 from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check_layout
 from .contracts import NeedObservation, Observation
 from .surface import Surface
@@ -656,38 +656,66 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
         return report
     adapter = GeneratedAdapter(trace.family_id, source, rules=trace.rules, site=trace.site)
     try:
+        # each look as the code reads it (marks and all, `samples`), and the samples it gives
+        raws: list[dict[str, Any] | None] = []
+        cuts: list[list[tuple[Any, bytes]]] = []
+        for index, look in enumerate(trace.looks):
+            raws.append(None)
+            cuts.append([])
+            if isinstance(adapter.measure(look.png), NeedObservation):
+                fail("measure", index, adapter.last_error or "measure() returned no board box that lies on the screen")
+                continue
+            raw = adapter.raw(look.png)
+            if not isinstance(raw, dict):
+                fail("read", index, adapter.last_error or "read() returned no state")
+                adapter.last_error = None
+                continue
+            found, problem = samples.learn(raw, look.state, [look.png, *look.frames])
+            if problem is not None:
+                fail("read", index, f"{problem}; expected {json.dumps(_board(look.state))}")
+                continue
+            raws[index], cuts[index] = raw, found
         states: list[dict[str, Any] | None] = []
         for index, look in enumerate(trace.looks):
-            measured = adapter.measure(look.png)
-            if isinstance(measured, NeedObservation):
-                fail("measure", index, adapter.last_error or "measure() returned no board box that lies on the screen")
-                states.append(None)
+            raw = raws[index]
+            states.append(None)
+            if raw is None:
                 continue
-            read = adapter.read(Observation(f"look-{index}", index, "adopt", 0, 0.0, "adopt"), look.png)
-            if isinstance(read, NeedObservation):
-                detail = (f"read() left cells unread: {json.dumps(_board(adapter.partial))}" if read.reason == CELLS_UNREAD
-                          else adapter.last_error or f"read() gave a state the rules refuse ({read.reason})")
-                adapter.last_error = None
-                fail("read", index, f"{detail}; expected {json.dumps(_board(look.state))}")
-                states.append(None)
+            # by the samples of the other screens it was shown: right, or not told (a thing seen here first)
+            others, whole = samples.Bank(), samples.Bank()
+            for other, found in enumerate(cuts):
+                for label, sample in found:
+                    if other == index or not trace.looks[other].held:
+                        whole.add(label, sample)
+                    if other != index and not trace.looks[other].held:
+                        others.add(label, sample)
+            unseen = samples.resolve(raw, look.png, others)
+            if not _agrees(_board(unseen), _board(look.state)):
+                fail("state", index, f"read() gave {json.dumps(_board(unseen))}, expected {json.dumps(_board(look.state))}")
                 continue
-            states.append(read.payload)
-            if _board(read.payload) != _board(look.state):
-                fail("state", index, f"read() gave {json.dumps(_board(read.payload))}, expected {json.dumps(_board(look.state))}")
+            # by its own samples too: all of it, with nothing the code itself left unread
+            own = samples.resolve(raw, look.png, whole)
+            if _board(own) != _board(look.state):
+                marked = any(True for _ in samples.marks(raw))
+                fail("read" if not marked else "samples", index,
+                     (f"read() left cells unread: {json.dumps(_board(own))}" if not marked else
+                      "different things look the same inside the boxes read() left to the host (or read() left a "
+                      f"value unread itself): it gave {json.dumps(_board(own))}") + f"; expected {json.dumps(_board(look.state))}")
+                continue
+            states[index] = look.state
             for frame in look.frames:
-                again = adapter.read(Observation(f"look-{index}-frame", index, "adopt", 0, 0.0, "adopt"), frame) \
-                    if not isinstance(adapter.measure(frame), NeedObservation) else None
-                if again is None or isinstance(again, NeedObservation) or _board(again.payload) != _board(look.state):
-                    got = "no board" if again is None else (
-                        f"cells unread {json.dumps(_board(adapter.partial))}" if isinstance(again, NeedObservation)
-                        else json.dumps(_board(again.payload)))
+                again = adapter.raw(frame) if not isinstance(adapter.measure(frame), NeedObservation) else None
+                seen = samples.resolve(again, frame, whole) if isinstance(again, dict) else None
+                if seen is None or _board(seen) != _board(look.state):
+                    got = "no board" if seen is None else json.dumps(_board(seen))
                     adapter.last_error = None
                     fail("frames", index, f"on another capture of the same screen {FRAME_GAP_S}s later (nothing played "
                                           f"between) the code gave {got}: read what stays the same while the screen animates")
                     break
             if look.action is not None:
+                adapter.measure(look.png)
                 try:
-                    asked = adapter.sandbox.call("target", action=look.action, state=read.payload, layout=adapter.layout)
+                    asked = adapter.sandbox.call("target", action=look.action, state=look.state, layout=adapter.layout)
                     adapter.checked_input(asked)
                 except (SandboxError, ValueError) as error:
                     asked = f"{type(error).__name__}: {error}"

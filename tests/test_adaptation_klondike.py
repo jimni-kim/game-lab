@@ -230,6 +230,24 @@ def target(action, state, layout):
 """
 
 
+# the same adapter with nothing that tells one card from another: it says where each card's corner is and
+# leaves what it shows to the host
+POINTING = """
+def card_at(picture, x, y):
+    if distance(picture.pixel(x + 30, y + 2), FACE) > 6 or distance(picture.pixel(x + 30, y + 20), FACE) > 6:
+        return None
+    if distance(picture.pixel(x + 16, y + 11), FACE) <= 6:
+        return None
+    return {"look": [x + 2, y + 2, 56, 18]}
+"""
+
+
+def pointing():
+    text = source()
+    start, end = text.index("def card_at"), text.index("def piles")
+    return text[:start] + POINTING.strip() + "\n\n" + text[end:]
+
+
 def source(taken=12):
     return ADAPTER.format(card=CARD, step_up=STEP_UP, step_down=STEP_DOWN, stock=STOCK, waste=WASTE, top=TOP, left=LEFT,
                           across=ACROSS, face=FACE, back=BACK, ranks=RANK_INKS, suits=SUIT_INKS).replace("TAKEN", str(taken))
@@ -275,3 +293,45 @@ async def test_a_deal_going_round_its_stock_with_nothing_to_play_ends_as_the_gam
                                     budget=Budget(400, 200, 300))
     assert (played.record["outcome"], played.record["reason"]) == ("game_over", "no_progress"), (played.record, made)
     assert not fake.refused and fake.seen["scene"] == "playing" and len(fake.moves) < 200
+
+
+async def test_code_that_only_says_where_the_cards_are_plays_by_samples_and_learns_new_cards_without_being_rewritten(tmp_path):
+    """The adapter tells no card from another: it gives the box of each card's corner, and the host names it
+    from the samples of the screens the model read. A card not seen before is a value nobody read: the model
+    reads that screen, its samples are kept, and the same code plays on. The whole deck is learned so, with
+    the code written once."""
+    fake = Patience()
+    croupier = Croupier(fake, [pointing()])
+    played, made = await agent.play(fake, croupier, "klondike", goal=GoalSpec("play_until_end"), budget=Budget(400, 200, 300),
+                                    store=Store(tmp_path))
+    assert (played.record["outcome"], played.record["reason"]) in (("goal_reached", "play_until_end"), ("goal_reached", "won")), (played.record, made)
+    assert not fake.refused and [move["action"] for move in played.moves] == fake.moves
+    writes = [context for kind, context, _ in croupier.asked if kind == "write"]
+    assert len(writes) == 1 and made["generations"] == 1 and 10 <= made["relearned"] <= 52
+    # more moves are read by the code than by the model, which reads only the screens that show a card for the first time
+    assert played.record["levels"]["L3"] > played.record["levels"]["L2"]
+    assert {move["effect"] for move in played.moves} <= {"confirmed", "unknown"}
+    # the next deal on the site starts from what was learned: far fewer screens go to the model
+    again = Patience(draw=1)
+    second = Croupier(again, [])
+    played, made = await agent.play(again, second, "klondike", goal=GoalSpec("play_until_end"), budget=Budget(400, 200, 300),
+                                    store=Store(tmp_path))
+    assert played.record["outcome"] == "goal_reached" and made["reused"] and made["generations"] == 1, (played.record, made)
+    assert sum(kind == "label" for kind, _, _ in second.asked) <= 6
+
+
+def test_a_cut_is_named_by_its_nearest_sample_and_one_like_none_is_not_named():
+    from gamelab import samples
+    bank = samples.Bank()
+    red, blue, shimmer = bytes([200, 10, 10] * 256), bytes([10, 10, 200] * 256), bytes([10, 10, 190] * 256)
+    bank.add("R", red)
+    bank.add("B", blue)
+    assert bank.name(red) == (True, "R") and bank.name(bytes([198, 11, 10] * 256)) == (True, "R")
+    assert bank.name(bytes([120, 120, 120] * 256)) == (False, None)
+    # a thing seen to vary is given the room it was seen to need
+    assert bank.name(bytes([10, 10, 180] * 256)) == (False, None)
+    bank.add("B", shimmer)
+    assert bank.name(bytes([10, 10, 180] * 256)) == (True, "B")
+    # the same pixels read as two values tell neither
+    bank.add("X", red)
+    assert bank.name(red) == (False, None)
