@@ -429,5 +429,85 @@
         "wait_ms": 2000
       }
     ]
+  },
+  "holdout_sudoku": {
+    "url": "https://mashukui.github.io/web-games/sudoku/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Held out (PLAN §11, H6): Sudoku (MIT, mashukui/web-games): a start notice, then a 9 by 9 board; a cell is clicked and a digit typed. Never used while developing: only measured. No family is named and nothing in the setup starts the game; the harness finds out what it is and gets itself to the board. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 4000
+      }
+    ]
+  },
+  "holdout_watersort": {
+    "url": "https://mashukui.github.io/web-games/water-sort/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Held out (PLAN §11, H6): Water Sort (MIT, mashukui/web-games): a start notice, then tubes of coloured layers; a tube is clicked, then the one to pour into. Never used while developing: only measured. No family is named and nothing in the setup starts the game; the harness finds out what it is and gets itself to the board. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 4000
+      }
+    ]
+  },
+  "holdout_threes": {
+    "url": "http://play.threesgame.com/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Held out (PLAN §11, H6): Threes, the official free web game (https has a certificate error, so http): arrow keys on a 4 by 4 board. Never used while developing: only measured. No family is named and nothing in the setup starts the game; the harness finds out what it is and gets itself to the board. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 4000
+      }
+    ]
+  },
+  "holdout_mahjong": {
+    "url": "https://mahjong-solitaire.netlify.app/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Held out (PLAN §11, H6): Mahjong solitaire (MIT, ScriptRaccoon/mahjong-solitaire): two free tiles of one face are clicked to remove them. Never used while developing: only measured. No family is named and nothing in the setup starts the game; the harness finds out what it is and gets itself to the board. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 4000
+      }
+    ]
+  },
+  "holdout_wordle": {
+    "url": "https://hellowordl.net/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Held out (PLAN §11, H6): hello wordl (MIT, lynn/hello-wordl): a five-letter word is typed and entered, six tries, a new random word each game. Never used while developing: only measured. No family is named and nothing in the setup starts the game; the harness finds out what it is and gets itself to the board. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 4000
+      }
+    ]
   }
 }

@@ -22,7 +22,7 @@ def test_the_site_settings_are_ones_a_run_can_start_from():
         if name.startswith("_"):
             continue
         assert len(site["viewport"]) == 2, name
-        assert site["url"].startswith("https://") and site.get("family", "minesweeper") in catalog.MODELS, name
+        assert site["url"].startswith(("https://", "http://")) and site.get("family", "minesweeper") in catalog.MODELS, name
 
 
 def test_a_web_run_is_named_by_its_site_alone_and_old_commands_still_parse():

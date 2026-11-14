@@ -63,6 +63,8 @@ STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
 # it was last written is churning, and after MAX_CHURN such rewrites in a row the game goes on read by the
 # model (writing costs about what EXPLORE_MOVES readings do)
 EARNED, MAX_CHURN = EXPLORE_MOVES, 2
+# between a tap that picks something and the input that completes the move
+THEN_S = 0.3
 # a game played by the model's own inputs (L0) is given up when this many of them in a row changed nothing on
 # the screen, or when the model gave this many answers in a row that are no input
 MAX_IDLE, MAX_SILENT = 6, 3
@@ -367,7 +369,7 @@ class Agent:
             self._afford()               # the move's result is the model's to read: none is sent that it cannot be asked about
         if self.watch is not None:
             await self.watch.sending(self.used + 1, action, before.state, sent, before.at)
-        await self._send(sent, before)
+        await self._send(sent, before, action)
         self.used += 1
         if self.watch is not None:
             await self.watch.sent()
@@ -821,7 +823,7 @@ class Agent:
             return None
         return asked
 
-    async def _send(self, sent: dict[str, Any], before: Reading) -> None:
+    async def _send(self, sent: dict[str, Any], before: Reading, action: dict[str, Any]) -> None:
         surface, self.carried_as = self.surface, None
         if sent["kind"] == "key":
             if "keys" in surface.kinds:
@@ -834,10 +836,27 @@ class Agent:
                 await surface.drag(x - reach_x, y - reach_y, x + reach_x, y + reach_y, SWIPE_MS)
         elif sent["kind"] == "tap":
             await surface.tap(sent["x"], sent["y"], TAP_MS)
+            await self._then(sent, before, action)
         elif "source" not in self.adaptation.controls:
             await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])      # between two cells: nothing is carried
         else:
             self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
+
+    async def _then(self, sent: dict[str, Any], before: Reading, action: dict[str, Any]) -> None:
+        """What completes a move whose first tap only picks something (the controls' `then`): the same tap
+        again, a key the move names, or a tap on a second cell it names."""
+        controls = self.adaptation.controls
+        if "then" not in controls:
+            return
+        await asyncio.sleep(THEN_S)
+        if controls["then"] == "tap":
+            await self.surface.tap(sent["x"], sent["y"], TAP_MS)
+        elif controls["then"] == "key":
+            await self.surface.key(str(action[controls["key"]]))
+        else:
+            board = self.adapter.layout["board"] if before.by == L3 and self.adapter and self.adapter.layout else self.board
+            left, top, width, height = adaptation.cell_box(board, _shape(self.family, before.state), action[controls["to"]])
+            await self.surface.tap(left + width / 2, top + height / 2, TAP_MS)
 
     # ── a screen that stopped play ────────────────────────────────────
 
@@ -1011,8 +1030,9 @@ class Agent:
         return (self.recovery.log[-1]["situation"] or "") if self.recovery and self.recovery.log else ""
 
     async def _other_family(self) -> bool:
-        """A game a model named whose moves never did what the family's rules say may be another's."""
-        if not self.named or self.confirmed or not self.candidates:
+        """A game a model named whose moves never did what the family's rules say may be another's: the next
+        family named for it, else one made for it, else the model's own play."""
+        if not self.named or self.confirmed or self._made_plays() or (not self.candidates and not self.direct):
             return False
         self.tries, self.stalled, self.shrugged = 0, 0, False
         if not await self._next_family() and not await self._make_family():

@@ -10,8 +10,9 @@ screen by the descriptor, the code picks each move, and each move's result must 
 allow. A result they refuse is shown to the model, and the rules are written again from it; rules that keep
 failing are dropped, and the game goes on played by the model's own inputs (`direct`).
 
-Only games the description says fit are made: one grid, one move kind, one input a move (a tap on a cell, an
-arrow key, a drag from cell to cell). Anything else stays with `direct`.
+Only games the description says fit are made: one grid and one kind of move, made by a tap on a cell, an
+arrow key, a drag from cell to cell, or a tap that picks a cell followed by what completes the move (the same
+tap again, a key, a tap on a second cell). Anything else stays with `direct`.
 """
 from __future__ import annotations
 
@@ -45,9 +46,17 @@ DIRECTIONS = {"up": "ArrowUp", "down": "ArrowDown", "left": "ArrowLeft", "right"
 # how one move is written, by the input it is played with (what `adaptation.input_for` plays)
 FORMS = {"tap": lambda kind: {"kind": kind, "cell": ["row", "column"]},
          "keys": lambda kind: {"kind": kind, "direction": "up | down | left | right"},
-         "drag": lambda kind: {"kind": kind, "cell": ["row", "column"], "to": ["row", "column"]}}
+         "drag": lambda kind: {"kind": kind, "cell": ["row", "column"], "to": ["row", "column"]},
+         "tap_twice": lambda kind: {"kind": kind, "cell": ["row", "column"]},
+         "tap_key": lambda kind: {"kind": kind, "cell": ["row", "column"], "key": "one letter or digit"},
+         "tap_to": lambda kind: {"kind": kind, "cell": ["row", "column"], "to": ["row", "column"]}}
+# the controls each is explored with; `then`: what follows the tap on `cell` to complete the move (`agent._then`)
 CONTROLS = {"tap": {"kind": "tap"}, "keys": {"kind": "keys", "keys": DIRECTIONS},
-            "drag": {"kind": "drag", "from": "cell", "to": "to", "duration_ms": 250}}
+            "drag": {"kind": "drag", "from": "cell", "to": "to", "duration_ms": 250},
+            "tap_twice": {"kind": "tap", "then": "tap"}, "tap_key": {"kind": "tap", "then": "key", "key": "key"},
+            "tap_to": {"kind": "tap", "then": "tap_to", "to": "to"}}
+# the keys a move may name
+KEYS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 
 def _prompt(name: str) -> str:
@@ -111,7 +120,7 @@ class Game:
                 "grid": f"the grid's rows from the top, each a list of cells from the left: {told['cells']}; null a cell nobody read",
                 "score": "the game's own count of progress as the screen shows it (a score, the moves made), or null",
                 "scene": "the id of the scene the screen shows"},
-            "actions": [{"kind": told["kind"], "input": told["input"], "description": told["description"]}],
+            "actions": [{"kind": told["kind"], "input": CONTROLS[told["input"]]["kind"], "description": told["description"]}],
             "scenes": [{"id": PLAYING, "looks": "the board in play"}, {"id": WON, "looks": told["won"]},
                        {"id": OVER, "looks": told["over"]}],
             "meta_actions": [{"id": "new_game", "description": "start another game"}],
@@ -250,8 +259,10 @@ class Code:
             return False
         if told["input"] == "keys":
             return set(action) == {"kind", "direction"} and action["direction"] in DIRECTIONS
-        if told["input"] == "tap":
+        if told["input"] in ("tap", "tap_twice"):
             return set(action) == {"kind", "cell"} and cell(action["cell"])
+        if told["input"] == "tap_key":
+            return set(action) == {"kind", "cell", "key"} and cell(action["cell"]) and str(action["key"]) in KEYS
         return set(action) == {"kind", "cell", "to"} and cell(action["cell"]) and cell(action["to"])
 
     def check(self, states: list[dict[str, Any]], examples: list[dict[str, Any]], limit: int = 4) -> list[str]:

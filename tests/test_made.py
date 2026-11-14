@@ -191,3 +191,76 @@ async def test_written_rules_whose_moves_the_game_never_takes_are_dropped_for_th
     fake, model, played, found = await game([swapped] * (1 + made.MAX_REWRITES * made.MAX_ATTEMPTS))
     assert ending(played)[0] in ("goal_reached", "game_over"), (played.record, found)
     assert model.count("play") >= 1 and "made_family_dropped" in [failure["reason"] for failure in found["generation_failures"]]
+
+
+class Picky(Lamps):
+    """Lamps that light on the second tap of the same cell (the first only picks it), or, with `keyed`, when the
+    cell is tapped and then the key 7 pressed, or, with `paired`, when a lit... dark cell is tapped and then its
+    neighbour to the right (both light)."""
+
+    def __init__(self, way):
+        super().__init__()
+        self.way, self.picked, self.keys = way, None, []
+
+    def _cell(self, x, y):
+        left, top, width, height = BOARD
+        return (int((y - top) / (height / ROWS)), int((x - left) / (width / COLS)))
+
+    async def tap(self, x, y, duration_ms):
+        self.taps.append((x, y))
+        cell = self._cell(x, y)
+        if self.way == "tap_twice" and self.picked == cell:
+            self.grid[cell[0]][cell[1]], self.picked = 1, None
+        elif self.way == "tap_to" and self.picked is not None:
+            for r, c in (self.picked, cell):
+                self.grid[r][c] = 1
+            self.picked = None
+        else:
+            self.picked = cell
+
+    async def key(self, key):
+        self.keys.append(key)
+        if self.way == "tap_key" and key == "7" and self.picked is not None:
+            self.grid[self.picked[0]][self.picked[1]], self.picked = 1, None
+
+
+@pytest.mark.parametrize(("way", "module", "taps", "keys"), [
+    ("tap_twice", RIGHT, 2 * ROWS * COLS, 0),
+    ("tap_key", RIGHT.replace('{"kind": "light", "cell": [r, c]}', '{"kind": "light", "cell": [r, c], "key": "7"}'), ROWS * COLS, ROWS * COLS),
+])
+async def test_a_move_made_by_a_tap_that_picks_and_an_input_that_completes_it_is_played_whole(way, module, taps, keys):
+    fake = Picky(way)
+    model = Maker(fake, [module], described={**DESCRIBED, "move": {**DESCRIBED["move"], "input": way}})
+    played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 120))
+    assert ending(played) == ("goal_reached", "won"), (played.record, found)
+    assert (len(fake.taps), len(fake.keys)) == (taps, keys) and played.record["actions_used"] == ROWS * COLS
+    assert found["made"]["input"] == way and model.count("play") == 0
+
+
+async def test_a_move_made_by_tapping_one_cell_and_then_another_is_played_whole():
+    pairs = '''
+def legal_actions(state, rules):
+    g = state["grid"]
+    return [{"kind": "light", "cell": [r, c], "to": [r, c + 1]} for r in range(len(g)) for c in range(len(g[0]) - 1) if g[r][c] == 0]
+
+def assess(before, action, after, rules):
+    want = [list(row) for row in before["grid"]]
+    for r, c in (action["cell"], action["to"]):
+        want[r][c] = 1
+    return after["grid"] == want and after["grid"] != before["grid"]
+
+def status(state, rules):
+    return "won" if all(cell == 1 for row in state["grid"] for cell in row) else "playing"
+
+def choose(state, rules):
+    moves = legal_actions(state, rules)
+    return moves[0] if moves else None
+'''
+    fake = Picky("tap_to")
+    model = Maker(fake, [pairs], described={**DESCRIBED, "move": {**DESCRIBED["move"], "input": "tap_to"}})
+    played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 120))
+    assert ending(played) == ("goal_reached", "won"), (played.record, found)
+    # each move is two taps: the cell, then the one to its right
+    left, top, width, height = BOARD
+    assert fake.taps[:2] == [(left + width / 6, top + height / 4), (left + width / 2, top + height / 4)]
+    assert len(fake.taps) == 2 * played.record["actions_used"]
