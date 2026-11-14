@@ -117,7 +117,8 @@ async def test_a_game_of_no_registered_family_is_played_by_the_model_and_told_wh
     assert any(140 <= left <= 160 and 110 <= top <= 130 for left, top, _, _ in seen["changed_at"])
     assert model.asked[1]["notes"] == "asked 1 times" and model.asked[0]["goal"]["objective"] == "play_until_end"
     assert made["direct"]["questions"] == 4 and (made["direct"]["score_first"], made["direct"]["score_last"]) == (0, 3)
-    assert made["identified"]["candidates"] == [] and made["questions"] == 5
+    # which game it is, whether it can be played by written rules (it is no grid: no), then the four of the play
+    assert made["identified"]["candidates"] == [] and made["questions"] == 6 and "made" not in made
 
 
 async def test_a_family_the_board_cannot_be_read_as_leaves_the_game_to_the_model():

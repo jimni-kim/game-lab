@@ -32,12 +32,27 @@ SOLVERS: dict[str, ModuleType] = {"block_placement": block_placement_solver, "kl
                                   "match3": match3_solver,
                                   "minesweeper": minesweeper_solver, "slide_merge": slide_merge_solver}
 
+# families made while a game is played (`made`): each one's descriptor, rules and solver, by its id
+MADE: dict[str, tuple[dict[str, Any], Any, Any]] = {}
+
+
+def register(data: dict[str, Any], model: Any, solver: Any) -> None:
+    """A family made for one game: found by its id like a registered one, for as long as that game lasts."""
+    MADE[data["id"]] = (data, model, solver)
+
+
+def unregister(family_id: str) -> None:
+    MADE.pop(family_id, None)
+
+
 def descriptor_ids() -> list[str]:
     return sorted(p.name.removesuffix(".json") for p in (FRAGMENT / "families").iterdir()
                   if p.is_file() and p.name.endswith(".json"))
 
 
 def descriptor(family_id: str) -> dict[str, Any]:
+    if family_id in MADE:
+        return MADE[family_id][0]
     data = json.loads((FRAGMENT / "families" / f"{family_id}.json").read_text(encoding="utf-8"))
     problems = resources.validate(data, json.loads(SCHEMA.read_text(encoding="utf-8")))
     model, solver = MODELS[family_id], SOLVERS[family_id]
@@ -77,8 +92,14 @@ def rules_schema(data: dict[str, Any]) -> dict[str, Any]:
             "properties": {name: parameter["values"] for name, parameter in data["rule_parameters"].items()}}
 
 
-@cache
 def family(family_id: str) -> GridFamily:
+    if family_id in MADE:
+        return GridFamily(*MADE[family_id])
+    return _registered(family_id)
+
+
+@cache
+def _registered(family_id: str) -> GridFamily:
     if family_id not in MODELS:
         raise KeyError(family_id)
     return GridFamily(descriptor(family_id), MODELS[family_id], SOLVERS[family_id])

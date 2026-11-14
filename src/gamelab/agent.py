@@ -21,12 +21,13 @@ questions), or when a model sees nothing more to do (`gave_up`, with what it sai
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, replace
 import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, catalog, direct
+from . import adaptation, catalog, direct, made
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
@@ -156,6 +157,11 @@ class Agent:
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
         # whether a game of no registered family is played by the model's own inputs, not left unplayed
         self.direct = direct
+        # the family made for this game when none is registered for it (`made`), the moves played by its
+        # written rules that the screen bore out, and a move whose real result those rules refused
+        self.game: made.Game | None = None
+        self.transitions: list[dict[str, Any]] = []
+        self.refused: dict[str, Any] | None = None
         self.asked_policy, self.watch, self.cancel, self.accept_consent = policy, watch, cancel, accept_consent
         self.started = time.monotonic()
         # drags are carried: what a held thing is drawn like is measured on the way (`carry`)
@@ -225,6 +231,8 @@ class Agent:
                 outcome, reason, detail = Outcome.GAVE_UP, "error", f"{type(error).__name__}: {error}"[:2000]
             if outcome in (Outcome.GOAL_REACHED, Outcome.GAME_OVER):
                 await self._keep_for_next()
+            if self.game is not None:
+                self.found["made"] = self.game.summary()
             self._keep_looks()
             record = {"version": RECORD_VERSION, "family": self.family_id, "phase": "ended", "outcome": str(outcome),
                       "reason": reason, "detail": detail, "goal": self.goal.to_json(), "budget": self.budget.to_json(),
@@ -251,6 +259,8 @@ class Agent:
         if self.adapter is not None:
             self.adapter.close()
             self.adapter = None
+        if self.game is not None:
+            self.game.close()
         if self.store is not None and self.recovery is not None and self.family_id and self.site and self.recovery.known:
             self.store.save_recoveries(self.site, self.family_id, self.recovery.known)
 
@@ -270,7 +280,7 @@ class Agent:
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
-        if not await self._next_family():
+        if not await self._next_family() and not await self._make_family():
             await self._play_direct(self.found.get("identified", {}).get("situation") or "")
 
     async def _identify(self) -> dict[str, Any]:
@@ -373,6 +383,10 @@ class Agent:
             raise _End(Outcome.GAME_OVER, "terminal")
         if after is None:
             self.unread_move = (before, action)
+            if self.why == "inconsistent" and await self._rules_again():
+                # the screen was read, and the made family's rules refused it: with rules written again from
+                # it, the same screen is read once more as that move's result
+                return
         if effect == "confirmed":
             await self._confirmed(before, action, sent, after, sent_at)
             return
@@ -399,6 +413,8 @@ class Agent:
                          sent_at: float) -> None:
         self.confirmed += 1
         self.stalled = self.tries = 0
+        if self._made_plays():
+            self.transitions = [*self.transitions, {"state": before.state, "action": action, "after": after.state}][-made.EXAMPLES_KEPT:]
         self.shrugged, self.ineffective, self.carried, self.state = False, None, after, after.state
         self.recovery.succeeded()
         # a game that keeps coming back to the same state by its own moves is going nowhere (a stock turned
@@ -622,6 +638,8 @@ class Agent:
                 tool.last_state, tool.frames = state, await tool._frames(self.surface, png)
         except AdaptationFailed as error:
             # no board on the screen, or one the model could not read as the rules have it
+            if expect is not None and error.detail == "transition_refused" and tool.refused is not None:
+                self.refused = {"state": expect[0].state, "action": expect[1], "after": tool.refused}
             self.why = "label_failed" if error.detail == "no_board" else "inconsistent"
             return None
         except Exception as error:
@@ -827,12 +845,12 @@ class Agent:
         """Play cannot go on from this screen: a model is shown it and sends one input of its own (L0), and
         the screen is looked at again. The game ends when the model sees its end on the screen, sees nothing
         to do, or MAX_TRIES inputs in a row brought no confirmed move."""
-        if reason == "inconsistent" and await self._other_family():
+        if reason == "inconsistent" and (await self._rules_again() or await self._other_family()):
             return
         if self.tries >= MAX_TRIES:
             if await self._other_family():
                 return
-            raise _End(Outcome.GAVE_UP, reason, self._situation())
+            await self._give_up(reason)
         self._afford()
         self.tries += 1
         self.carried = None
@@ -854,9 +872,61 @@ class Agent:
             return
         if await self._other_family():
             return
-        raise _End(Outcome.GAVE_UP, reason, self._situation())
+        await self._give_up(reason)
 
     # ── a game of no registered family ────────────────────────────────
+
+    async def _make_family(self) -> bool:
+        """No registered family is this game's: a model describes it, and when it is one that can be played by
+        written rules (a grid, one kind of move) a family is made for it (`made`): its board is read by the
+        description and its rules written as code. True when the game goes on as that family."""
+        if self.game is not None or not self.direct:
+            return False
+        self._afford()
+        try:
+            game = await self._asking(made.describe(self.surface, self.model, self.site, hint=self.hint))
+        except Exception as error:
+            log.info("the game could not be described: %s", error)
+            self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
+            return False
+        if game is None:
+            return False
+        self.game, self.named = game, True
+        try:
+            # its board must read by the description before anything is written for it
+            if not await self._take(game.id):
+                return False
+        except _End:
+            return False
+        state = self.adaptation.first[1]
+        if not await self._asking(game.write(self.writer or self.model, [state], allowed=self._affordable)):
+            self.failures.append({"reason": "no_rules_passed", "detail": json.dumps(game.problems)[:2000]})
+            return False
+        return True
+
+    def _made_plays(self) -> bool:
+        return self.game is not None and self.family_id == self.game.id and self.game.code.source is not None
+
+    async def _rules_again(self) -> bool:
+        """A made family's rules refused what the screen really showed after a move: they are written again
+        from it. True when rules that take it (and every move borne out before) are now in use."""
+        refused, self.refused = self.refused, None
+        if not self._made_plays() or refused is None or not self._affordable():
+            return False
+        written = await self._asking(self.game.rewrite(self.writer or self.model, [refused["state"]], self.transitions,
+                                                       refused, allowed=self._affordable))
+        if written:
+            self.tries, self.stalled = 0, 0
+        return written
+
+    async def _give_up(self, reason: str) -> None:
+        """Play cannot go on by the family's rules. A made family's rules may simply be wrong: the game is
+        then the model's to play with its own inputs. Otherwise the game is given up."""
+        if self._made_plays():
+            log.info("the made family is dropped: %s", reason)
+            self.failures.append({"reason": "made_family_dropped", "detail": reason})
+            await self._play_direct(self._situation())
+        raise _End(Outcome.GAVE_UP, reason, self._situation())
 
     async def _play_direct(self, situation: str) -> None:
         """The game is none the harness has rules for: a model plays it with inputs of its own (L0), told after
@@ -945,7 +1015,7 @@ class Agent:
         if not self.named or self.confirmed or not self.candidates:
             return False
         self.tries, self.stalled, self.shrugged = 0, 0, False
-        if not await self._next_family():
+        if not await self._next_family() and not await self._make_family():
             await self._play_direct(self._situation())
         return True
 

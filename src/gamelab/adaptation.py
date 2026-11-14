@@ -245,6 +245,8 @@ class Adaptation:
         self.first: tuple[bytes, dict[str, Any], list[int], dict[str, Any]] | None = None
         # where the last screen read shows each thing that may be dragged (`Look.sources`)
         self.sources: list[list[int] | None] | None = None
+        # the last reading refused as no result of the move just played (`accept`): what the screen was read as
+        self.refused: dict[str, Any] | None = None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -373,7 +375,7 @@ class Adaptation:
                 problem = "state_refused"
                 continue
             if accept is not None and not accept(state.payload):
-                problem = "transition_refused"
+                problem, self.refused = "transition_refused", state.payload
                 await asyncio.sleep(SETTLE_S)
                 continue
             if "source" in self.controls:
