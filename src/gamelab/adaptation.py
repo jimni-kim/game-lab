@@ -61,11 +61,15 @@ LABEL_TIMEOUT_S, GENERATE_TIMEOUT_S = 90.0, 300.0
 # its cells would be smaller than OVERLAY_CELL (each carries a label of 27 by 13 pixels), up to OVERLAY_MOST
 OVERLAY_SIDE, OVERLAY_CELL, OVERLAY_MOST = 800, 56, 2400
 # colours nearer than this are one run of a probe's scan line
+# a drag the code asks for plays a recorded one when it starts within this share of the dragged thing's size
+# around the box the model gave for it, and ends within this share of a cell of the recorded end
+DRAG_FROM_MARGIN, DRAG_ONTO = 0.35, 0.34
 RUN_TOLERANCE = 6
 MAX_RUNS = 120
-# the controls a game can be explored with before any adapter exists: a key per direction, or a tap on the
-# cell a move names (a drag's start and end are the family code's to place: not yet)
-EXPLORED_WITH = ("keys", "tap")
+# the controls a game can be explored with before any adapter exists: a key per direction, a tap on the cell a
+# move names, or a drag of the thing a move names (one entry of a state field, at the box the model gave for
+# it) onto the cells the move names
+EXPLORED_WITH = ("keys", "tap", "drag")
 
 
 class AdaptationFailed(Exception):
@@ -88,6 +92,9 @@ class Look:
     held: bool = False
     # more captures of the same screen moments later (FRAMES), to be read the same
     frames: list[bytes] = field(default_factory=list)
+    # for a game played by drags: the box around each thing that may be dragged, in the order of the state
+    # field that lists them (None where the entry is empty), as the model gave them
+    sources: list[list[int] | None] | None = None
 
 
 @dataclass
@@ -151,10 +158,22 @@ def overlay(png: bytes, board: list[int], rows: int, cols: int) -> bytes:
     return out.getvalue()
 
 
+def _grid(state: dict[str, Any]) -> list[list[Any]] | None:
+    """The state's board, whatever the family calls it: its first field that is rows of cells (not a list of
+    pieces, whose entries are themselves lists of cells)."""
+    return next((value for value in state.values() if isinstance(value, list) and value and all(
+        isinstance(row, list) and row and not any(isinstance(cell, list) for cell in row) for row in value)), None)
+
+
 def _shape(family: Any, state: dict[str, Any]) -> tuple[int, int] | None:
-    """The rows and columns of the state's board, whatever the family calls it."""
-    grid = next((value for value in state.values() if isinstance(value, list) and value and isinstance(value[0], list)), None)
+    """The rows and columns of the state's board."""
+    grid = _grid(state)
     return (len(grid), len(grid[0])) if grid else None
+
+
+def _extent(piece: list[list[int]]) -> tuple[int, int]:
+    """The rows and columns a piece's cells span."""
+    return max(row for row, _ in piece) + 1, max(col for _, col in piece) + 1
 
 
 def cell_box(board: list[int], shape: tuple[int, int], cell: list[int]) -> list[float]:
@@ -164,6 +183,19 @@ def cell_box(board: list[int], shape: tuple[int, int], cell: list[int]) -> list[
     row, col = cell
     across, down = width / cols, height / rows
     return [left + col * across, top + row * down, across, down]
+
+
+def drag_for(source: list[int], board: list[int], shape: tuple[int, int], piece: list[list[int]],
+             anchor: list[int], ms: int) -> dict[str, Any]:
+    """The drag that puts `piece` (its cells, from the box `source` around it) on the board with its first row
+    and column at the cell `anchor`: from the middle of one of its cells to where the middle of the whole
+    piece is to lie. What carries it out makes up for how the game draws a held piece (`carry`)."""
+    rows, cols = _extent(piece)
+    left, top, width, height = source
+    row, col = piece[0]
+    first = cell_box(board, shape, anchor)
+    return {"kind": "drag", "x0": left + (col + 0.5) * width / cols, "y0": top + (row + 0.5) * height / rows,
+            "x1": first[0] + first[2] * cols / 2, "y1": first[1] + first[3] * rows / 2, "ms": ms}
 
 
 class Adaptation:
@@ -178,6 +210,8 @@ class Adaptation:
         self.told: list[dict[str, Any]] = []
         # the first screen as read already (`probe`), for the exploring to start from
         self.first: tuple[bytes, dict[str, Any], list[int], dict[str, Any]] | None = None
+        # where the last screen read shows each thing that may be dragged (`Look.sources`)
+        self.sources: list[list[int] | None] | None = None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -185,14 +219,15 @@ class Adaptation:
         # what the game is played with while exploring: the family's starting controls
         self.controls = self.descriptor.get("discovery", {}).get("controls")
         if not self.controls or self.controls["kind"] not in EXPLORED_WITH:
-            raise AdaptationFailed("family_unsupported", "only games played with keys or taps can be explored yet")
+            raise AdaptationFailed("family_unsupported", "the family names no controls its first moves can be played with")
 
     # ── explore ───────────────────────────────────────────────────────
 
     async def label(self, png: bytes, board: list[int] | None, shape: tuple[int, int] | None) -> dict[str, Any] | None:
         """What the model reads on one screen: `{"board", "rules", "state"}` or None when it shows no board
         or the answer is no answer. The rule model checks the state afterwards."""
-        context = {"family": self.descriptor, **({"board": board} if board else {})}
+        context = {"family": self.descriptor, **({"board": board} if board else {}),
+                   **({"sources": self.controls["source"]} if self.controls["kind"] == "drag" else {})}
         content = [{"type": "text", "text": json.dumps(context)}, _image(png)]
         if board and shape:
             content.append(_image(overlay(png, board, *shape)))
@@ -289,9 +324,25 @@ class Adaptation:
                 problem = "transition_refused"
                 await asyncio.sleep(SETTLE_S)
                 continue
+            if self.controls["kind"] == "drag":
+                self.sources = self._sources(answer.get("sources"), state.payload, size)
+                if self.sources is None:
+                    problem = "sources_refused"
+                    continue
             self.told.append(self._told(answer.get("rules")))
             return png, state.payload, found, chosen
         raise AdaptationFailed("label_failed", problem)
+
+    def _sources(self, seen: Any, state: dict[str, Any], size: list[int]) -> list[list[int] | None] | None:
+        """The boxes the model gave for the things that may be dragged, when there is one on the screen for
+        every entry the state lists; None otherwise."""
+        from .adapters.generated import _box
+
+        listed = state[self.controls["source"]]
+        if not isinstance(seen, list) or len(seen) != len(listed):
+            return None
+        boxes = [box if entry else None for box, entry in zip(seen, listed)]
+        return boxes if all(_box(box, size) for box, entry in zip(boxes, listed) if entry) else None
 
     def _unknowable(self) -> list[str]:
         """The rule values a game may be played without knowing: those the family lets be null."""
@@ -322,18 +373,27 @@ class Adaptation:
                     seen[name], allowed[name]) else None
                 for name in self._unknowable() if name in allowed}
 
-    def input_for(self, action: dict[str, Any], board: list[int], shape: tuple[int, int]) -> dict[str, Any]:
+    def input_for(self, action: dict[str, Any], board: list[int], shape: tuple[int, int],
+                  state: dict[str, Any] | None = None, sources: list[list[int] | None] | None = None) -> dict[str, Any]:
         """The input a move is played with before any adapter exists, as a generated adapter's `target()`
-        would give it: the direction's key, or a tap at the middle of the cell the move names, placed on the
-        board box the model gave."""
-        if self.controls["kind"] == "keys":
-            return {"kind": "key", "key": self.controls["keys"][action["direction"]]}
+        would give it: the direction's key, a tap at the middle of the cell the move names, placed on the
+        board box the model gave, or a drag from the middle of the thing the move names to the middle of the
+        cells it is to cover."""
+        controls = self.controls
+        if controls["kind"] == "keys":
+            return {"kind": "key", "key": controls["keys"][action["direction"]]}
+        if controls["kind"] == "drag":
+            index = action[controls["index"]]
+            return drag_for(sources[index], board, shape, state[controls["source"]][index], action[controls["onto"]],
+                            controls["duration_ms"])
         left, top, width, height = cell_box(board, shape, action["cell"])
         return {"kind": "tap", "x": left + width / 2, "y": top + height / 2}
 
     async def _send(self, surface: Surface, sent: dict[str, Any]) -> None:
         if sent["kind"] == "key":
             await surface.key(sent["key"])
+        elif sent["kind"] == "drag":
+            await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])
         else:
             await surface.tap(sent["x"], sent["y"], TAP_MS)
 
@@ -355,8 +415,8 @@ class Adaptation:
             action = family.choose(state, self.policy, self.compute)
             if action is None or action["kind"] in family.meta_actions:
                 break
-            sent = self.input_for(action, board, _shape(family, state))
-            trace.looks.append(Look(png, state, board, action, sent, frames=self.frames))
+            sent = self.input_for(action, board, _shape(family, state), state, self.sources)
+            trace.looks.append(Look(png, state, board, action, sent, frames=self.frames, sources=self.sources))
             await self._send(surface, sent)
             await asyncio.sleep(SETTLE_S)
             before = state
@@ -364,7 +424,7 @@ class Adaptation:
             # moves reveal what was hidden, `assess` is what the rules can say of it (the cells a move may open)
             png, state, _, _ = await self._read(surface, board, rules, accept=lambda after: family.model.assess(
                 before, action, after, family.rules)["effect"] == "confirmed")
-        trace.looks.append(Look(png, state, board, frames=self.frames))
+        trace.looks.append(Look(png, state, board, frames=self.frames, sources=self.sources))
         if len(trace.looks) <= HELD_BACK + 2:
             raise AdaptationFailed("game_ended" if over else "game_too_short",
                                    f"{len(trace.looks) - 1} moves were played before the game ended" if over else "")
@@ -387,14 +447,14 @@ class Adaptation:
                 accept=None if partial is None else lambda read: _agrees(_board(partial), _board(read)))
         except AdaptationFailed:
             return None
-        return Look(png, state, board, frames=self.frames)
+        return Look(png, state, board, frames=self.frames, sources=self.sources)
 
     # ── generate and adopt ────────────────────────────────────────────
 
     def _context(self, trace: Trace, previous: tuple[str, list[str]] | None) -> dict[str, Any]:
         family = catalog.family(self.family_id)
         examples = [{"state": look.state, "board": look.board, "cells": cells(look), "action": look.action,
-                     "sent": look.sent} for look in trace.train]
+                     "sent": look.sent, **({"sources": look.sources} if look.sources else {})} for look in trace.train]
         return {"family": self.descriptor, "rules": trace.rules, "controls": self.controls,
                 "rule_model": Path(family.model.__file__).read_text(encoding="utf-8"),
                 "helpers": (Path(__file__).parent / "sandbox" / "helpers.py").read_text(encoding="utf-8"),
@@ -441,7 +501,7 @@ def cells(look: Look) -> list[dict[str, Any]]:
     common around its middle and its upper part, where a tile's face shows beside its numeral."""
     from PIL import Image
 
-    grid = next(value for value in look.state.values() if isinstance(value, list) and value and isinstance(value[0], list))
+    grid = _grid(look.state)
     left, top, width, height = look.board
     rows, cols = len(grid), len(grid[0])
     found = []
@@ -557,7 +617,9 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                     asked = f"{type(error).__name__}: {error}"
                 if not _same_input(asked, look, adapter.layout["board"]):
                     fail("target", index, f"target() gave {json.dumps(asked)} for {json.dumps(look.action)}, expected {json.dumps(look.sent)}"
-                                          + (" (a tap anywhere inside that cell)" if look.sent["kind"] == "tap" else ""))
+                                          + {"tap": " (a tap anywhere inside that cell)",
+                                             "drag": " (from anywhere on that piece to the middle of the cells it is to cover)"
+                                             }.get(look.sent["kind"], ""))
         for index, look in enumerate(trace.looks[:-1]):
             before, after = states[index], states[index + 1]
             if before is None or after is None or look.action is None:
@@ -577,8 +639,21 @@ def _same_input(asked: Any, look: Look, board: list[int]) -> bool:
     """Whether the code plays the look's move as it was played: the same key; or a tap inside the cell the move
     names, on the board as the code measured it (the pixel the harness tapped was one point of that cell, and
     code that picks another point of it plays the same move)."""
-    if look.sent["kind"] != "tap" or not isinstance(asked, dict) or asked.get("kind") != "tap":
+    if not isinstance(asked, dict) or asked.get("kind") != look.sent["kind"] or look.sent["kind"] == "key":
         return asked == look.sent
+    if look.sent["kind"] == "drag":
+        # the same thing picked up (a point on it, or near: the box around it is a model's estimate) and taken
+        # to the same cells: its middle within a third of a cell of theirs, on the board as the code measured it
+        rows, cols = _shape(None, look.state)
+        across, down = board[2] / cols, board[3] / rows
+        scale_x, scale_y = board[2] / look.board[2], board[3] / look.board[3]
+        goal = (board[0] + (look.sent["x1"] - look.board[0]) * scale_x, board[1] + (look.sent["y1"] - look.board[1]) * scale_y)
+        source = next(box for box in look.sources or [] if box and box[0] <= look.sent["x0"] < box[0] + box[2]
+                      and box[1] <= look.sent["y0"] < box[1] + box[3])
+        margin = max(source[2], source[3]) * DRAG_FROM_MARGIN
+        return (source[0] - margin <= asked["x0"] < source[0] + source[2] + margin
+                and source[1] - margin <= asked["y0"] < source[1] + source[3] + margin
+                and abs(asked["x1"] - goal[0]) <= across * DRAG_ONTO and abs(asked["y1"] - goal[1]) <= down * DRAG_ONTO)
     left, top, width, height = cell_box(board, _shape(None, look.state), look.action["cell"])
     return left <= asked["x"] < left + width and top <= asked["y"] < top + height
 
@@ -630,7 +705,8 @@ class Store:
             "digest": hashlib.sha256(made.source.encode()).hexdigest(), "generations": made.generations,
             "report": {key: value for key, value in made.report.items() if key != "source"},
             "trace": [{"state": look.state, "board": look.board, "action": look.action, "sent": look.sent,
-                       "held": look.held, "frames": len(look.frames)} for look in trace.looks]}, indent=2) + "\n",
+                       "held": look.held, "frames": len(look.frames), "sources": look.sources}
+                      for look in trace.looks]}, indent=2) + "\n",
             encoding="utf-8")
         for index, look in enumerate(trace.looks):
             (path / f"look-{index}.png").write_bytes(look.png)

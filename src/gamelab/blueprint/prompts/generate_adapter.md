@@ -17,12 +17,18 @@ The host already has the game's rules (`family` and `rule_model` in the context)
         How one of the rule model's actions is played from `state`: for this game the context's `controls`
         say which inputs exist. Return {"kind": "key", "key": NAME} for a key, or {"kind": "tap", "x": X,
         "y": Y} for a tap, in whole-screen pixels, at the middle of the cell the action names, computed
-        from the board box and cell sizes your measure() found (never from the example boxes).
+        from the board box and cell sizes your measure() found (never from the example boxes). For a game
+        played by drags return {"kind": "drag", "x0": X0, "y0": Y0, "x1": X1, "y1": Y1, "ms": 500}: (X0, Y0)
+        a point on the thing the action picks up, where your code finds it on the screen, and (X1, Y1) the
+        middle of the board cells the whole thing is to cover (the middle of its bounding box once placed).
+        The host makes up for how the game draws a held thing; do not. Every point of an input must lie
+        inside the board box or inside one of layout["regions"]: for such a game measure() also returns
+        "regions": [[left, top, width, height], ...] around where the things to drag wait.
 
 `picture` is a helpers.Picture (see `helpers` for its methods). The code runs in a sandbox: no files, no network, no environment, no printing; each call must finish well within a second. Module-level constants (a colour table, measured sizes) are fine.
 
 What you know about the site:
-- `examples`: screens the host recorded, in order, each with the state a careful reader gave for it (`state`), the approximate board box (`board`, a rough estimate, often several pixels off), the move played from it (`action`) and the input the host sent for it (`sent`: a key, or the point tapped), and `cells`: for each cell, the colour most common around its middle and around its upper part, measured by the host at the approximate box. The images are those screens, in the same order.
+- `examples`: screens the host recorded, in order, each with the state a careful reader gave for it (`state`), the approximate board box (`board`, a rough estimate, often several pixels off), the move played from it (`action`) and the input the host sent for it (`sent`: a key, the point tapped, or a drag's start and the point its thing's middle was taken to), `sources` when the game is played by drags (the approximate box around each thing that waits to be dragged, in the order of the state field that lists them), and `cells`: for each cell, the colour most common around its middle and around its upper part, measured by the host at the approximate box. The images are those screens, in the same order.
 - `probes`: for the first example, scan lines across the board region as runs of [start, length, [r, g, b]] along x (for `rows`) or y (for `columns`). Use them to find the exact edges, gutters and cell sizes.
 - The host also captures each screen again moments later, with nothing played in between, and your read() must give the same state on those captures. Many sites animate while they wait for a move (tiles that bob, glow or shimmer, a moving background), so base the reading on what stays the same from frame to frame: a tile's fill colour taken over a broad area, a numeral's overall shape, not exact pixel positions or thin details. When a feature in `cells` (a colour that differs by value) is enough, prefer it.
 - A value the examples never show will appear later in the game. Read values in a way that extends to them when you can (the examples' pattern), and return null for a cell whose look you cannot place.

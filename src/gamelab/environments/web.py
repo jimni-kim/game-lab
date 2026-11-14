@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import time
 from typing import Any
 
-from ..surface import DRAG, KEYS, TAP
+from ..surface import DRAG, HOLD, KEYS, TAP
 
 # a held pointer moves this often along a drag
 INTERPOLATION_INTERVAL_MS = 16
@@ -32,11 +32,12 @@ _ELEMENTS = """(queries) => {
 
 
 class WebSurface:
-    kinds = frozenset({KEYS, TAP, DRAG})
+    kinds = frozenset({KEYS, TAP, DRAG, HOLD})
     reads_dom = True
 
     def __init__(self, page: Any, name: str = "web") -> None:
         self.page, self.name = page, name
+        self._held = (0.0, 0.0)
 
     async def size(self) -> list[int]:
         viewport = self.page.viewport_size
@@ -98,6 +99,26 @@ class WebSurface:
             await mouse.move(x1, y1)
         finally:
             await mouse.up()
+
+    async def press(self, x: float, y: float) -> None:
+        await self.page.mouse.move(x, y)
+        await self.page.mouse.down()
+        self._held = (x, y)
+
+    async def move(self, x: float, y: float, duration_ms: int) -> None:
+        """The held pointer moved to a point over `duration_ms`, in steps a game follows as a hand's."""
+        x0, y0 = self._held
+        start = time.monotonic()
+        deadline = start + duration_ms / 1000
+        while (now := time.monotonic()) < deadline:
+            await asyncio.sleep(min(INTERPOLATION_INTERVAL_MS / 1000, deadline - now))
+            ratio = min(1, (time.monotonic() - start) / (duration_ms / 1000))
+            await self.page.mouse.move(x0 + (x - x0) * ratio, y0 + (y - y0) * ratio)
+        await self.page.mouse.move(x, y)
+        self._held = (x, y)
+
+    async def lift(self) -> None:
+        await self.page.mouse.up()
 
     async def release(self) -> None:
         await self.page.mouse.up()

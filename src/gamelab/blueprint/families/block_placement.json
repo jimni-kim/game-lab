@@ -91,6 +91,35 @@
       }
     }
   },
+  "discovery": {
+    "rules": {
+      "rows": {
+        "minimum": 2
+      },
+      "cols": {
+        "minimum": 2
+      },
+      "tray_size": {
+        "minimum": 1,
+        "maximum": 5
+      }
+    },
+    "controls": {
+      "kind": "drag",
+      "source": "tray",
+      "index": "slot",
+      "onto": "anchor",
+      "duration_ms": 500
+    },
+    "settling": {
+      "timeout_s": 4,
+      "interval_s": 0.15,
+      "stable_s": 0.25,
+      "animation_s": 0.6,
+      "still": true
+    },
+    "tolerance": 4
+  },
   "policies": [
     "greedy",
     "search"

@@ -30,6 +30,7 @@ from . import adaptation, catalog
 from .adaptation import (HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made, Store, Trace,
                          _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
+from .carry import Carrier
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
@@ -123,6 +124,9 @@ class Agent:
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
         self.asked_policy, self.watch, self.cancel, self.accept_consent = policy, watch, cancel, accept_consent
         self.started = time.monotonic()
+        # drags are carried: what a held thing is drawn like is measured on the way (`carry`)
+        self.carrier = Carrier(surface)
+        self.carried_as: dict[str, Any] | None = None
         # what was found of the game nobody named, and the families still to try for it
         self.found: dict[str, Any] = {}
         self.candidates: list[str] = []
@@ -290,7 +294,7 @@ class Agent:
             self._afford()               # the move's result is the model's to read: none is sent that it cannot be asked about
         if self.watch is not None:
             await self.watch.sending(self.used + 1, action, before.state, sent, before.at)
-        await self._send(sent)
+        await self._send(sent, before)
         self.used += 1
         if self.watch is not None:
             await self.watch.sent()
@@ -370,6 +374,7 @@ class Agent:
         self.levels[before.by] += 1
         self.moves.append({"action_id": f"a{self.used}", "kind": action.get("kind"), "action": action, "level": before.by,
                            "read_after_by": after.by if after else None, "delivery": "delivered", "effect": effect,
+                           **({"carried": self.carried_as} if action is not None and self.carried_as else {}),
                            "round": self.relearned, "at_s": round(time.monotonic() - self.started, 2)})
 
     def _check_stops(self) -> None:
@@ -540,7 +545,7 @@ class Agent:
         if first:
             self.trace, self.board = Trace(self.family_id, rules, self.site), board
             self.family = catalog.family(self.family_id).bind({"rules": rules})
-        look = Look(png, state, self.board, frames=tool.frames)
+        look = Look(png, state, self.board, frames=tool.frames, sources=tool.sources)
         self.trace.looks.append(look)
         if expect is None and partial is None:
             self.unproven = look
@@ -647,7 +652,8 @@ class Agent:
         """The input a move is played with: where the adapter's `target` says for a board it read, else placed
         on the board box the model gave. None when the adapter's input is one no game is given."""
         if before.by == L2:
-            return self.adaptation.input_for(action, self.board, _shape(self.family, before.state))
+            return self.adaptation.input_for(action, self.board, _shape(self.family, before.state), before.state,
+                                             before.look.sources)
         asked = self.adapter._call("target", action=action, state=before.state, layout=self.adapter.layout)
         try:
             self.adapter.checked_input(asked)
@@ -655,8 +661,8 @@ class Agent:
             return None
         return asked
 
-    async def _send(self, sent: dict[str, Any]) -> None:
-        surface = self.surface
+    async def _send(self, sent: dict[str, Any], before: Reading) -> None:
+        surface, self.carried_as = self.surface, None
         if sent["kind"] == "key":
             if "keys" in surface.kinds:
                 await surface.key(sent["key"])
@@ -669,7 +675,7 @@ class Agent:
         elif sent["kind"] == "tap":
             await surface.tap(sent["x"], sent["y"], TAP_MS)
         else:
-            await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])
+            self.carried_as = await self.carrier.carry(before.png, (sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
 
     # ── a screen that stopped play ────────────────────────────────────
 

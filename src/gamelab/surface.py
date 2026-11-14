@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-# the inputs a surface may carry out (`Surface.kinds`)
-KEYS, TAP, DRAG = "keys", "tap", "drag"
+# the inputs a surface may carry out (`Surface.kinds`); HOLD: a pointer pressed, moved and let go in separate
+# calls with looks between them (`press`, `move`, `lift`), which a carried drag measures itself by (`carry`)
+KEYS, TAP, DRAG, HOLD = "keys", "tap", "drag", "hold"
 
 
 class Surface(Protocol):
