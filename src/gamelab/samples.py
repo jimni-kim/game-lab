@@ -8,9 +8,11 @@ read (the value the model gave at the same place in the state). A cut like no sa
 (null): the screen then goes to the model, and its reading adds the samples; the code is not written again.
 
 A sample is the cut's own pixels. How far a cut may be from a label's samples and still be it
-is learned per label from how much its own samples differ (other captures of the same screen, the same thing
-seen again): a game that draws a thing the same every time holds a cut to nearly the same pixels, one that
-animates it is given what the animation was seen to need.
+is learned per label from how much the thing differed between captures of one and the same screen: a game that
+draws a thing the same every time holds a cut to nearly the same pixels, one that animates it is given what the
+animation was seen to need. Sightings on different screens that look unlike each other (a card in the open, the
+same card half covered) are kept as different looks of the value and widen nothing (2026-11-14: widened by
+them, a covered seven of diamonds was named a seven of spades).
 """
 from __future__ import annotations
 
@@ -19,12 +21,12 @@ import json
 from typing import Any, Iterator
 
 MARK = "look"
-# how far (`distance`) a cut may be from a label's nearest sample: at least NEAR, the
-# label's own spread times SPREAD when that is more, never beyond FAR; and two labels this close to each
+# how far (`distance`) a cut may be from a label's nearest sample: at least NEAR, what the label was seen to
+# differ by between captures of one screen times SPREAD when that is more, never beyond FAR; and two labels this close to each
 # other for a cut are not told apart. NEAR is tight on purpose: two cards of one suit differ by a small numeral
 # (2026-11-14: by a mean over the whole cut a six was named a five), and a thing not named costs one
 # question, a thing misnamed a game
-NEAR, SPREAD, FAR, APART = 6.0, 1.5, 40.0, 3.0
+NEAR, SPREAD, FAR, APART = 6.0, 1.5, 24.0, 3.0
 # a sample keeps its box's pixels as they are up to this many, and is compared in parts this many pixels a side
 MOST, PART = 4096, 6
 
@@ -108,21 +110,30 @@ class Bank:
     def __init__(self) -> None:
         self.samples: dict[str, list[bytes]] = {}
         self.exact: dict[bytes, str | None] = {}
+        # how much one and the same thing was seen to differ between captures of one screen, by value
+        self.jitter: dict[str, float] = {}
 
     def __len__(self) -> int:
         return sum(len(cuts) for cuts in self.samples.values())
 
-    def add(self, label: Any, sample: bytes) -> None:
+    def add(self, label: Any, sample: bytes, *others: bytes) -> None:
+        """Keep a sample of a value, and with it the same box cut from other captures of the same screen
+        (`others`): what differs between those is how the game draws the thing from moment to moment, and
+        only that widens what is taken for it. Two sightings of a value elsewhere that look unlike each other
+        (a card in the open and one half covered) are two things to know, not a wider one."""
         key = json.dumps(label, sort_keys=True)
-        if sample not in self.samples.setdefault(key, []):
-            self.samples[key].append(sample)
-            # the same pixels read as two values tell neither
-            self.exact[sample] = key if self.exact.get(sample, key) == key else None
+        kept = self.samples.setdefault(key, [])
+        for cut_ in (sample, *others):
+            if cut_ not in kept:
+                kept.append(cut_)
+                # the same pixels read as two values tell neither
+                self.exact[cut_] = key if self.exact.get(cut_, key) == key else None
+        moved = max((distance(sample, other) for other in others), default=0.0)
+        if moved < 255.0:
+            self.jitter[key] = max(self.jitter.get(key, 0.0), moved)
 
     def _reach(self, key: str) -> float:
-        cuts = self.samples[key]
-        spread = max((distance(a, b) for index, a in enumerate(cuts) for b in cuts[index + 1:]), default=0.0)
-        return min(FAR, max(NEAR, spread * SPREAD))
+        return min(FAR, max(NEAR, self.jitter.get(key, 0.0) * SPREAD))
 
     def name(self, sample: bytes) -> tuple[bool, Any]:
         """Whether the cut is one of the things kept, and which."""
@@ -136,22 +147,36 @@ class Bank:
         return True, json.loads(near[0][1])
 
 
-def learn(raw: Any, state: dict[str, Any], pngs: list[bytes]) -> tuple[list[tuple[Any, bytes]], str | None]:
-    """The samples a screen a model read gives for a reading with marks: each marked box cut from each capture
-    of the screen, with the value the state has there. Also what is wrong when the reading is not shaped as
-    the state (the code counted the things of a place differently), or a box is off the screen."""
+def learn(raw: Any, state: dict[str, Any], pngs: list[bytes]) -> tuple[list[tuple[Any, list[bytes]]], str | None]:
+    """The samples a screen a model read gives for a reading with marks: for each mark the value the state has
+    there, and its box cut from each capture of the screen (the screen itself first). Also what is wrong when
+    the reading is not shaped as the state (the code counted the things of a place differently), or a box is
+    off the screen."""
     if not _shaped(raw, state):
         return [], "read() gave a state shaped differently (other keys, or another number of things in a list)"
     found = []
     images = [_open(png) for png in pngs]
     for path, box in marks(raw):
-        label = _at(state, path)
-        for image in images:
-            sample = cut(image, box)
-            if sample is None:
-                return [], f"read() gave a box off the screen at {list(path)}: {box}"
-            found.append((label, sample))
+        cuts = [cut(image, box) for image in images]
+        if any(sample is None for sample in cuts):
+            return [], f"read() gave a box off the screen at {list(path)}: {box}"
+        found.append((_at(state, path), cuts))
     return found, None
+
+
+def placed(raw: Any, png: bytes) -> list[tuple[tuple, bytes]]:
+    """Each mark of a reading with the sample its box gives on a capture (marks off the picture left out)."""
+    image = _open(png)
+    return [(path, sample) for path, box in marks(raw) if (sample := cut(image, box)) is not None]
+
+
+def put(state: Any, path: tuple, value: Any) -> Any:
+    """A copy of a state with the value at `path` replaced."""
+    if not path:
+        return value
+    if isinstance(state, dict):
+        return {**state, path[0]: put(state[path[0]], path[1:], value)}
+    return [put(part, path[1:], value) if index == path[0] else part for index, part in enumerate(state)]
 
 
 def resolve(raw: Any, png: bytes, bank: Bank) -> Any:

@@ -461,6 +461,10 @@ class Agent:
                 if reading is not None:
                     self.relearned += 1
                     await self._recheck()
+                elif expect is None and self.why == "inconsistent":
+                    # the model's reading and what the adapter made of the screen do not go together: the
+                    # adapter is doubted, and the screen read without it
+                    self.distrusted = True
                 return reading
         return await self._read_model(expect, None)
 
@@ -541,7 +545,8 @@ class Agent:
     async def _read_model(self, expect: tuple[Reading, dict[str, Any]] | None, partial: dict[str, Any] | None) -> Reading | None:
         """The screen read by the model into a state the rule model accepts, and kept as a look. With `expect`
         it must be a result the rules allow of that move (or the board unchanged: a move the game did not
-        take); with `partial`, what the adapter did read of the screen must agree with it."""
+        take); with `partial` and no move to hold it to, what the adapter did read of the screen must agree
+        with it."""
         self._afford()
         if expect is None:
             self._drop_unproven()
@@ -551,8 +556,11 @@ class Agent:
             await self._rest()
 
         def accept(state: dict[str, Any]) -> bool:
-            return (partial is None or _agrees(_board(partial), _board(state))) and (
-                expect is None or self._effect(expect[0].state, expect[1], state) in ("confirmed", "absent"))
+            # a result the rules allow of the move just played needs no leave from the adapter: what the adapter
+            # made of the screen is held to only where nothing else vouches for the reading
+            if expect is not None:
+                return self._effect(expect[0].state, expect[1], state) in ("confirmed", "absent")
+            return partial is None or _agrees(_board(partial), _board(state))
         started = time.monotonic()
         try:
             if first and tool.first is not None:

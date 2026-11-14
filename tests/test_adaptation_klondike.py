@@ -344,10 +344,13 @@ def test_a_cut_is_named_by_its_nearest_sample_and_one_like_none_is_not_named():
     assert bank.name(flat((120, 120, 120))) == (False, None)
     # a small difference in one place is a difference: the same red with a mark in its corner is not the red kept
     assert bank.name(flat((200, 10, 10), spot=(0, 0, 0))) == (False, None)
-    # a thing seen to vary is given the room it was seen to need
-    assert bank.name(flat((10, 10, 180))) == (False, None)
-    bank.add("B", flat((10, 10, 190)))
-    assert bank.name(flat((10, 10, 180))) == (True, "B")
+    # a thing seen to vary between captures of one screen is given the room it was seen to need
+    assert bank.name(flat((10, 10, 150))) == (False, None)
+    bank.add("B", blue, flat((10, 10, 170)))
+    assert bank.name(flat((10, 10, 150))) == (True, "B")
+    # another look of the same value seen elsewhere is one more thing to know, and widens nothing
+    bank.add("R", flat((120, 10, 10)))
+    assert bank.name(flat((120, 10, 10))) == (True, "R") and bank.name(flat((160, 10, 10))) == (False, None)
     # the same pixels read as two values tell neither
     bank.add("X", red)
     assert bank.name(red) == (False, None)

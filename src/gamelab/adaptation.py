@@ -663,7 +663,7 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
     try:
         # each look as the code reads it (marks and all, `samples`), and the samples it gives
         raws: list[dict[str, Any] | None] = []
-        cuts: list[list[tuple[Any, bytes]]] = []
+        cuts: list[list[tuple[Any, list[bytes]]]] = []
         # for each screen read otherwise than recorded: whether only what samples name differs
         named: list[bool] = []
         for index, look in enumerate(trace.looks):
@@ -682,6 +682,7 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
                 fail("read", index, f"{problem}; expected {json.dumps(_board(look.state))}")
                 continue
             raws[index], cuts[index] = raw, found
+        report["corrected"] = _settle_slips(trace, raws, cuts, family)
         states: list[dict[str, Any] | None] = []
         for index, look in enumerate(trace.looks):
             raw = raws[index]
@@ -691,11 +692,11 @@ def adopt(source: str, trace: Trace) -> dict[str, Any]:
             # by the samples of the other screens it was shown: right, or not told (a thing seen here first)
             others, whole = samples.Bank(), samples.Bank()
             for other, found in enumerate(cuts):
-                for label, sample in found:
+                for label, group in found:
                     if other == index or not trace.looks[other].held:
-                        whole.add(label, sample)
+                        whole.add(label, *group)
                     if other != index and not trace.looks[other].held:
-                        others.add(label, sample)
+                        others.add(label, *group)
             unseen = samples.resolve(raw, look.png, others)
             marked = {path for path, _ in samples.marks(raw)}
             if not _agrees(_board(unseen), _board(look.state)):
@@ -805,6 +806,34 @@ def _filled(read: Any, prior: Any) -> Any:
     if isinstance(read, list) and isinstance(prior, list) and len(read) == len(prior):
         return [_filled(value, other) for value, other in zip(read, prior)]
     return read
+
+
+def _settle_slips(trace: Trace, raws: list[dict[str, Any] | None], cuts: list[list[tuple[Any, list[bytes]]]],
+                  family: Any) -> int:
+    """A model misreads a thing now and then. Where the very pixels one look's reading names one way are named
+    another way by at least two other looks and by more of them, that reading slipped: the look's state is put
+    right (when the rules still take it) and its samples are cut again. Returns how many values were put
+    right. The looks are the trace's own: what is put right stays right for whoever reads them next."""
+    seen = [samples.placed(raw, look.png) if raw is not None else [] for raw, look in zip(raws, trace.looks)]
+    votes: dict[bytes, dict[str, int]] = {}
+    for look, found in zip(trace.looks, seen):
+        for path, sample in found:
+            key = json.dumps(samples._at(look.state, path), sort_keys=True)
+            votes.setdefault(sample, {})[key] = votes.setdefault(sample, {}).get(key, 0) + 1
+    settled = 0
+    for index, (look, found) in enumerate(zip(trace.looks, seen)):
+        changed = False
+        for path, sample in found:
+            mine = json.dumps(samples._at(look.state, path), sort_keys=True)
+            said = votes[sample]
+            best = max(said, key=said.get)
+            if best != mine and said[best] >= 2 and said[best] > said[mine]:
+                fixed = samples.put(look.state, path, json.loads(best))
+                if not family.model.validate(fixed, family.rules):
+                    look.state, changed, settled = fixed, True, settled + 1
+        if changed:
+            cuts[index] = samples.learn(raws[index], look.state, [look.png, *look.frames])[0]
+    return settled
 
 
 def _differing(one: Any, other: Any, path: tuple = ()) -> list[tuple]:

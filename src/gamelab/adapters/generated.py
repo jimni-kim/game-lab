@@ -144,8 +144,8 @@ class GeneratedAdapter:
         for look in looks:
             if isinstance(self.measure(look.png), NeedObservation) or not isinstance(raw := self.raw(look.png), dict):
                 continue
-            for label, sample in samples.learn(raw, look.state, [look.png, *look.frames])[0]:
-                self.bank.add(label, sample)
+            for label, group in samples.learn(raw, look.state, [look.png, *look.frames])[0]:
+                self.bank.add(label, *group)
 
     def locate(self, png: bytes, box: list[int]) -> bool | None:
         return None
