@@ -29,7 +29,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .. import profiles
+from .. import agent, profiles
+from ..adaptation import Store
 from ..environments.android import AndroidSurface
 from ..play import play
 from . import measure
@@ -73,7 +74,10 @@ async def main(args: argparse.Namespace) -> int:
         raise SystemExit(f"no Android device answers adb ({error}): start the emulator or attach a device") from None
     if args.check:
         return await check(surface, args.out)
-    if bool(args.profile) == bool(args.family):
+    if args.generate:
+        if args.profile or not (args.family or args.identify):
+            raise SystemExit("--generate plays with no profile: give --family, or --identify to find it from the screen")
+    elif bool(args.profile) == bool(args.family):
         raise SystemExit("give --profile or --family")
     if args.compute is None:
         raise SystemExit("--compute is required to play")
@@ -82,6 +86,8 @@ async def main(args: argparse.Namespace) -> int:
         ([{"launch": args.package}, {"wait_ms": LAUNCH_WAIT_MS}] if args.package else [])
     goal, budget = measure.goal_and_budget(args)
     client, model = measure.vision_model(args)
+    if args.generate and model is None:
+        raise SystemExit("--generate needs a model: name one with --vision-model")
     base = args.profile or args.package or args.family
     results = []
     try:
@@ -92,10 +98,18 @@ async def main(args: argparse.Namespace) -> int:
             recorder = measure.Recorder(name)
             answered = len(model.answers) if model else 0
             started = time.monotonic()
-            run = await play(surface, **({"profile": profile} if profile else {"family_id": args.family}),
-                             goal=goal, budget=budget, policy=args.policy, model=model, watch=recorder,
-                             accept_consent=args.accept_consent, run_id=name)
-            result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started)
+            adapted = None
+            if args.generate:
+                # read by an adapter a model writes for this app, by the agent's own loop (as `eval web --generate`)
+                run, adapted = await agent.play(surface, model, None if args.identify else args.family, goal=goal,
+                                                budget=budget, policy=args.policy, store=Store(args.adapter_store),
+                                                fresh=args.regenerate, watch=recorder, accept_consent=args.accept_consent)
+            else:
+                run = await play(surface, **({"profile": profile} if profile else {"family_id": args.family}),
+                                 goal=goal, budget=budget, policy=args.policy, model=model, watch=recorder,
+                                 accept_consent=args.accept_consent, run_id=name)
+            result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started,
+                                    **({"adaptation": adapted} if adapted is not None else {}))
             request = {"profile_id": args.profile, "family": args.family, "app": await surface.address(),
                        "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
             try:
@@ -122,6 +136,13 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--serial", help="the device (adb -s), when more than one is attached")
     parser.add_argument("--keys", action="store_true", help="send D-pad key events for directions, not swipes")
     parser.add_argument("--setup", type=Path, help="a JSON list of steps run before each game (see above)")
+    parser.add_argument("--generate", action="store_true",
+                        help="read the game by an adapter a model writes for this app (no profile, no hand-written reader)")
+    parser.add_argument("--identify", action="store_true",
+                        help="with --generate: do not tell the harness the game's family; it is found from the screen")
+    parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "adapters",
+                        help="where generated adapters are kept by app and reused")
+    parser.add_argument("--regenerate", action="store_true", help="write a new adapter even when one is kept for the app")
     measure.game_arguments(parser)
     # --check plays nothing and needs no budget
     next(action for action in parser._actions if action.dest == "compute").required = False
