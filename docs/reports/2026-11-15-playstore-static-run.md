@@ -280,3 +280,21 @@
   - userdata가 그 시점으로 되돌아가, 시험용 Google 계정 로그인과 그 뒤 설치한 앱이 모두 사라졌습니다(`dumpsys account`: Accounts 0, 서드파티 앱 0개).
   - 평소 설정(lavapipe)에서는 GPU가 맞지 않아 스냅샷을 읽지 못하고 콜드 부팅했기 때문에, 그동안은 디스크가 유지됐던 것입니다.
   - 블록 블라스트가 GPU host에서 뜨는지는 확인하지 못했습니다. 앱이 이미 사라졌기 때문입니다.
+
+### 블록 블라스트 원인 확인 (2026-11-15, 사용자가 다시 로그인한 뒤)
+
+- **준비**: 에뮬레이터 저장소(`userdata-qemu.img.qcow2` 등)를 APFS 복제로 백업했습니다(`~/.android/avd/army-game-backup-20261115/`). 시험은 모두 `-no-snapshot-load`로 켜서 스냅샷을 읽지 않게 했습니다. 그 결과 GPU 방식을 바꿔도 계정 1개와 앱 8개가 그대로 남았습니다.
+- **GPU 방식별 결과**: 셋 모두 앱을 띄우고 1초쯤 뒤에 `GLThread: IllegalArgumentException: No config chosen`이 났습니다(logcat으로 확인).
+
+  | 방식 | 에뮬레이터가 고른 렌더러 | 결과 |
+  |---|---|---|
+  | 기본 | lavapipe / swangle | 같은 오류 |
+  | `-gpu swiftshader_indirect` | swiftshader / swangle | 같은 오류 |
+  | `-gpu host` | host / host | 같은 오류 |
+  | `-gpu guest` | 지원 안 됨, lavapipe로 대체 | 같은 오류 |
+
+- **해석**
+  - 확인한 것: 오류는 `GLSurfaceView$BaseConfigChooser.chooseConfig`에서 납니다. 앱이 요구한 조건에 맞는 EGL 설정이 없다는 뜻입니다.
+  - 추정: 호스트 렌더러와 상관없이 에뮬레이터의 EGL 계층(`ro.hardware.egl = emulation`)이 내주는 설정 목록에 앱이 원하는 조합이 없는 것으로 봅니다. 앱이 요구하는 정확한 조합은 확인하지 못했습니다. 게임 코드가 보안 모듈(`libnesec.so`)로 보호돼 있어, APK 안의 dex 14개 어디에도 설정 선택 호출이 없습니다.
+- **결론**: 이 에뮬레이터에서는 블록 블라스트가 그리기를 시작하지 못하므로 실측할 수 없습니다. 에이전트나 입력의 문제가 아닙니다. 재려면 실제 기기가 필요합니다. 같은 장르는 Woodoku Blast로 재었습니다(목표 달성).
+- 에뮬레이터는 기본 설정(`-no-snapshot-load`)으로 되돌려 데이터를 확인한 뒤 껐습니다.
