@@ -8,7 +8,7 @@ The context says why the code stopped (`reason`):
 - `button_unseen`: the game shows a message the code knows no button for.
 - `continue_after_win`: the game shows its win message and the code plays on in the same game: press what keeps this game going, never what starts another.
 
-It also gives `state` (the last board the code read, or null), `recent` (the last moves and their effects), `screen` (the image's width and height in pixels), `inputs` (the kinds of input this screen takes), `keys` (the keys you may press) and `tried` (the inputs already sent for this stop, each with whether the screen changed afterwards). Do not repeat an input that changed nothing.
+It also gives `state` (the last board the code read, or null), `recent` (the last moves and their effects), `screen` (the image's width and height in pixels), `inputs` (the kinds of input this screen takes), `keys` (the keys you may press) and `tried` (the inputs already sent for this stop, each with whether the screen changed afterwards). Do not repeat an input that changed nothing. When the person said anything about the game, their words are given too (`hint`): where the screen offers several games, modes or sizes, open the one they name, scrolling a list to reach it when it is not in view, and never another in its place.
 
 Look at what is actually in the way: a notice, a card or an animation over the board, a tutorial hint, a reward or item to pick, a "continue" or "keep playing" prompt, a consent request, a start screen, a page still loading. Choose the one input that most plainly returns to the same game in play:
 

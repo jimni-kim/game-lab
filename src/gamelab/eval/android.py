@@ -10,7 +10,8 @@ The device must already be attached (`adb devices`); the emulator this was set u
   .venv/bin/python -m gamelab.eval android --family slide_merge --package com.example.game \\
       --objective reach_value --target 2048 --compute 500 --out out/app
       the agent's loop (`agent.play`) on the app: a model reads the first moves and writes its adapter;
-      with `--identify` in place of `--family` the game's family is found from the screen
+      without `--family` the game is found from the screen, and one no family is registered for is
+      played by a model or by a family made for it
 
 `--setup FILE` names a JSON list of steps run before each game, standing in for the person starting it:
 `{"force_stop": PACKAGE}`, `{"launch": PACKAGE}`, `{"tap": [x, y]}`, `{"swipe": [x0, y0, x1, y1]}`,
@@ -72,8 +73,6 @@ async def main(args: argparse.Namespace) -> int:
         raise SystemExit(f"no Android device answers adb ({error}): start the emulator or attach a device") from None
     if args.check:
         return await check(surface, args.out)
-    if not (args.family or args.identify):
-        raise SystemExit("give --family, or --identify to find it from the screen")
     if args.compute is None:
         raise SystemExit("--compute is required to play")
     steps = json.loads(args.setup.read_text(encoding="utf-8")) if args.setup else \
@@ -83,7 +82,7 @@ async def main(args: argparse.Namespace) -> int:
     if model is None:
         raise SystemExit("a game is played with a model: name one with --vision-model")
     writer_client, writer = measure.writer_model(args, model)
-    base = args.package or args.family
+    base = args.package or args.family or "app"
     results = []
     try:
         for number in range(1, args.games + 1):
@@ -94,10 +93,11 @@ async def main(args: argparse.Namespace) -> int:
             answered = len(model.answers)
             started = time.monotonic()
             # read by an adapter a model writes for this app, by the agent's own loop (as `eval web`)
+            # with no family named the agent finds it from the screen, or plays a game it has none for
             run, adapted = await agent.play(surface, model, None if args.identify else args.family, goal=goal,
                                             budget=budget, policy=args.policy, store=Store(args.adapter_store),
                                             fresh=args.regenerate, watch=recorder, accept_consent=args.accept_consent,
-                                            writer=writer)
+                                            writer=writer, hint=args.hint)
             result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, adaptation=adapted)
             request = {"family": args.family, "app": await surface.address(),
                        "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
@@ -119,7 +119,8 @@ async def main(args: argparse.Namespace) -> int:
 
 def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--check", action="store_true", help="capture one screen and report the device; play nothing")
-    parser.add_argument("--family", help="the game's family (else --identify)")
+    parser.add_argument("--family", help="the game's family; without it the harness finds it from the screen")
+    parser.add_argument("--hint", help="what the person said of the game, told to the model that finds what it is")
     parser.add_argument("--package", help="the app to bring to the front before the first game")
     parser.add_argument("--serial", help="the device (adb -s), when more than one is attached")
     parser.add_argument("--keys", action="store_true", help="send D-pad key events for directions, not swipes")

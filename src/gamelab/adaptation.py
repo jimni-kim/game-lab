@@ -1052,7 +1052,9 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
             break
         if tried == tries:
             break
-        if not await recovery.attempt(surface, "game_not_shown", {"state": None, "recent": []}):
+        # the person's words go with the question: where several games are offered, they say which one
+        if not await recovery.attempt(surface, "game_not_shown",
+                                      {"state": None, "recent": [], **({"hint": hint} if hint else {})}):
             # nothing to press is not nothing to come: a screen still loading is looked at again, unless the
             # model gave the game up
             if ((recovery.log[-1]["action"] or {}).get("kind")) == "give_up":

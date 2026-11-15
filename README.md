@@ -47,7 +47,7 @@ eval/                       평가 CLI (policies, web, android)
 
 # Android (에뮬레이터를 먼저 켠다: emulator -avd army-game)
 .venv/bin/python -m gamelab.eval android --check --out out/device        # 연결 확인과 캡처 한 장
-.venv/bin/python -m gamelab.eval android --family slide_merge --package PKG --compute 500 --out out/app
+.venv/bin/python -m gamelab.eval android --package PKG --hint "어느 게임인지" --compute 500 --out out/app
 
 .venv/bin/python -m gamelab.eval offline --vision-model MODEL --out out/offline/MODEL   # 사이트 없이 보관된 화면으로 모델을 잼
 .venv/bin/python -m gamelab.eval web --ask "https://… 에서 이 퍼즐을 끝까지 풀어줘" --compute 200 --out out/ask   # 말로 한 요청: 주소와 목표를 거기서 읽음

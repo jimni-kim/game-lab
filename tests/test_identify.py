@@ -104,11 +104,13 @@ async def test_a_screen_before_the_game_is_got_past_and_asked_about_again(tmp_pa
     reader = Reader(fake, [mines_source()], recovering=[{"kind": "tap", "at": middle(fake.button)}])
     guide = Guide(reader, [None, ["minesweeper"]])
     played, made = await play_adaptive(fake, guide, None, goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300),
-                                       store=Store(tmp_path))
+                                       store=Store(tmp_path), hint="the mines game")
     assert (played.record["outcome"], played.record["family"]) == ("goal_reached", "minesweeper"), (played.record, made)
     assert made["identified"]["questions"] == 2 and made["identified"]["inputs"] == 1
     asked = next(context for kind, context, _ in reader.asked if kind == "recover")
     assert asked["family"] is None and asked["reason"] == "game_not_shown"
+    # what the person said goes with the question: a screen offering several games is told which is meant
+    assert asked["hint"] == "the mines game"
     assert fake.taps[0] == tuple(middle(fake.button))
 
 

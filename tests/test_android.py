@@ -29,6 +29,8 @@ class Adb:
             return b"Physical size: 1080x2400\nOverride size: 720x1600\n"
         if args[1:3] == ["dumpsys", "window"]:
             return b"  mCurrentFocus=Window{1a2b3c u0 com.example.game/com.example.game.Main}\n"
+        if args[1:3] == ["cmd", "package"]:
+            return b"priority=0 preferredOrder=0\n" + args[-1].encode() + b"/.Main\n"
         return b""
 
 
@@ -68,6 +70,7 @@ async def test_the_size_and_the_app_are_asked_of_the_device():
     assert await surface.address() == "android://com.example.game"
     await surface.launch("com.other")
     assert await surface.address() == "android://com.other"
+    assert surface.run.ran[-1] == ["shell", "am", "start", "-n", "com.other/.Main"]
 
 
 async def test_a_game_is_played_on_a_device_by_swipes(tmp_path, monkeypatch):

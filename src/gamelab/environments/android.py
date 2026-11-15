@@ -108,7 +108,7 @@ class AndroidSurface:
 
     async def foreground(self) -> str | None:
         """The package of the window that has the focus."""
-        found = _FOCUS.search((await self.run(["shell", "dumpsys", "window", "windows"])).decode(errors="replace"))
+        found = _FOCUS.search((await self.run(["shell", "dumpsys", "window", "displays"])).decode(errors="replace"))
         return found[1] if found else None
 
     async def address(self) -> str:
@@ -116,7 +116,11 @@ class AndroidSurface:
 
     async def launch(self, package: str) -> None:
         """Bring the app's launcher activity to the front."""
-        await self.run(["shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])
+        found = (await self.run(["shell", "cmd", "package", "resolve-activity", "--brief", "-c",
+                                 "android.intent.category.LAUNCHER", package])).decode(errors="replace").split()
+        if not found or "/" not in found[-1]:
+            raise RuntimeError(f"no launcher activity for {package}")
+        await self.run(["shell", "am", "start", "-n", found[-1]])
         self.package = package
 
     async def key(self, key: str) -> None:
