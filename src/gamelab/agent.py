@@ -290,8 +290,8 @@ class Agent:
         (a gateway's timeout is not the game's end)."""
         for attempt in range(1 + IDENTIFY_RETRIES):
             try:
-                return await self._asking(identify(self.surface, self.model, Recovery(self.model, None, known=[]),
-                                                   hint=self.hint))
+                recovery = Recovery(self.model, None, known=[], accept_consent=self.accept_consent)
+                return await self._asking(identify(self.surface, self.model, recovery, hint=self.hint))
             except Exception as error:
                 log.info("the game could not be asked about: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})

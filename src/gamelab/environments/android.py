@@ -1,7 +1,9 @@
 """An Android device or emulator as a surface, driven with adb alone.
 
-A look is `adb exec-out screencap -p`; inputs are `adb shell input tap | swipe | keyevent`. Coordinates
-are the device's own pixels, as its captures show them. Nothing is installed on the device.
+A look is `adb exec-out screencap -p`; inputs are `adb shell input tap | swipe | keyevent | text`, and a pointer
+held, moved and let go is `input motionevent DOWN | MOVE | UP` (a stroke's whole way sent as one shell line, so
+it is not slowed by a round trip a point). Coordinates are the device's own pixels, as its captures show them.
+Nothing is installed on the device.
 
 A game is not given keys here unless asked (`keys=True`, a D-pad's key events): the environment swipes a
 direction across the board instead, as a hand would.
@@ -16,7 +18,7 @@ import re
 from typing import Any, Awaitable, Callable
 
 from .. import pixels
-from ..surface import DRAG, KEYS, TAP
+from ..surface import BACK, DRAG, HOLD, KEYS, RELAUNCH, SCROLL, TAP, TEXT, segments
 
 SDK = Path("/opt/homebrew/share/android-commandlinetools")
 ADB_VARIABLE = "GAMELAB_ADB"
@@ -25,12 +27,34 @@ COMMAND_TIMEOUT_S = 20.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # a press held longer than this is sent as a swipe that does not move (`input tap` holds for no set time)
 LONG_PRESS_MS = 200
+# a held pointer moves at most this far (device pixels) between two MOVE events, in at most this many a leg;
+# one `input motionevent` takes about this long itself (measured 40 to 80 ms on the emulator, 2026-11-15), so
+# only the rest of a step's time is slept
+STEP_PX, STEPS_MOST, MOTION_MS = 48, 24, 50
+# an app started again draws its first screen: wait this long
+RELAUNCH_WAIT_S = 3.0
 KEYCODES = {"ArrowUp": "KEYCODE_DPAD_UP", "ArrowDown": "KEYCODE_DPAD_DOWN", "ArrowLeft": "KEYCODE_DPAD_LEFT",
             "ArrowRight": "KEYCODE_DPAD_RIGHT", "Enter": "KEYCODE_ENTER", "Escape": "KEYCODE_BACK", " ": "KEYCODE_SPACE"}
 _FOCUS = re.compile(r"mCurrentFocus=Window\{\S+ \S+ ([\w.]+)/")
 _SIZE = re.compile(r"(Override|Physical) size: (\d+)x(\d+)")
 
 Run = Callable[[list[str]], Awaitable[bytes]]
+
+
+def _sleep(ms: float) -> list[str]:
+    return [f"sleep {ms / 1000:.3f}"] if ms > 0 else []
+
+
+def _moves(start: tuple[float, float] | list[float], end: tuple[float, float] | list[float], duration_ms: int) -> list[str]:
+    """The MOVE events from one point to another over `duration_ms`, no further than STEP_PX apart."""
+    length = ((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5
+    steps = max(1, min(STEPS_MOST, -(-int(length) // STEP_PX)))
+    lines = []
+    for step in range(1, steps + 1):
+        ratio = step / steps
+        lines += [*_sleep(duration_ms / steps - MOTION_MS),
+                  f"input motionevent MOVE {round(start[0] + (end[0] - start[0]) * ratio)} {round(start[1] + (end[1] - start[1]) * ratio)}"]
+    return lines
 
 
 def adb_path() -> str:
@@ -69,8 +93,10 @@ class AndroidSurface:
         # the app the game is, when the caller knows it; else whichever has the focus when asked
         self.package = package
         self.name = f"android:{serial or 'device'}"
-        self.kinds = frozenset({TAP, DRAG, *([KEYS] if keys else [])})
+        self.kinds = frozenset({TAP, DRAG, HOLD, TEXT, SCROLL, BACK, RELAUNCH, *([KEYS] if keys else [])})
         self._size: list[int] | None = None
+        # where a pointer pressed in one call and let go in another is held, if it is
+        self._held: tuple[float, float] | None = None
 
     async def size(self) -> list[int]:
         if self._size is None:
@@ -135,5 +161,56 @@ class AndroidSurface:
     async def drag(self, x0: float, y0: float, x1: float, y1: float, duration_ms: int) -> None:
         await self.run(["shell", "input", "swipe", *(str(round(value)) for value in (x0, y0, x1, y1)), str(duration_ms)])
 
+    async def shell(self, lines: list[str]) -> None:
+        """Commands run one after another in one shell on the device."""
+        await self.run(["shell", "; ".join(lines)])
+
+    async def press(self, x: float, y: float) -> None:
+        await self.run(["shell", "input", "motionevent", "DOWN", str(round(x)), str(round(y))])
+        self._held = (x, y)
+
+    async def move(self, x: float, y: float, duration_ms: int) -> None:
+        """The held pointer moved to a point over `duration_ms`, in steps a game follows as a hand's."""
+        await self.shell(_moves(self._held or (x, y), (x, y), duration_ms))
+        self._held = (x, y)
+
+    async def lift(self) -> None:
+        x, y = self._held or (0, 0)
+        self._held = None
+        await self.run(["shell", "input", "motionevent", "UP", str(round(x)), str(round(y))])
+
+    async def stroke(self, points: list[list[float]], duration_ms: int, hold_ms: int) -> None:
+        lines = [f"input motionevent DOWN {round(points[0][0])} {round(points[0][1])}", *_sleep(hold_ms)]
+        for start, (end, share) in zip(points, segments(points)):
+            lines += _moves(start, end, round(duration_ms * share))
+        lines += [*_sleep(hold_ms), f"input motionevent UP {round(points[-1][0])} {round(points[-1][1])}"]
+        await self.shell(lines)
+
+    async def taps(self, x: float, y: float, count: int, gap_ms: int) -> None:
+        # in one shell: taps sent from here one by one would come further apart than a double tap allows
+        tap = f"input tap {round(x)} {round(y)}"
+        await self.shell([line for index in range(count) for line in ([*_sleep(gap_ms)] if index else []) + [tap]])
+
+    async def type(self, text: str) -> None:
+        # `input text` takes a space as `%s`; it types only plain letters and digits (a Hangul syllable fails)
+        await self.run(["shell", "input", "text", text.replace(" ", "%s")])
+
+    async def scroll(self, x: float, y: float, steps: int) -> None:
+        # a wheel's VSCROLL is up when more than 0
+        await self.run(["shell", "input", "mouse", "scroll", str(round(x)), str(round(y)), "--axis", f"VSCROLL,{-steps}"])
+
+    async def back(self) -> None:
+        await self.run(["shell", "input", "keyevent", "KEYCODE_BACK"])
+
+    async def relaunch(self) -> None:
+        package = self.package or await self.foreground()
+        if package is None:
+            raise RuntimeError("no app to start again")
+        await self.run(["shell", "am", "force-stop", package])
+        await self.launch(package)
+        await asyncio.sleep(RELAUNCH_WAIT_S)
+
     async def release(self) -> None:
-        """`input` presses and releases within one command: nothing stays held."""
+        """Let go of a pointer a stroke in separate calls still holds; `input` commands release by themselves."""
+        if self._held is not None:
+            await self.lift()

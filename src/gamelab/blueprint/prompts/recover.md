@@ -15,6 +15,7 @@ Look at what is actually in the way: a notice, a card or an animation over the b
 - `{"kind": "tap", "at": [x, y]}`: press and release at a point in image pixels.
 - `{"kind": "key", "key": "..."}`: one of `keys`.
 - `{"kind": "swipe", "from": [x, y], "to": [x, y]}`: a short drag.
+- `{"kind": "back"}`: the device's own back button, when `inputs` names it: it closes a notice, a menu or an advertisement on a phone.
 - `{"kind": "wait", "ms": n}`: wait up to 5000 ms, for a screen that is loading or animating.
 - `{"kind": "none"}`: the board is plainly visible, uncovered and waiting for a move, so nothing is in the way (the code's reading is at fault, not the screen).
 - `{"kind": "give_up"}`: no input can return to the game (the page is gone, a login or payment is required). When the reason is that this game itself has ended and the screen plainly says so (its own end message stands over or in place of the board), add how it ended: `{"kind": "give_up", "end": "won"}` or `{"kind": "give_up", "end": "lost"}`.

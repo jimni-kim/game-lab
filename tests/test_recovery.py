@@ -88,6 +88,9 @@ def test_only_an_input_on_the_screen_a_listed_key_or_a_bounded_wait_is_taken(act
 
 def test_an_input_the_surface_cannot_carry_out_is_not_taken():
     assert check({"kind": "key", "key": "Enter"}, (100, 100), frozenset({"tap", "drag"})) is None
+    # a phone's back button, only on a surface that has one
+    assert check({"kind": "back"}, (100, 100), frozenset({"tap", "back"})) == {"kind": "back"}
+    assert check({"kind": "back"}, (100, 100), frozenset({"tap", "drag"})) is None
 
 
 async def test_a_cover_nothing_reads_past_is_got_past_by_the_models_own_input_and_play_goes_on():

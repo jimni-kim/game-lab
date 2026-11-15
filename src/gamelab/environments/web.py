@@ -9,10 +9,12 @@ from contextlib import asynccontextmanager
 import time
 from typing import Any
 
-from ..surface import DRAG, HOLD, KEYS, TAP
+from ..surface import DRAG, HOLD, KEYS, RELAUNCH, SCROLL, SECONDARY, TAP, TEXT, segments
 
 # a held pointer moves this often along a drag
 INTERPOLATION_INTERVAL_MS = 16
+# one notch of the wheel, in CSS pixels
+WHEEL_STEP_PX = 100
 # what an element read gives back of one element at most (the rest is `cut`): a board's tiles, a score, a
 # banner, never a scrape
 MAX_CLASSES, MAX_CLASS, MAX_TEXT = 16, 64, 64
@@ -32,7 +34,7 @@ _ELEMENTS = """(queries) => {
 
 
 class WebSurface:
-    kinds = frozenset({KEYS, TAP, DRAG, HOLD})
+    kinds = frozenset({KEYS, TAP, DRAG, HOLD, TEXT, SCROLL, SECONDARY, RELAUNCH})
     reads_dom = True
 
     def __init__(self, page: Any, name: str = "web") -> None:
@@ -119,6 +121,38 @@ class WebSurface:
 
     async def lift(self) -> None:
         await self.page.mouse.up()
+
+    async def stroke(self, points: list[list[float]], duration_ms: int, hold_ms: int) -> None:
+        await self.press(*points[0])
+        try:
+            await asyncio.sleep(hold_ms / 1000)
+            for (x, y), share in segments(points):
+                await self.move(x, y, round(duration_ms * share))
+            await asyncio.sleep(hold_ms / 1000)
+        finally:
+            await self.lift()
+
+    async def taps(self, x: float, y: float, count: int, gap_ms: int) -> None:
+        if count == 2:
+            # one double click, which a page also hears as `dblclick`
+            await self.page.mouse.dblclick(x, y)
+            return
+        for index in range(count):
+            await asyncio.sleep(gap_ms / 1000 if index else 0)
+            await self.page.mouse.click(x, y)
+
+    async def type(self, text: str) -> None:
+        await self.page.keyboard.type(text)
+
+    async def scroll(self, x: float, y: float, steps: int) -> None:
+        await self.page.mouse.move(x, y)
+        await self.page.mouse.wheel(0, steps * WHEEL_STEP_PX)
+
+    async def right_tap(self, x: float, y: float) -> None:
+        await self.page.mouse.click(x, y, button="right")
+
+    async def relaunch(self) -> None:
+        await self.page.reload()
 
     async def release(self) -> None:
         await self.page.mouse.up()

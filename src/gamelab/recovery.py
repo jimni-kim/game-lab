@@ -24,11 +24,11 @@ from .model import Model, Msg, TurnRequest
 
 log = logging.getLogger("gamelab.recovery")
 
-TAP, KEY, SWIPE, WAIT, NONE, GIVE_UP = "tap", "key", "swipe", "wait", "none", "give_up"
+TAP, KEY, SWIPE, WAIT, NONE, GIVE_UP, BACK = "tap", "key", "swipe", "wait", "none", "give_up", "back"
 # what a model giving up may say of the game itself: its own end screen, won or lost, stands where the board was
 ENDS = ("won", "lost")
 # what an input of the model's is carried out with (`Surface.kinds`)
-NEEDS = {TAP: "tap", KEY: "keys", SWIPE: "drag"}
+NEEDS = {TAP: "tap", KEY: "keys", SWIPE: "drag", BACK: "back"}
 # the keys it may press: the ones a game or a notice is answered with, never a shortcut or text
 KEYS = frozenset({"ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Enter", "Escape", " "})
 # inputs of the model's in a row, with no move confirmed between them, before the game ends as it would have
@@ -115,7 +115,7 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
         return {"kind": WAIT, "ms": action["ms"]}
     if kind == GIVE_UP and action.get("end") in ENDS:
         return {"kind": kind, "end": action["end"]}
-    if kind in (NONE, GIVE_UP):
+    if kind in (NONE, GIVE_UP, BACK):
         return {"kind": kind}
     return None
 
@@ -127,6 +127,8 @@ async def send(surface: Any, action: dict[str, Any]) -> None:
         await surface.key(action["key"])
     elif action["kind"] == SWIPE:
         await surface.drag(*action["from"], *action["to"], SWIPE_MS)
+    elif action["kind"] == BACK:
+        await surface.back()
     elif action["kind"] == WAIT:
         await asyncio.sleep(action["ms"] / 1000)
 

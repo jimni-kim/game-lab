@@ -22,10 +22,16 @@ from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
 TAP, KEY, SWIPE, TEXT, WAIT, DONE, GIVE_UP = "tap", "key", "swipe", "text", "wait", "done", "give_up"
+DOUBLE_TAP, LONG_PRESS, DRAG, SCROLL, BACK = "double_tap", "long_press", "drag", "scroll", "back"
+RIGHT_TAP, RELAUNCH, SEQUENCE = "right_tap", "relaunch", "sequence"
 # how a game the model says is over ended
 ENDS = ("won", "lost")
-# what an input is carried out with (`Surface.kinds`)
-NEEDS = {TAP: "tap", KEY: "keys", SWIPE: "drag", TEXT: "keys"}
+# what an input is carried out with (`Surface.kinds`): any one of these
+NEEDS = {TAP: ("tap",), DOUBLE_TAP: ("tap",), LONG_PRESS: ("tap",), KEY: ("keys",), SWIPE: ("drag",), DRAG: ("drag",),
+         TEXT: ("text", "keys"), SCROLL: ("scroll",), BACK: ("back",), RIGHT_TAP: ("secondary",),
+         RELAUNCH: ("relaunch",), SEQUENCE: ("tap",)}
+# what a sequence may be made of: inputs to one place, never a wait, a reload or an end
+SEQUENCED = frozenset({TAP, DOUBLE_TAP, LONG_PRESS, KEY, SWIPE, DRAG})
 # the keys a game may be played with beyond those a notice is answered with, and the letters and digits typed
 KEYS = recovery.KEYS | {"Backspace", "Tab"}
 TYPED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
@@ -36,6 +42,38 @@ PLAY_TOKENS, PLAY_TIMEOUT_S = 3000, 90.0
 # how long an input is left to take effect, then until the screen shows the same twice this far apart, at most
 SETTLE_S, STILL_GAP_S, STILL_TIMEOUT_S = 0.6, 0.3, 3.0
 SWIPE_MS = 150
+# a drag: its points, its time and how long it rests before moving and before letting go, as given or by default.
+# A quick drag is taken for a tap by some games (a merge game's item was only selected at 150 and 300 ms and
+# moved at 500, 2026-11-15), so the default is slower than a swipe
+PATH_MOST, DRAG_MS, DRAG_MS_RANGE, HOLD_MS, HOLD_MS_MOST = 16, 600, (100, 5000), 150, 1500
+# a double tap's two taps this far apart: more than a game takes for two taps at once, less than its limit
+DOUBLE_TAP_GAP_MS = 120
+LONG_PRESS_MS, LONG_PRESS_RANGE = 800, (400, 3000)
+SCROLL_MOST = 10
+# a sequence: at most this many inputs, this far apart (a selection drawn before the next tap lands)
+SEQUENCE_MOST, SEQUENCE_GAP_S = 4, 0.3
+# a wait for the screen to change: at most this long, looked at this often
+CHANGE_WAIT_MS, CHANGE_LOOK_S = 15000, 0.5
+# the game started again from nothing at most this many times a game
+RELAUNCHES_MOST = 2
+
+
+def _point(value: Any, size: tuple[int, int]) -> list[float] | None:
+    if (isinstance(value, list) and len(value) == 2
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
+            and 0 <= value[0] < size[0] and 0 <= value[1] < size[1]):
+        return [float(value[0]), float(value[1])]
+    return None
+
+
+def _ms(value: Any, default: int, least: int, most: int) -> int | None:
+    if value is None:
+        return default
+    return value if type(value) is int and least <= value <= most else None
+
+
+def can(kind: Any, kinds: frozenset[str]) -> bool:
+    return kind in NEEDS and any(needs in kinds for needs in NEEDS[kind])
 
 
 def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str, Any] | None:
@@ -43,10 +81,35 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
     if not isinstance(action, dict):
         return None
     kind = action.get("kind")
-    if kind in NEEDS and NEEDS[kind] not in kinds:
+    if kind in NEEDS and not can(kind, kinds):
         return None
-    if kind in (TAP, SWIPE, WAIT):
+    if kind in (TAP, SWIPE):
         return recovery.check(action, size, kinds)
+    if kind == WAIT and action.get("until_change") is True:
+        return {"kind": WAIT, "ms": action["ms"], "until_change": True} \
+            if type(action.get("ms")) is int and 0 < action["ms"] <= CHANGE_WAIT_MS else None
+    if kind == WAIT:
+        return recovery.check(action, size, kinds)
+    if kind in (DOUBLE_TAP, RIGHT_TAP) and (at := _point(action.get("at"), size)) is not None:
+        return {"kind": kind, "at": at}
+    if kind == LONG_PRESS and (at := _point(action.get("at"), size)) is not None \
+            and (ms := _ms(action.get("ms"), LONG_PRESS_MS, *LONG_PRESS_RANGE)) is not None:
+        return {"kind": kind, "at": at, "ms": ms}
+    if kind == DRAG and isinstance(action.get("path"), list) and 2 <= len(action["path"]) <= PATH_MOST:
+        path = [_point(point, size) for point in action["path"]]
+        ms, hold = _ms(action.get("ms"), DRAG_MS, *DRAG_MS_RANGE), _ms(action.get("hold_ms"), HOLD_MS, 0, HOLD_MS_MOST)
+        if None not in path and ms is not None and hold is not None:
+            return {"kind": kind, "path": path, "ms": ms, "hold_ms": hold}
+        return None
+    if kind == SCROLL and (at := _point(action.get("at"), size)) is not None and type(action.get("steps")) is int \
+            and 0 < abs(action["steps"]) <= SCROLL_MOST:
+        return {"kind": kind, "at": at, "steps": action["steps"]}
+    if kind in (BACK, RELAUNCH):
+        return {"kind": kind}
+    if kind == SEQUENCE and isinstance(action.get("inputs"), list) and 2 <= len(action["inputs"]) <= SEQUENCE_MOST:
+        inputs = [check(part, size, kinds) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
+                  for part in action["inputs"]]
+        return {"kind": kind, "inputs": inputs} if None not in inputs else None
     if kind == KEY and (action.get("key") in KEYS or (isinstance(action.get("key"), str) and len(action["key"]) == 1
                                                       and action["key"] in TYPED)):
         return {"kind": KEY, "key": action["key"]}
@@ -60,17 +123,62 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
     return None
 
 
+def scaled(action: dict[str, Any], scale: float) -> dict[str, Any]:
+    """The action with every point in it divided by `scale`: from the picture the model saw to the screen."""
+    def point(value: list[float]) -> list[float]:
+        return [part / scale for part in value]
+    out = dict(action)
+    for key in ("at", "from", "to"):
+        if key in out:
+            out[key] = point(out[key])
+    if "path" in out:
+        out["path"] = [point(value) for value in out["path"]]
+    if "inputs" in out:
+        out["inputs"] = [scaled(part, scale) for part in out["inputs"]]
+    return out
+
+
 async def send(surface: Any, action: dict[str, Any]) -> None:
-    if action["kind"] == TAP:
+    kind = action["kind"]
+    if kind == TAP:
         await surface.tap(*action["at"], TAP_MS)
-    elif action["kind"] == KEY:
+    elif kind == DOUBLE_TAP:
+        await surface.taps(*action["at"], 2, DOUBLE_TAP_GAP_MS)
+    elif kind == LONG_PRESS:
+        await surface.tap(*action["at"], action["ms"])
+    elif kind == RIGHT_TAP:
+        await surface.right_tap(*action["at"])
+    elif kind == KEY:
         await surface.key(action["key"])
-    elif action["kind"] == TEXT:
+    elif kind == TEXT and "text" in surface.kinds:
+        await surface.type(action["text"])
+    elif kind == TEXT:
         for letter in action["text"]:
             await surface.key(letter)
-    elif action["kind"] == SWIPE:
+    elif kind == SWIPE:
         await surface.drag(*action["from"], *action["to"], SWIPE_MS)
-    elif action["kind"] == WAIT:
+    elif kind == DRAG:
+        await surface.stroke(action["path"], action["ms"], action["hold_ms"])
+    elif kind == SCROLL:
+        await surface.scroll(*action["at"], action["steps"])
+    elif kind == BACK:
+        await surface.back()
+    elif kind == RELAUNCH:
+        await surface.relaunch()
+    elif kind == SEQUENCE:
+        for index, part in enumerate(action["inputs"]):
+            if index:
+                await asyncio.sleep(SEQUENCE_GAP_S)
+            await send(surface, part)
+    elif kind == WAIT and action.get("until_change"):
+        before = await surface.capture()
+        waited = 0.0
+        while waited * 1000 < action["ms"]:
+            await asyncio.sleep(CHANGE_LOOK_S)
+            waited += CHANGE_LOOK_S
+            if carry._boxes(before, await surface.capture()):
+                return
+    elif kind == WAIT:
         await asyncio.sleep(action["ms"] / 1000)
 
 
@@ -101,6 +209,8 @@ class Direct:
         self.score: float | None = None
         self.history: list[dict[str, Any]] = []
         self.questions = 0
+        # times the game was started again from nothing at the model's word
+        self.relaunches = 0
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any]) -> dict[str, Any] | None:
         """The model's answer for the screen as it is: `{"action", "expect"}` with the action in the screen's
@@ -108,7 +218,8 @@ class Direct:
         shown, scale = recovery.view(png)
         size = recovery._size(shown)
         asked = {"play": True, "goal": goal, "left": left, "screen": list(size),
-                 "inputs": sorted(kind for kind, needs in NEEDS.items() if needs in kinds) + [WAIT],
+                 "inputs": sorted(kind for kind in NEEDS if can(kind, kinds)
+                                  and (kind != RELAUNCH or self.relaunches < RELAUNCHES_MOST)) + [WAIT],
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "notes": self.notes,
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -132,12 +243,12 @@ class Direct:
             self.score = answer["score"]
             self.first_score = self.score if self.first_score is None else self.first_score
         action = check(answer.get("action"), size, kinds)
-        if action is None:
+        if action is None or (action["kind"] == RELAUNCH and self.relaunches >= RELAUNCHES_MOST):
             return None
+        self.relaunches += action["kind"] == RELAUNCH
         told = dict(action)
         if scale != 1.0:
-            action = {key: [part / scale for part in value] if key in ("at", "from", "to") else value
-                      for key, value in action.items()}
+            action = scaled(action, scale)
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
         return {"action": action, "told": told, "expect": expect, "scale": scale}
 

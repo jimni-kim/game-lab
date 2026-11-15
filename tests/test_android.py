@@ -8,7 +8,8 @@ from gamelab import adaptation, agent, pixels, recovery
 from gamelab.adaptation import Adaptation, Made, Store
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.environments.android import AndroidSurface
-from gamelab.surface import KEYS
+from gamelab.environments import android
+from gamelab.surface import HOLD, KEYS
 from fake_screen import Screen
 from test_adaptation import Author
 from test_generated import source
@@ -62,6 +63,51 @@ async def test_inputs_are_adb_input_commands_in_device_pixels():
                                            ["input", "swipe", "10", "20", "300", "20", "120"],
                                            ["input", "keyevent", "KEYCODE_DPAD_LEFT"]]
     assert KEYS in surface.kinds and KEYS not in AndroidSurface(adb).kinds
+
+
+async def test_a_stroke_is_one_shell_line_of_motion_events_through_every_point():
+    adb = Adb()
+    surface = AndroidSurface(adb)
+    await surface.stroke([[100, 100], [100, 196], [292, 196]], 600, 150)
+    [run] = adb.ran
+    assert run[0] == "shell" and len(run) == 2
+    lines = run[1].split("; ")
+    assert lines[:2] == ["input motionevent DOWN 100 100", "sleep 0.150"]
+    assert lines[-2:] == ["sleep 0.150", "input motionevent UP 292 196"]
+    moves = [line for line in lines if line.startswith("input motionevent MOVE")]
+    # no step longer than STEP_PX: the bend is passed, the first leg in two steps and the second in four
+    assert len(moves) == 6 and "input motionevent MOVE 100 196" in moves and moves[-1] == "input motionevent MOVE 292 196"
+    # the leg's time less what an event takes itself: 600 ms over the 288 pixels, 100 ms a step
+    assert lines[2] == f"sleep {(100 - android.MOTION_MS) / 1000:.3f}"
+
+
+async def test_a_pointer_may_be_held_between_calls_and_is_let_go_by_release():
+    adb = Adb()
+    surface = AndroidSurface(adb)
+    assert HOLD in surface.kinds
+    await surface.press(10, 20)
+    await surface.move(10, 68, 0)
+    await surface.release()
+    await surface.release()
+    assert adb.ran == [["shell", "input", "motionevent", "DOWN", "10", "20"], ["shell", "input motionevent MOVE 10 68"],
+                       ["shell", "input", "motionevent", "UP", "10", "68"]]
+
+
+async def test_a_double_tap_text_the_wheel_back_and_a_restart_are_adb_commands(monkeypatch):
+    monkeypatch.setattr(android, "RELAUNCH_WAIT_S", 0)
+    adb = Adb()
+    surface = AndroidSurface(adb, package="com.example.game")
+    await surface.taps(5, 6, 2, 120)
+    await surface.type("go on")
+    await surface.scroll(50, 60, 3)
+    await surface.back()
+    await surface.relaunch()
+    assert [run[1:] for run in adb.ran] == [
+        ["input tap 5 6; sleep 0.120; input tap 5 6"], ["input", "text", "go%son"],
+        ["input", "mouse", "scroll", "50", "60", "--axis", "VSCROLL,-3"], ["input", "keyevent", "KEYCODE_BACK"],
+        ["am", "force-stop", "com.example.game"],
+        ["cmd", "package", "resolve-activity", "--brief", "-c", "android.intent.category.LAUNCHER", "com.example.game"],
+        ["am", "start", "-n", "com.example.game/.Main"]]
 
 
 async def test_the_size_and_the_app_are_asked_of_the_device():
