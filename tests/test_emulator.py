@@ -43,7 +43,7 @@ async def test_with_no_device_the_avd_is_started_without_its_snapshot_waited_for
     emulator = Emulator(adb=adb, start=start, poll_s=0)
     assert await emulator.ensure(lambda: told.append("starting")) == "emulator-5554"
     [started] = start.started
-    assert started[0].endswith("emulator/emulator") and started[1:] == ["-avd", "army-game", "-no-snapshot-load", "-no-snapshot-save"]
+    assert started[0].endswith("emulator/emulator") and started[1:] == ["-avd", "game-lab", "-no-snapshot-load", "-no-snapshot-save"]
     assert told == ["starting"] and not any("-gpu" in arg for arg in started)
     await emulator.stop()
     assert adb.ran[-1] == ["-s", "emulator-5554", "emu", "kill"]
@@ -59,3 +59,11 @@ async def test_an_emulator_that_never_boots_is_an_error_not_a_wait_without_end()
     emulator = Emulator(adb=Adb([]), start=Starts(), limit_s=0.05, poll_s=0.01)
     with pytest.raises(RuntimeError, match="booted"):
         await emulator.ensure()
+
+
+async def test_of_several_devices_the_one_asked_for_is_played_on_and_no_other_in_its_place():
+    adb = Adb([("emulator-5554", "device"), ("emulator-5556", "device")])
+    assert await Emulator(adb=adb, start=Starts(), poll_s=0, prefer="emulator-5556").ensure() == "emulator-5556"
+    alone = Adb([("emulator-5554", "device")])
+    with pytest.raises(RuntimeError):
+        await Emulator(adb=alone, start=Starts(), limit_s=0.05, poll_s=0.01, prefer="emulator-5556").ensure()

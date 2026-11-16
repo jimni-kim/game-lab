@@ -448,3 +448,25 @@ async def test_a_game_whose_held_pieces_the_cells_do_not_show_is_played_by_how_i
     # the first carries are taken back: nothing is placed by them
     assert [bool(entry.get("cancelled")) for entry in told] == [True, True, False], told
     assert told[2]["by_rule"] and carry.trusted(told[2]) and len(fake.placed) == 1 and fake.placed[0][1] == [6, 0], (told, fake.placed)
+
+
+async def test_whoever_watches_is_shown_the_frame_taken_with_the_piece_held_over_the_board():
+    class Watching:
+        def __init__(self):
+            self.frames = 0
+
+        async def seen(self, png):
+            self.frames += 1
+
+        async def sending(self, *told):
+            self.at_send = self.frames
+
+        async def sent(self):
+            self.during = getattr(self, "during", 0) + self.frames - self.at_send
+    fake, watch = Centred(), Watching()
+    played, made = await agent.play(fake, Dealer(fake, []), "block_placement", goal=GoalSpec("actions", 10),
+                                    budget=Budget(40, 200, 120), watch=watch)
+    assert played.record["outcome"] == "goal_reached"
+    straight = sum(1 for move in played.moves if move["carried"].get("known"))
+    # every carry showed the screen at least once between its sending and its having been sent
+    assert straight >= 4 and watch.during >= len(played.moves), (straight, watch.during)

@@ -439,6 +439,8 @@ class Carrier:
         self._unseen = 0
         # carries on which the cells showed something held but its shape nowhere (`_by_rule`)
         self._unfit = 0
+        # told each frame a carry takes with the pointer held (whoever shows the game as it is played)
+        self.on_frame: Any = None
 
     @property
     def offset(self) -> tuple[float, float] | None:
@@ -678,6 +680,8 @@ class Carrier:
             while True:
                 frame = await self.frames.frame(after)
                 after, shots = frame.at + STILL_GAP_S, shots + 1
+                if self.on_frame is not None:
+                    await self.on_frame(frame.png)
                 seen = check(frame.png)
                 key = (seen.get("seen"), tuple(seen.get("shift") or ()))
                 if seen.get("ok") or key == previous or time.monotonic() - began >= STILL_MOST_S:

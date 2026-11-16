@@ -50,7 +50,7 @@ eval/                       평가 CLI (policies, web, android, offline, serve)
 .venv/bin/python -m gamelab.eval web --site ovolve_2048 --games 3 --objective reach_value --target 2048 --compute 500 --out out/ovolve
 .venv/bin/python -m gamelab.eval web --site march2048_4x4 --identify --games 3 --compute 500 --out out/march   # 계열도 화면에서 찾음
 
-# Android (에뮬레이터를 먼저 켠다: emulator -avd army-game)
+# Android (에뮬레이터를 먼저 켠다: emulator -avd game-lab)
 .venv/bin/python -m gamelab.eval android --check --out out/device        # 연결 확인과 캡처 한 장
 .venv/bin/python -m gamelab.eval android --package PKG --hint "어느 게임인지" --compute 500 --out out/app
 .venv/bin/python -m gamelab.eval android --ask "퍼즐 앱에서 Fifteen 끝까지" --compute 200 --out out/ask   # 설치된 앱 가운데서 고름
@@ -71,7 +71,7 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 ## 데모 페이지
 
 입력 창에 요청을 쓰면 웹 페이지나 이 Mac의 Android 에뮬레이터에서 에이전트가 두고, 그 화면과 로그를 실시간으로 본다.
-주소가 있으면 웹(Chromium), 없으면 설치된 앱 가운데서 고른다. 에뮬레이터가 꺼져 있으면 `army-game`을 켜고(스냅샷·GPU 옵션은 그대로),
+주소가 있으면 웹(Chromium), 없으면 설치된 앱 가운데서 고른다. 에뮬레이터가 꺼져 있으면 `game-lab`을 켜고(여러 대가 켜져 있으면 `--serial`로 정한다)(스냅샷·GPU 옵션은 그대로),
 서버가 켠 것이면 서버를 내릴 때 끈다.
 
 ```sh

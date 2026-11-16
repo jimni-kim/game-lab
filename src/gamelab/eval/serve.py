@@ -210,7 +210,7 @@ class Demo:
                  connect: guard.Connect | None = None) -> None:
         self.args, self.model, self.writer = args, model, writer
         self.token = token or secrets.token_urlsafe(24)
-        self.emulator = emulator or Emulator(args.avd)
+        self.emulator = emulator or Emulator(args.avd, prefer=getattr(args, "serial", None))
         self.device = device or (lambda serial: AndroidSurface(serial=serial))
         self.apps = apps or (lambda surface: android.installed(surface.run))
         self.look, self.connect = look, connect
@@ -507,7 +507,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--games-a-day", type=int, default=20, help="games played a day at most")
     parser.add_argument("--accept-consent", action="store_true",
                         help="agree to a site's terms when it offers no refusal (else the game stops there)")
-    parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "adapters",
+    parser.add_argument("--serial", help="the device to play apps on when several are attached (adb -s)")
+    parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "serve" / "adapters",
                         help="where generated adapters are kept by site and app and reused")
     parser.add_argument("--avd", default=AVD, help="the emulator started when no device is attached")
     parser.add_argument("--headed", action="store_true", help="show the browser window too")
