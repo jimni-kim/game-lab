@@ -288,6 +288,8 @@ class Carrier:
         # how many times the pointer's move each measured drawing moved: their middle one stands in for a carry
         # whose looks could not tell it
         self.gains: list[float] = []
+        # how many of them were measured since a carry's move was last doubted: only those make a carry sure
+        self.since_doubt = 0
         self.log: list[dict[str, Any]] = []
         # the press before moving that picks things up here (HOLDS), and whether any carry here picked one up
         self.hold_s = HOLDS[0]
@@ -302,11 +304,15 @@ class Carrier:
         return sorted(self.gains)[len(self.gains) // 2] if self.gains else 1.0
 
     def _sure(self) -> bool:
-        return len(self.gains) >= SURE_AFTER and max(self.gains) <= min(self.gains) * (1 + SURE_SPREAD)
+        recent = self.gains[-SURE_AFTER:]
+        return self.since_doubt >= SURE_AFTER and len(recent) >= SURE_AFTER \
+            and max(recent) <= min(recent) * (1 + SURE_SPREAD)
 
     def doubt(self) -> None:
-        """A carry's move did not do what it should: the next carries measure how the drawing follows again."""
-        self.gains = []
+        """A carry's move did not do what it should: the next carries measure how the drawing follows again. What
+        was measured before still stands in for a carry whose looks cannot tell it (2026-11-16: emptied, a carry
+        that could not measure was aimed as if the drawing kept to the finger and landed two cells off)."""
+        self.since_doubt = 0
 
     async def _look(self, before: bytes, start: tuple[float, float], pointer: tuple[float, float],
                     source: list[int] | None, near: tuple[float, float] | None = None) -> dict[str, Any]:
@@ -454,6 +460,7 @@ class Carrier:
         gain, _, held = pairs[0]
         told.update(measured=True, held=held, origin=again["origin"])
         self.gains = [*self.gains, gain][-FOLLOWS_KEPT:]
+        self.since_doubt += 1
         self.follow = Follow.through(start, pointer, _middle(held), gain)
         return self.follow
 

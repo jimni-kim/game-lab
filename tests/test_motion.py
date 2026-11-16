@@ -510,3 +510,21 @@ async def test_once_carries_agree_on_how_the_drawing_follows_a_carry_looks_once_
     fake.state = fake.family.initial_state(3)
     again = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [3, 3]), 400)
     assert again["measured"] and not again.get("quick")
+
+
+async def test_a_doubted_carry_that_cannot_measure_is_still_aimed_by_what_was_measured_before():
+    """A miss sends the carries back to measuring, but one whose looks cannot tell how the drawing follows is
+    aimed by the gain measured before, not as if the drawing kept to the finger (2026-11-16: two cells off)."""
+    fake = Following(gain=1.45)
+    carrier = Carrier(fake)
+    first = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert first["measured"] and fake.placed == [(0, [2, 2])]
+    carrier.doubt()
+    carry_step = carry.STEP_PX
+    try:
+        carry.STEP_PX = carry.STEP_LEAST = 0.0
+        second = await carrier.carry(slot_middle(fake, 1), goal_at(fake, 1, [5, 4]), 400)
+    finally:
+        carry.STEP_PX, carry.STEP_LEAST = carry_step, 32.0
+    assert not second["measured"] and not second.get("quick") and abs(second["gain"] - 1.45) <= 0.08, second
+    assert fake.placed[-1] == (1, [5, 4]), (second, fake.placed)
