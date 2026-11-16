@@ -180,7 +180,8 @@ async def test_a_drag_the_model_marks_carried_is_aimed_by_where_the_held_piece_i
     played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
     assert fake.placed == [(0, [3, 1])], (played.record, fake.missed)
     seen = model.asked[1]["history"][0]
-    assert seen["screen_changed"] and seen["held_drawn_from_finger"][1] < 0
+    assert seen["screen_changed"] and seen["picked_up"] and max(map(abs, seen["landed_off_by"])) <= 12, seen
+    assert played.moves[0]["carried"]["picked"]
 
 
 class Springy(Lamps):
@@ -394,3 +395,58 @@ async def test_moves_the_game_keeps_refusing_leave_the_family_for_the_models_own
     assert played.record["levels"]["L2"] == agent.FRUITLESS_MOST
     assert {"reason": "family_left", "detail": "fruitless"} in made["generation_failures"]
     assert sum(kind == "play" for kind, _, _ in model.asked) == 1
+
+
+class Following(Blocks):
+    """A block game whose held piece moves `gain` times the finger's way from where it was pressed, and at each
+    capture catches up only `catch` of what it is still behind (as a game that eases it after the finger)."""
+
+    def __init__(self, gain=1.0, catch=1.0, **options):
+        super().__init__(**options)
+        self.gain, self.catch, self.shown, self.start = gain, catch, None, None
+
+    async def press(self, x, y):
+        await super().press(x, y)
+        self.start = self.shown = (x, y)
+
+    async def capture(self, region=None):
+        if self.held:
+            (sx, sy), (x, y) = self.start, self.held[1]
+            target = (sx + self.gain * (x - sx), sy + self.gain * (y - sy))
+            self.shown = (self.shown[0] + self.catch * (target[0] - self.shown[0]),
+                          self.shown[1] + self.catch * (target[1] - self.shown[1]))
+        return await super().capture(region)
+
+    def _held_box(self):
+        kept = self.held
+        self.held = (kept[0], self.shown)
+        try:
+            return Blocks._held_box(self)
+        finally:
+            self.held = kept
+
+
+@pytest.mark.parametrize("gain", [0.8, 1.0, 1.45])
+@pytest.mark.parametrize("anchor", [[2, 2], [0, 3], [5, 0]])
+async def test_a_held_piece_drawn_further_than_the_finger_and_late_is_put_where_it_was_meant_to_go(gain, anchor):
+    """The drawing runs ahead of the finger (or behind it) and catches up a moment late: the carry looks once it
+    rests, learns how it follows the pointer from two places, and lands it in one press."""
+    fake = Following(gain=gain, catch=0.5)
+    told = await Carrier(fake).carry(slot_middle(fake, 0), goal_at(fake, 0, anchor), 400)
+    assert fake.placed == [(0, anchor)] and fake.missed == 0, (told, fake.placed)
+    assert told["measured"] and told["picked"] and told["tries"] == 1 and abs(told["gain"] - gain) <= 0.08, told
+
+
+async def test_a_carry_that_could_not_tell_how_the_drawing_follows_aims_it_by_the_carries_before():
+    fake = Following(gain=1.45)
+    carrier = Carrier(fake)
+    first = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert first["measured"] and fake.placed == [(0, [2, 2])]
+    # the next one is looked at once only on the way: the gain the first measured stands in
+    carry_step = carry.STEP_PX
+    try:
+        carry.STEP_PX = carry.STEP_LEAST = 0.0
+        second = await carrier.carry(slot_middle(fake, 1), goal_at(fake, 1, [5, 4]), 400)
+    finally:
+        carry.STEP_PX, carry.STEP_LEAST = carry_step, 32.0
+    assert second["picked"] and not second["measured"] and fake.placed[-1] == (1, [5, 4]), (second, fake.placed)

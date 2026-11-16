@@ -908,7 +908,17 @@ class Agent:
         elif "source" not in self.adaptation.controls:
             await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])      # between two cells: nothing is carried
         else:
-            self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
+            self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"],
+                                                       before=before.png, source=self._source(before, action))
+
+    def _source(self, before: Reading, action: dict[str, Any]) -> list[int] | None:
+        """Where the screen a move is played from was read to show the thing the move drags, when it was."""
+        sources = before.look.sources if before.look is not None else None
+        index = action.get(self.adaptation.controls.get("index", "")) if self.adaptation else None
+        if isinstance(sources, list) and type(index) is int and 0 <= index < len(sources) \
+                and isinstance(sources[index], list) and len(sources[index]) == 4:
+            return [round(part) for part in sources[index]]
+        return None
 
     async def _then(self, sent: dict[str, Any], before: Reading, action: dict[str, Any]) -> None:
         """What completes a move whose first tap only picks something (the controls' `then`): the same tap
@@ -1077,7 +1087,7 @@ class Agent:
                 raise _End(Outcome.GAVE_UP, "model_gave_up", player.situation)
             if self.watch is not None:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
-            carried = await direct.send(self.seen, action, self.carrier)
+            carried = await direct.send(self.seen, action, self.carrier, before)
             self.used += 1
             if self.watch is not None:
                 await self.watch.sent()
@@ -1087,7 +1097,8 @@ class Agent:
             self.levels[L0] += 1
             self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": answer["told"], "level": L0,
                                "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
-                               "expected": answer["expect"], "at_s": round(time.monotonic() - self.started, 2)})
+                               "expected": answer["expect"], "at_s": round(time.monotonic() - self.started, 2),
+                               **({"carried": carried} if carried else {})})
             if changed or action["kind"] == direct.WAIT:
                 self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT), 0
             else:

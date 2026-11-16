@@ -149,8 +149,10 @@ def scaled(action: dict[str, Any], scale: float) -> dict[str, Any]:
     return out
 
 
-async def send(surface: Any, action: dict[str, Any], carrier: Any = None) -> dict[str, Any] | None:
-    """Send an action; a carried drag gives what was measured of it."""
+async def send(surface: Any, action: dict[str, Any], carrier: Any = None, before: bytes | None = None
+               ) -> dict[str, Any] | None:
+    """Send an action; a carried drag gives what was measured of it. `before`: the screen the action was chosen
+    on, when nothing was done since (a carried drag finds what it picked up against it)."""
     kind = action["kind"]
     if kind == TAP:
         await surface.tap(*action["at"], TAP_MS)
@@ -171,7 +173,7 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None) -> dic
         await surface.drag(*action["from"], *action["to"], SWIPE_MS)
     elif kind == DRAG and action.get("carry") and carrier is not None and "hold" in surface.kinds:
         (start, goal) = action["path"]
-        return await carrier.carry(tuple(start), tuple(goal), action["ms"], action["hold_ms"] / 1000)
+        return await carrier.carry(tuple(start), tuple(goal), action["ms"], action["hold_ms"] / 1000, before=before)
     elif kind == DRAG:
         await surface.stroke(action["path"], action["ms"], action["hold_ms"])
     elif kind == SCROLL:
@@ -184,7 +186,7 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None) -> dic
         for index, part in enumerate(action["inputs"]):
             if index:
                 await asyncio.sleep(SEQUENCE_GAP_S)
-            await send(surface, part, carrier)
+            await send(surface, part, carrier, before if index == 0 else None)
     elif kind == WAIT and action.get("until_change"):
         before = await surface.capture()
         moving = list(getattr(surface, "moving", []))
@@ -292,10 +294,11 @@ class Direct:
         entry = {"action": answer["told"], "expected": answer["expect"], "screen_changed": bool(places),
                  "changed_at": [[round(part * scale) for part in box] for box in places]}
         if carried:
-            # whether the thing was seen held on the way, and the press it was given
-            entry["picked_up"], entry["held_ms"] = bool(carried.get("measured")), round(carried.get("hold_s", 0) * 1000)
-            if carried.get("measured"):
-                entry["held_drawn_from_finger"] = [round(part * scale) for part in carried["offset"]]
+            # whether the thing was seen held on the way, the press it was given, and how far its drawing's middle
+            # was from where it was to land when the finger let go (when it was seen then)
+            entry["picked_up"], entry["held_ms"] = bool(carried.get("picked")), round(carried.get("hold_s", 0) * 1000)
+            if carried.get("off") is not None:
+                entry["landed_off_by"] = [round(part * scale) for part in carried["off"]]
         self.history.append(entry)
         if entry.get("picked_up") and any(old.get("picked_up") is False and old["held_ms"] < entry["held_ms"]
                                           for old in self.history[:-1]):
