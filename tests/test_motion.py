@@ -334,3 +334,63 @@ async def test_the_family_is_tried_again_after_some_of_the_models_own_moves_even
     played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(8, COMPUTE, 60))
     assert made["resumes"] == [{"family": "minesweeper", "at_action": 4, "taken": True}], (played.record, made)
     assert played.record["levels"]["L0"] == 4 and played.record["levels"]["L2"] >= 1
+
+
+class Decoy(Blocks):
+    """A block game that, while a piece is held, also draws a thing of the piece's own shape and colours right by
+    the pointer, moving on at every capture whatever the pointer does (a tutorial's ghost piece)."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.shown = 0
+
+    async def capture(self, region=None):
+        png = await super().capture(region)
+        if not self.held:
+            return png
+        from test_adaptation_blocks import PIECE
+        self.shown += 1
+        image = Image.open(BytesIO(png)).convert("RGB")
+        x, y = self.held[1]
+        # always nearer the pointer than the piece held, which hangs above it
+        left = x - 70 + 30 * (self.shown % 3)
+        ImageDraw.Draw(image).rectangle((left, y + 5, left + 139, y + 48), fill=PIECE)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_what_moves_by_the_pointer_but_not_with_it_is_not_taken_for_the_piece_held():
+    fake = Decoy()
+    told = await Carrier(fake).carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert told["measured"] and fake.placed == [(0, [2, 2])], (told, fake.placed)
+
+
+class Frozen(Mines):
+    """A minesweeper board that takes no tap on its cells (as a tutorial that waits for one move only)."""
+
+    async def tap(self, x, y, duration_ms):
+        self.taps.append((x, y))
+
+
+class Watching(Reader):
+    """The model: it reads the board, and when it plays the game itself it says the game is over."""
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if context.get("play"):
+            self.asked.append(("play", context, 1))
+            return TurnResult(text=json.dumps({"situation": "nothing moves", "score": None,
+                                               "action": {"kind": "done", "end": "lost"}, "expect": "", "notes": ""}))
+        return await super().complete(request)
+
+
+async def test_moves_the_game_keeps_refusing_leave_the_family_for_the_models_own_play():
+    """Many cells are open to a tap: leaving out each refused one alone would go on for ever."""
+    fake = Frozen()
+    model = Watching(fake)
+    played, made = await play(fake, model, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(40, COMPUTE, 60))
+    assert (played.record["outcome"], played.record["reason"]) == ("game_over", "end_screen"), (played.record, made)
+    assert played.record["levels"]["L2"] == agent.FRUITLESS_MOST
+    assert {"reason": "family_left", "detail": "fruitless"} in made["generation_failures"]
+    assert sum(kind == "play" for kind, _, _ in model.asked) == 1

@@ -77,6 +77,10 @@ RESUME_SHARE, RESUMES_MOST = 0.3, 3
 # and when this many of its moves were confirmed since it was last tried: a scene that changes a little at a time
 # (a tutorial's last step giving way to the game's board) shows no such change
 RESUME_EVERY = 4
+# moves in a row the game did not take, with none taken between them, after which play by the family's rules is
+# left to the model's own inputs: the rules allow what the game does not (a tutorial that takes one move only, a
+# game taken for another), and leaving out each refused move alone never ends where many moves are allowed
+FRUITLESS_MOST = 6
 # the question of which game this is, asked again when the model could not be reached
 IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 # a state reached this many times by confirmed moves ends the game as going nowhere
@@ -237,6 +241,8 @@ class Agent:
         self.resumed = False
         # the model's own moves confirmed since the family was last tried
         self.since_tried = 0
+        # moves in a row the game did not take (`FRUITLESS_MOST`)
+        self.fruitless = 0
         # the model's own play, kept when play goes back to a family and comes back to it
         self.player: direct.Direct | None = None
 
@@ -423,6 +429,10 @@ class Agent:
         self.stalled += 1
         if effect == "absent":
             self._spent(before.id, action)
+            self.fruitless += 1
+            if self.fruitless >= FRUITLESS_MOST and self.direct:
+                await self._leave("fruitless")
+                return
         if before.look is not None and before.look is self.unproven:
             self._drop_unproven()
         if after is None and self.why == "label_failed":
@@ -439,10 +449,20 @@ class Agent:
         kept = self.ineffective if self.ineffective and self.ineffective["state"] == state else {"state": state, "actions": []}
         self.ineffective = {**kept, "actions": [*kept["actions"], action]}
 
+    async def _leave(self, reason: str) -> None:
+        """Play by the family's rules gets nowhere: the game goes on by the model's own inputs, and comes back to
+        the family once some of those are confirmed (`_resume`)."""
+        log.info("the family is left: %s", reason)
+        self.failures.append({"reason": "family_left", "detail": reason})
+        self.fruitless = self.since_tried = 0
+        if self.resumable is None and (self.game is None or self.family_id != self.game.id):
+            self.resumable = self.family_id
+        await self._play_direct(self._situation())
+
     async def _confirmed(self, before: Reading, action: dict[str, Any], sent: dict[str, Any], after: Reading,
                          sent_at: float) -> None:
         self.confirmed += 1
-        self.stalled = self.tries = 0
+        self.stalled = self.tries = self.fruitless = 0
         if self._made_plays():
             self.transitions = [*self.transitions, {"state": before.state, "action": action, "after": after.state}][-made.EXAMPLES_KEPT:]
         self.shrugged, self.ineffective, self.carried, self.state = False, None, after, after.state
@@ -1114,7 +1134,7 @@ class Agent:
             self.adapter, self.family_id, self.policy = None, None, "model"
             return False
         tried["taken"] = self.resumed = True
-        self.tries = self.stalled = 0
+        self.tries = self.stalled = self.fruitless = 0
         self.shrugged = False
         self.carried = self.unread_move = self.ineffective = self.state = None
         return True

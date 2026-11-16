@@ -10,6 +10,11 @@ left one place and is drawn at another.
 A surface that cannot hold a pointer between two calls (`HOLD` not among its kinds) is given the drag as one
 movement, shifted by what the last measured carry showed.
 
+What is taken for the thing held must have moved with the pointer: once found, the pointer goes a little further
+(FOLLOW_STEP) and it is found again, and taken only when it moved by about as much as the pointer did. Whatever else changes on the screen while the
+pointer holds (a tutorial's hand and its ghost piece, a glow, a shadow where the thing would land) does not
+follow the pointer (2026-11-16: a hand taken for the piece put every piece of a game beside its place).
+
 Some games pick a thing up only when it was pressed a while before the pointer moves (2026-11-16: a block game
 took a press of 0.25 s and a move for nothing, one of 1 s for a pick-up). A carry that finds nothing held after
 its first leg lets go where it pressed and presses again longer (HOLDS), within the same carry, and keeps to the
@@ -36,9 +41,13 @@ ASPECT = 0.3
 # the picked-up thing's own colours: looked for among this many, each filling at least this share of its box,
 # matched within this much a channel; the box narrowed to them is used when it keeps this share of the area
 OWN_COLOURS, OWN_SHARE, OWN_NEAR, OWN_KEPT = 6, 0.08, 36, 0.4
-# how far along the way the first look is taken, and the least distance moved before it (pixels): far enough
+# how far along the way the looks are taken, and the least distance moved before the first (pixels): far enough
 # for the game to take the press as a drag, near enough that the held thing is not yet over the board
 FIRST_LEG, LEAST_LEG = (0.2, 0.5), 24.0
+# what was found is checked by moving the pointer this much further (pixels, short: the held thing is not yet
+# over the board) and finding it again; it is the thing held when it moved as the pointer did, within this
+# share of the pointer's move or FOLLOW_PX, and kept its size within this share
+FOLLOW_STEP, FOLLOW, FOLLOW_PX, SAME_SIZE = 32.0, 0.25, 12.0, 0.25
 LIFT_S, LEG_MS, REST_S = 0.25, 160, 0.08
 # how long the pointer rests where it pressed before it moves: the first, then each next after a press that
 # showed nothing held
@@ -90,24 +99,31 @@ def _gap(point: tuple[float, float], box: list[int]) -> float:
     return max(left - point[0], point[0] - (left + width), top - point[1], point[1] - (top + height), 0.0)
 
 
-def find(before: bytes, during: bytes, start: tuple[float, float], pointer: tuple[float, float]
-         ) -> tuple[list[int], list[int]] | None:
-    """Where the thing pressed at `start` was (`origin`) and where it is drawn while the pointer holds it at
-    `pointer` (`held`), from what changed between the capture before the press and the one during the hold.
-    None when the two cannot be told apart (still overlapping, or nothing of the right shape moved)."""
+def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer: tuple[float, float]
+               ) -> tuple[list[int], list[list[int]]] | None:
+    """Where the thing pressed at `start` was (`origin`), and every place it may be drawn while the pointer holds
+    it at `pointer`, nearest the pointer first: what changed between the capture before the press and the one
+    during the hold, as large as what was picked up or larger and in its proportions. None when nothing can be
+    told apart (still overlapping, or nothing of the right shape moved)."""
     boxes = [box for box in _boxes(before, during) if box[2] >= 2 * REDUCE and box[3] >= 2 * REDUCE]
     near = [box for box in boxes if _gap(start, box) <= REDUCE * JOIN]
     if not near:
         return None
     origin = min(near, key=lambda box: _gap(start, box))
     rest = [box for box in boxes if box is not origin]
-    # what is held is drawn as large as what was picked up or larger, in the same proportions, near the pointer
     shaped = [box for box in rest if box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7
               and abs((box[2] / origin[2]) / (box[3] / origin[3]) - 1) <= ASPECT]
     if not shaped:
         return None
-    held = min(shaped, key=lambda box: _gap(pointer, box))
-    return origin, _own(before, during, origin, held)
+    return origin, [_own(before, during, origin, box) for box in sorted(shaped, key=lambda box: _gap(pointer, box))]
+
+
+def find(before: bytes, during: bytes, start: tuple[float, float], pointer: tuple[float, float]
+         ) -> tuple[list[int], list[int]] | None:
+    """Where the thing pressed at `start` was (`origin`) and where it is drawn while the pointer holds it at
+    `pointer` (`held`): the likeliest of `candidates`, the one nearest the pointer."""
+    found = candidates(before, during, start, pointer)
+    return (found[0], found[1][0]) if found else None
 
 
 def _own(before: bytes, during: bytes, origin: list[int], held: list[int]) -> list[int]:
@@ -141,6 +157,18 @@ def _own(before: bytes, during: bytes, origin: list[int], held: list[int]) -> li
     if tight is None or (tight[2] - tight[0]) * (tight[3] - tight[1]) < held[2] * held[3] * OWN_KEPT:
         return held
     return [held[0] + tight[0], held[1] + tight[1], tight[2] - tight[0], tight[3] - tight[1]]
+
+
+def followed(one: tuple[list[int], tuple[float, float]], other: tuple[list[int], tuple[float, float]]) -> bool:
+    """Whether a box found on one look and one found on the next are the same thing moving with the pointer
+    between them: by about as much as the pointer did, keeping its size."""
+    first, at = one
+    second, then = other
+    moved = (then[0] - at[0], then[1] - at[1])
+    shifted = (second[0] + second[2] / 2 - first[0] - first[2] / 2, second[1] + second[3] / 2 - first[1] - first[3] / 2)
+    slack = max(FOLLOW_PX, FOLLOW * (moved[0] ** 2 + moved[1] ** 2) ** 0.5)
+    return (abs(shifted[0] - moved[0]) <= slack and abs(shifted[1] - moved[1]) <= slack
+            and abs(second[2] / max(first[2], 1) - 1) <= SAME_SIZE and abs(second[3] / max(first[3], 1) - 1) <= SAME_SIZE)
 
 
 class Carrier:
@@ -193,15 +221,26 @@ class Carrier:
                 if hold:
                     await asyncio.sleep(hold)
                 pointer = start
+                along = (goal[0] - start[0], goal[1] - start[1])
+                length = max((along[0] ** 2 + along[1] ** 2) ** 0.5, 1.0)
                 for share in FIRST_LEG:
-                    along = (goal[0] - start[0], goal[1] - start[1])
-                    length = max((along[0] ** 2 + along[1] ** 2) ** 0.5, 1.0)
                     reach = max(share, min(1.0, LEAST_LEG / length))
                     pointer = (start[0] + along[0] * reach, start[1] + along[1] * reach)
                     await surface.move(*pointer, LEG_MS)
                     await asyncio.sleep(LIFT_S)
-                    found = find(before, await look(), start, pointer)
-                    if found is not None and self._plausible(*found):
+                    seen = candidates(before, await look(), start, pointer)
+                    if seen is None:
+                        continue
+                    # a little further along: what is held comes along, what only moves on the screen does not
+                    was = pointer
+                    pointer = (pointer[0] + along[0] / length * FOLLOW_STEP, pointer[1] + along[1] / length * FOLLOW_STEP)
+                    await surface.move(*pointer, LEG_MS)
+                    await asyncio.sleep(LIFT_S)
+                    again = candidates(before, await look(), start, pointer)
+                    pairs = [(seen[0], box) for box in (again[1] if again else [])
+                             if any(followed((one, was), (box, pointer)) for one in seen[1])]
+                    found = next((pair for pair in pairs if self._plausible(*pair)), None)
+                    if found is not None:
                         origin, held = found
                         middle = (held[0] + held[2] / 2, held[1] + held[3] / 2)
                         self.offset = (middle[0] - pointer[0], middle[1] - pointer[1])
