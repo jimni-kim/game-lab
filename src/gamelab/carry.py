@@ -87,6 +87,15 @@ SCALE_SLACK = 0.35
 # a carry that saw the held drawing once only hangs it from where it was seen there, unless that is further from
 # where the carries before hung it than this many times the drawing's larger side: what was seen was not it
 ANCHOR_SLACK = 1.0
+# how a game hangs a held thing is taken as known (`Hang`) once this many carries that ended where they were meant
+# to showed it; a thing as tall as one of them within HANG_SAME hangs as that one did, another by the line through
+# those of different heights (at least HANG_APART apart); no more than HANG_KEPT are kept
+HANG_SURE, HANG_SAME, HANG_APART, HANG_KEPT = 2, 0.15, 0.3, 30
+# the lifts lie closer together counted from where the thing was pressed by more than this many pixels: the game
+# hangs it from there
+HANG_CLEAR = 4.0
+HANG_SIZE = 0.04
+UNSEEN_MOST = 2
 
 
 def _boxes(before: bytes, after: bytes, ignore: list[list[int]] | None = None) -> list[list[int]]:
@@ -272,7 +281,7 @@ def trusted(told: dict[str, Any] | None) -> bool:
     """Whether a carry is known to have put the thing where it was meant to go: it picked it up, and it either
     measured how the drawing follows or, sure of that from the carries before, saw the drawing on the way (`quick`).
     A move whose carry is not trusted and did nothing says nothing against how the screen was read."""
-    return bool(told and told.get("picked") and (told.get("measured") or told.get("quick")))
+    return bool(told and told.get("picked") and (told.get("measured") or told.get("quick") or told.get("checked")))
 
 
 def followed(one: tuple[list[int], tuple[float, float]], other: tuple[list[int], tuple[float, float]]) -> bool:
@@ -305,6 +314,91 @@ class Follow:
                 start[1] + (goal[1] - start[1] - self.anchor[1]) / self.gain)
 
 
+class Hang:
+    """Where a game draws a held thing, for any thing and any place of the pointer, as its carries showed: the
+    drawing's middle at `the thing's own middle where it waited + lift + gain × (pointer − start)`, the lift going
+    with the thing's height (a game that holds every piece by its foot lifts a tall one's middle further). A game
+    keeps to one such rule (three games of one block game, 63 looks: within 3 pixels at the middle, 11 at nine in
+    ten; 2026-11-16), so once it is known a carry goes straight to where the thing is to lie.
+
+    Some games hang the drawing from where it was pressed instead of from the thing's middle. Which this game
+    does is told by the carries too: the lifts are compared both ways, and the way they agree better is taken."""
+
+    def __init__(self) -> None:
+        self.samples: list[dict[str, float]] = []
+        # a carry by this rule did not do what it should: it is not used until one more carry bears it out
+        self.shaken = False
+
+    def add(self, source: list[int], start: tuple[float, float], pointer: tuple[float, float],
+            middle: tuple[float, float], gain: float) -> None:
+        was = (source[0] + source[2] / 2, source[1] + source[3] / 2)
+        self.samples = [*self.samples, {
+            "h": float(source[3]), "gain": gain,
+            "x": middle[0] - was[0] - gain * (pointer[0] - start[0]),
+            "y": middle[1] - was[1] - gain * (pointer[1] - start[1]),
+            # where on the thing it was pressed, from its middle
+            "px": start[0] - was[0], "py": start[1] - was[1]}][-HANG_KEPT:]
+        self.shaken = False
+
+    @property
+    def gain(self) -> float | None:
+        return _median([sample["gain"] for sample in self.samples]) if self.samples else None
+
+    def _from_press(self) -> bool:
+        """Whether the drawing hangs from where the thing was pressed, not from its middle: the lifts across,
+        which no height changes, lie closer together counted that way."""
+        def spread(values: list[float]) -> float:
+            return max(values) - min(values)
+        middle = spread([sample["x"] for sample in self.samples])
+        press = spread([sample["x"] - sample["px"] for sample in self.samples])
+        return press < middle - HANG_CLEAR
+
+    def lift(self, source: list[int], start: tuple[float, float] | None = None) -> tuple[float, float] | None:
+        """How far from where it waited a thing of this height is drawn when the pointer has not moved."""
+        if len(self.samples) < HANG_SURE or self.shaken:
+            return None
+        share = 1.0 if start is not None and self._from_press() else 0.0
+        seen = [{"h": sample["h"], "x": sample["x"] - share * sample["px"], "y": sample["y"] - share * sample["py"]}
+                for sample in self.samples]
+        pressed = (start[0] - source[0] - source[2] / 2, start[1] - source[1] - source[3] / 2) if share else (0.0, 0.0)
+        height, across = float(source[3]), _median([sample["x"] for sample in seen])
+        same = [sample["y"] for sample in seen if abs(sample["h"] - height) <= HANG_SAME * height]
+        if same:
+            return across + pressed[0], _median(same) + pressed[1]
+        slopes = [(one["y"] - other["y"]) / (one["h"] - other["h"]) for index, one in enumerate(seen)
+                  for other in seen[:index] if abs(one["h"] - other["h"]) >= HANG_APART * min(one["h"], other["h"])]
+        if not slopes:
+            return None
+        slope = _median(slopes)
+        return across + pressed[0], _median([sample["y"] - slope * sample["h"] for sample in seen]) + slope * height + pressed[1]
+
+    def pointer(self, source: list[int] | None, start: tuple[float, float], goal: tuple[float, float]
+                ) -> tuple[float, float] | None:
+        """Where the pointer is to be for the thing that waits in `source` to be drawn with its middle at `goal`."""
+        lift = self.lift(source, start) if source else None
+        if lift is None:
+            return None
+        gain, was = self.gain, (source[0] + source[2] / 2, source[1] + source[3] / 2)
+        return (start[0] + (goal[0] - was[0] - lift[0]) / gain, start[1] + (goal[1] - was[1] - lift[1]) / gain)
+
+    def to_json(self) -> list[dict[str, float]]:
+        return [{key: round(value, 3) for key, value in sample.items()} for sample in self.samples]
+
+    @classmethod
+    def from_json(cls, kept: Any) -> "Hang":
+        hang, keys = cls(), ("h", "gain", "x", "y", "px", "py")
+        if isinstance(kept, list):
+            hang.samples = [{key: float(sample[key]) for key in keys} for sample in kept
+                            if isinstance(sample, dict) and all(key in sample for key in keys)][-HANG_KEPT:]
+        return hang
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    half = len(ordered) // 2
+    return ordered[half] if len(ordered) % 2 else (ordered[half - 1] + ordered[half]) / 2
+
+
 class Carrier:
     """Carries drags on one surface, remembering what the carries before showed."""
 
@@ -329,6 +423,13 @@ class Carrier:
         # the press before moving that picks things up here (HOLDS), and whether any carry here picked one up
         self.hold_s = HOLDS[0]
         self.picked_any = False
+        # how this game hangs a held thing, whatever the thing (`Hang`): kept for the site's next game
+        self.hang = Hang()
+        # where the pointer was and where the held thing was drawn, on the look of this carry that told it; and
+        # the carries in a row whose check saw nothing held over the board (after UNSEEN_MOST the check is not
+        # asked: it cannot see this game's held things, and a carry is aimed by its looks alone as before)
+        self._drawn: tuple[tuple[float, float], list[int]] | None = None
+        self._unseen = 0
 
     @property
     def offset(self) -> tuple[float, float] | None:
@@ -356,6 +457,7 @@ class Carrier:
         was measured before still stands in for a carry whose looks cannot tell it (2026-11-16: emptied, a carry
         that could not measure was aimed as if the drawing kept to the finger and landed two cells off)."""
         self.since_doubt = 0
+        self.hang.shaken = True
 
     async def _look(self, before: bytes, start: tuple[float, float], pointer: tuple[float, float],
                     source: list[int] | None, near: tuple[float, float] | None = None) -> dict[str, Any]:
@@ -388,13 +490,18 @@ class Carrier:
 
     async def carry(self, start: tuple[float, float], goal: tuple[float, float], duration_ms: int,
                     hold_s: float | None = None, before: bytes | None = None,
-                    source: list[int] | None = None) -> dict[str, Any]:
+                    source: list[int] | None = None, check: Any = None) -> dict[str, Any]:
         """Drag what is at `start` so that its drawing's middle comes to `goal`, pressed `hold_s` (else as long
         as picked things up here) before moving. `before`: the screen as it was last read, when nothing was done
         since; `source`: where it was read to show the thing. Returns what was measured: whether the thing was
         picked up (`picked`), how its drawing followed the pointer (`gain`, `anchor`, `measured` when both looks
         told it), each look, where the pointer was let go (`end`) and how far from `goal` the drawing was then
-        (`off`)."""
+        (`off`).
+
+        `check`: what tells from a frame whether the held thing lies where it is to go (a board's reader: `ok`,
+        else `shift` in pixels and `covered`). With it the thing is let go only where it lies right, and taken back
+        to where it waited when it does not come to (`cancelled`); and once the game's way of hanging held things
+        is known (`Hang`), the pointer goes straight there with no looks on the way (`known`)."""
         surface = self.surface
         hold_s = max(self.hold_s, hold_s or 0.0)
         told: dict[str, Any] = {"start": [round(part, 1) for part in start], "goal": [round(part, 1) for part in goal],
@@ -406,6 +513,12 @@ class Carrier:
             told["end"] = [round(part, 1) for part in end]
             await surface.drag(*start, *end, duration_ms)
             return told
+        self._drawn = None
+        if self._unseen >= UNSEEN_MOST:
+            check = None
+        known = self.hang.pointer(source, start, goal) if check is not None else None
+        if known is not None:
+            return await self._straight(start, known, duration_ms, hold_s, check, told)
         if before is not None and not await self._fits(before):
             before = None
         if before is None:
@@ -454,6 +567,7 @@ class Carrier:
                     # how it follows is known: where it is drawn now tells where it hangs from
                     told["quick"] = True
                     follow = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())
+                    self._drawn = (first[1], first[0]["still"][0])
                 else:
                     follow = await self._measure(before, start, way, length, first, source, told) if first else None
                 if follow is None and first is not None and first[0]["still"]:
@@ -469,13 +583,99 @@ class Carrier:
                     told.update(gain=round(follow.gain, 3), anchor=[round(part) for part in follow.anchor],
                                 offset=[round(part) for part in follow.anchor])
                 end = follow.pointer(start, goal) if follow else goal
-                end = await self._aim(before, start, goal, end, follow, source, duration_ms, told)
+                if check is not None and follow is not None:
+                    size = await surface.size()
+                    end = (min(max(end[0], 0.0), size[0] - 1.0), min(max(end[1], 0.0), size[1] - 1.0))
+                    await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
+                    end, lies = await self._settle(check, end, follow.gain, told)
+                    if lies and told.get("checked") and source and self._drawn is not None:
+                        # borne out by where it lay: this is how the game hangs a thing of this height
+                        self.hang.add(source, start, self._drawn[0], _middle(self._drawn[1]), follow.gain)
+                    self._unseen = 0 if any(seen["seen"] for seen in told["checks"]) else self._unseen + 1
+                    if not lies:
+                        await self._back(start, told)
+                else:
+                    end = await self._aim(before, start, goal, end, follow, source, duration_ms, told)
                 told["end"] = [round(part, 1) for part in end]
                 await asyncio.sleep(REST_S)
                 break
             finally:
                 await surface.lift()
         return told
+
+    async def _straight(self, start: tuple[float, float], end: tuple[float, float], duration_ms: int, hold_s: float,
+                        check: Any, told: dict[str, Any]) -> dict[str, Any]:
+        """A carry in a game whose way of hanging held things is known: pressed, moved to where the pointer must
+        be, let go once the thing lies where it is to go."""
+        surface, gain = self.surface, self.hang.gain
+        size = await surface.size()
+        end = (min(max(end[0], 0.0), size[0] - 1.0), min(max(end[1], 0.0), size[1] - 1.0))
+        told.update(known=True, gain=round(gain, 3), tries=1)
+        await surface.press(*start)
+        try:
+            if hold_s:
+                await asyncio.sleep(hold_s)
+            # a short way first: a game takes a press that jumps as a tap
+            length = max(((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5, 1.0)
+            reach = max(FIRST_LEG[0], min(1.0, LEAST_LEG / length))
+            await surface.move(start[0] + (end[0] - start[0]) * reach, start[1] + (end[1] - start[1]) * reach, LEG_MS)
+            await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
+            end, lies = await self._settle(check, end, gain, told)
+            told["picked"] = any(seen["seen"] for seen in told["checks"])
+            if told["picked"]:
+                self.picked_any = True
+            elif not self.picked_any:
+                # nothing was seen held, and nothing ever was here: pressed longer next time
+                self.hold_s = next((step for step in HOLDS if step > self.hold_s), self.hold_s)
+            self._unseen = 0 if told["picked"] else self._unseen + 1
+            if not lies:
+                self.hang.shaken = True
+                await self._back(start, told)
+            told["end"] = [round(part, 1) for part in end]
+            await asyncio.sleep(REST_S)
+        finally:
+            await surface.lift()
+        return told
+
+    async def _settle(self, check: Any, end: tuple[float, float], gain: float, told: dict[str, Any]
+                      ) -> tuple[tuple[float, float], bool]:
+        """Frames taken with the pointer at rest at `end` until the held thing lies where it is to go (`check`) or
+        is seen the same on two in a row; when it lies off, the pointer is moved by that once and it is looked at
+        again. Where the pointer ends, and whether the thing may be let go there."""
+        size = await self.surface.size()
+        checks = told.setdefault("checks", [])
+        seen: dict[str, Any] = {"ok": False, "seen": 0}
+        for aimed in range(AIMS + 1):
+            began, previous, shots = time.monotonic(), None, 0
+            after = began + LIFT_S
+            while True:
+                frame = await self.frames.frame(after)
+                after, shots = frame.at + STILL_GAP_S, shots + 1
+                seen = check(frame.png)
+                key = (seen.get("seen"), tuple(seen.get("shift") or ()))
+                if seen.get("ok") or key == previous or time.monotonic() - began >= STILL_MOST_S:
+                    break
+                previous = key
+            checks.append({**seen, "pointer": [round(part) for part in end], "shots": shots,
+                           "waited_s": round(time.monotonic() - began, 2)})
+            if seen.get("ok"):
+                told["checked"] = True
+                return end, True
+            if not seen.get("shift") or aimed >= AIMS:
+                break
+            end = (min(max(end[0] - seen["shift"][0] / gain, 0.0), size[0] - 1.0),
+                   min(max(end[1] - seen["shift"][1] / gain, 0.0), size[1] - 1.0))
+            told["aimed"] = told.get("aimed", 0) + 1
+            await self.surface.move(*end, LEG_MS)
+        # over the cells it is to cover, though something beside them shows too (a glow): let go there
+        return end, bool(seen.get("covered"))
+
+    async def _back(self, start: tuple[float, float], told: dict[str, Any]) -> None:
+        """The held thing does not lie where it is to go: taken back to where it waited, so that letting go
+        puts it nowhere on the board."""
+        told["cancelled"] = True
+        await self.surface.move(*start, LEG_MS)
+        await asyncio.sleep(LIFT_S)
 
     def _plausible(self, follow: Follow, drawn: list[int]) -> bool:
         """Whether a way of following hangs the drawing near where the last measured one did: within ANCHOR_SLACK
@@ -525,6 +725,12 @@ class Carrier:
         self.gains = [*self.gains, gain][-FOLLOWS_KEPT:]
         self.since_doubt += 1
         self.follow = Follow.through(start, pointer, _middle(held), gain)
+        # what the game's way of hanging things is learned from: only a drawing seen at rest and the same size on
+        # both looks (2026-11-16: one caught among glints, 404 by 384 then 382 by 399, gave a gain of 1.32 for 1.45)
+        was = next(one for g, one, other in pairs if other is held)
+        steady = not again.get("restless") and not seen.get("restless") and all(
+            abs(now / max(then, 1) - 1) <= HANG_SIZE for now, then in ((held[2], was[2]), (held[3], was[3])))
+        self._drawn = (pointer, held) if steady else None
         return self.follow
 
     async def _aim(self, before: bytes, start: tuple[float, float], goal: tuple[float, float],

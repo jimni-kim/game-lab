@@ -262,12 +262,14 @@ class Adaptation:
 
     # ── explore ───────────────────────────────────────────────────────
 
-    async def label(self, png: bytes, board: list[int] | None, shape: tuple[int, int] | None) -> dict[str, Any] | None:
+    async def label(self, png: bytes, board: list[int] | None, shape: tuple[int, int] | None,
+                    rules: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """What the model reads on one screen: `{"board", "rules", "state"}` or None when it shows no board
         or the answer is no answer. The rule model checks the state afterwards."""
         # a large screen is shown smaller (`view`): boxes go to the model and come back in what it is shown
         shown, scale = view(png)
         context = {"family": self.descriptor, **({"board": [round(value * scale) for value in board]} if board else {}),
+                   **({"rules": rules} if rules else {}),
                    **({"sources": self.controls["source"]} if "source" in self.controls else {}),
                    **({"places": self.controls["places"]} if "places" in self.controls else {})}
         content = [{"type": "text", "text": json.dumps(context)}, _image(shown)]
@@ -351,7 +353,7 @@ class Adaptation:
             if board and rules is not None:
                 family = catalog.family(self.family_id).bind({"rules": rules})
                 shape = _shape(family, family.unread_state(self.descriptor["scenes"][0]["id"]))
-            answer = await self.label(png, board, shape)
+            answer = await self.label(png, board, shape, rules)
             if answer is None:
                 problem = "no_board"
                 if not patient:
@@ -1001,6 +1003,19 @@ class Store:
             for number, frame in enumerate(look.frames):
                 (path / f"look-{index}-frame-{number}.png").write_bytes(frame)
         return path
+
+    def profile(self, site: str, family_id: str) -> dict[str, Any] | None:
+        """What a family's own reader learned of a site (`kits`): numbers, no code."""
+        path = self._path(site, family_id) / "profile.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+
+    def save_profile(self, site: str, family_id: str, profile: dict[str, Any]) -> None:
+        path = self._path(site, family_id)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "profile.json").write_text(json.dumps(profile) + "\n", encoding="utf-8")
 
     def recoveries(self, site: str, family_id: str) -> list[dict[str, Any]]:
         """The inputs that got past this site's screens before (`Recovery.known`)."""

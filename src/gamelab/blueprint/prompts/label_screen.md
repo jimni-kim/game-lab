@@ -10,6 +10,8 @@ When screen is "board": set board to the box [left, top, width, height] in whole
 
 When the context has `places`, the game's board is not a grid: `places` names the places its things lie in and says what to give for each. Then set board to the box around all of them and also set places to an object with exactly those names, each a box [left, top, width, height] in whole-screen image pixels, a list of boxes, or a list of lists of boxes, as its description says.
 
+When the context has `rules`, they are this game's rule values, known already: the state must fit them. A list whose length they give (a tray of `tray_size` slots) keeps that length whatever the screen shows now, with the family's value for an empty entry in each slot that holds nothing, in the slot's own place; never a shorter list of only what is left.
+
 When the context has `sources`, it names a state field that lists things dragged onto the board from elsewhere on the screen. Then also set sources to a list with one entry per entry of that state field, in the same order: the tight box [left, top, width, height] in whole-screen image pixels around that thing as drawn (all of its blocks, nothing around them), or null where the entry is empty.
 
 Output no Markdown, explanation, executable code or additional keys.

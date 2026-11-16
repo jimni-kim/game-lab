@@ -27,10 +27,11 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, carry, catalog, direct, made, samples
+from . import adaptation, carry, catalog, direct, kits, made, samples
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
+from .adapters.kit import KitAdapter
 from .carry import Carrier
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
@@ -199,7 +200,12 @@ class Agent:
         # the looks the model read (what an adapter is written from), the adapter and how it was made
         self.trace: Trace | None = None
         self.made: Made | None = None
-        self.adapter: GeneratedAdapter | None = None
+        self.adapter: GeneratedAdapter | KitAdapter | None = None
+        # a family's own reader (`kits`): how often it was adopted from a look, how many screens it read, and
+        # whether it began from what was kept of the site
+        self.kit_adopted = self.kit_reads = 0
+        self.kit_demoted = False
+        self.kit_restored = False
         self.settling = Settling()
         # where the model was told the board is, and the rules it is read by
         self.board: list[int] | None = None
@@ -291,9 +297,27 @@ class Agent:
                 "recovery": self.recovery.summary() if self.recovery else None,
                 "digest": self.adapter.digest if self.adapter else None,
                 "calls": self.adapter.calls if self.adapter else None,
+                "kit": self._kit_summary(),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
+    def _kit_summary(self) -> dict[str, Any] | None:
+        if not kits.has(self.family_id) and not self.kit_reads:
+            return None
+        kit = self.adapter.kit if isinstance(self.adapter, KitAdapter) else None
+        return {"adopted": self.kit_adopted, "relearned_alone": kit.relearned if kit else None,
+                "empties": len(kit.empties) if kit else None, "reads": self.kit_reads,
+                "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored}
+
+    def _keep_profile(self) -> None:
+        """What the family's reader learned of this site and how the game hangs held things, for its next game."""
+        if self.store is None or not isinstance(self.adapter, KitAdapter) or self.adapter.layout is None or not self.site:
+            return
+        self.store.save_profile(self.site, self.family_id, {
+            "family": self.family_id, "rules": self.trace.rules if self.trace else {},
+            "kit": self.adapter.record(), "hang": self.carrier.hang.to_json(), "hold_s": self.carrier.hold_s})
+
     def close(self) -> None:
+        self._keep_profile()
         if self.adapter is not None:
             self.adapter.close()
             self.adapter = None
@@ -309,7 +333,8 @@ class Agent:
         self.candidates = [self.family_id] if self.family_id else []
         if self.family_id is None:
             kept = [] if self.store is None or self.fresh else \
-                [name for name in explorable() if self.store.load(self.site, name) is not None]
+                [name for name in explorable() if (self.store.profile(self.site, name) if kits.has(name)
+                                                   else self.store.load(self.site, name)) is not None]
             if kept:
                 self.candidates, self.found["identified"] = kept[:1], {"family": kept[0], "source": "kept", "questions": 0}
             else:
@@ -357,8 +382,11 @@ class Agent:
         except ValueError as error:
             raise _End(Outcome.UNSUPPORTED, str(error)) from None
         self.family_id = family_id
-        kept = None if self.store is None or self.fresh else self.store.load(self.site, family_id)
-        if kept is not None:
+        kept = None if self.store is None or self.fresh or kits.has(family_id) else self.store.load(self.site, family_id)
+        profile = self.store.profile(self.site, family_id) if kits.has(family_id) and self.store and not self.fresh else None
+        if profile is not None and self._restore(family_id, profile):
+            pass
+        elif kept is not None:
             source, meta, self.trace = kept
             self.made, self.generations = Made(source, meta["generations"], True, meta["report"]), meta["generations"]
             self.board = self.trace.looks[0].board
@@ -376,6 +404,45 @@ class Agent:
         self.family = catalog.family(family_id).bind({"rules": self.trace.rules} if self.trace else None)
         if "identified" in self.found:
             self.found["identified"]["family"] = family_id
+        return True
+
+    def _restore(self, family_id: str, profile: dict[str, Any]) -> bool:
+        """The family's reader as it was kept for this site: the game is read by it from the first screen, and
+        its drags go by how the game hung held things before."""
+        try:
+            adapter = KitAdapter(family_id, rules=profile.get("rules") or {}, site=self.site)
+            if not adapter.restore(profile.get("kit") or {}):
+                return False
+        except (ValueError, KeyError, TypeError):
+            return False
+        self.trace = Trace(family_id, dict(profile.get("rules") or {}), self.site)
+        self.made = Made("", 0, True, {})
+        self.adapter, self.board = adapter, list(adapter.layout["board"])
+        self.settling = Settling(**adapter.played.get("settling", {}))
+        self.distrusted, self.blind, self.trial, self.rested, self.carried = False, False, TRIAL_MOVES, [], None
+        self.carrier.hang = carry.Hang.from_json(profile.get("hang"))
+        self.carrier.hold_s = float(profile.get("hold_s") or 0.0)
+        self.kit_restored = True
+        return True
+
+    def _adopt_kit(self) -> bool:
+        """The family's own reader, taught this screen by the looks the model read: it reads from here on. No
+        code is written for the game."""
+        adapter = self.adapter if isinstance(self.adapter, KitAdapter) else \
+            KitAdapter(self.family_id, rules=self.trace.rules, site=self.site)
+        if not adapter.keep(self.trace.looks):
+            if self.adapter is not adapter:
+                adapter.close()
+            return False
+        if self.adapter is not adapter:
+            if self.adapter is not None:
+                self.adapter.close()
+            self.adapter = adapter
+            self.settling = Settling(**adapter.played.get("settling", {}))
+            self.rested = []
+        self.made = self.made or Made("", 0, False, {})
+        self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
+        self.kit_adopted += 1
         return True
 
     # ── one move ──────────────────────────────────────────────────────
@@ -643,6 +710,10 @@ class Agent:
         deadline = (after or clock()) + policy.timeout_s
         previous = pictured = read = unread = None
         stable_since = rested = read_since = unread_since = clock()
+        if isinstance(self.adapter, KitAdapter):
+            # what the rules say the move left: it fills what the screen leaves unclear
+            self.adapter.expecting(self._prior(expect) if expect is not None else None,
+                                   expect[0].state if expect is not None else None)
         while True:
             self._check_time()
             # a screen something kept moving over is read as it is under that, for as long as it keeps moving
@@ -682,6 +753,7 @@ class Agent:
             previous, pictured = key, image
             self.rested_at = read_since if restless else rested
             if usable:
+                self.kit_reads += isinstance(self.adapter, KitAdapter)
                 reading = Reading(png, state.payload, looked, L3)
                 if expect is not None and (settled or restless) \
                         and self._effect(expect[0].state, expect[1], state.payload) == "confirmed":
@@ -779,6 +851,9 @@ class Agent:
         self.trace.looks.append(look)
         if expect is None and partial is None:
             self.unproven = look
+        if self.adapter is None and kits.has(self.family_id) and not self.kit_demoted:
+            # a family with a reader of its own is read by it from the first look on
+            self._adopt_kit()
         return Reading(png, state, started, L2, look)
 
     async def _rest(self) -> None:
@@ -840,6 +915,7 @@ class Agent:
         log.info("the game goes on read by the model: %s", reason)
         if self.adapter is not None:
             self.adapter.close()
+        self.kit_demoted = self.kit_demoted or isinstance(self.adapter, KitAdapter)
         self.adapter, self.distrusted, self.blind = None, False, False
         if self.carried is not None and self.carried.by == L3:
             self.carried = None
@@ -848,6 +924,18 @@ class Agent:
     async def _recheck(self) -> None:
         """The adapter against every look so far, the one just read included: kept when it reads them all,
         else written again from them."""
+        if isinstance(self.adapter, KitAdapter):
+            # the family's reader learns the screen again from what the model just read: nothing is written
+            if self._adopt_kit() and self.adapter.agrees(self.trace.looks[-1]):
+                if self.store is not None:
+                    self._keep_profile()
+                return
+            self.distrusted = True
+            self.rewrites += 1
+            if self.rewrites >= MAX_RELEARNS:
+                self.kit_demoted = True
+                self._demote("relearn_limit")
+            return
         report = adopt(self.made.source, self.trace)
         if report["passed"]:
             # the look just read gave its samples: what the code leaves to the host is now known there too
@@ -872,6 +960,8 @@ class Agent:
         """An adapter written from the looks so far and adopted when it passes on all of them. When none
         passes the game goes on read by the model, and one is tried again after RETRY_LOOKS more moves."""
         tool, trace = self.adaptation, self.trace
+        if kits.has(self.family_id):
+            return not self.kit_demoted and self._adopt_kit()
         if not any(look.held for look in trace.looks):
             for look in trace.looks[-HELD_BACK:]:
                 look.held = True
@@ -963,13 +1053,19 @@ class Agent:
         elif "source" not in self.adaptation.controls:
             await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])      # between two cells: nothing is carried
         else:
+            check = self.adapter.hover(before.state, action) if isinstance(self.adapter, KitAdapter) else None
             self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"],
-                                                       before=before.png, source=self._source(before, action))
+                                                       before=before.png, source=self._source(before, action), check=check)
 
     def _source(self, before: Reading, action: dict[str, Any]) -> list[int] | None:
         """Where the screen a move is played from was read to show the thing the move drags, when it was."""
-        sources = before.look.sources if before.look is not None else None
         index = action.get(self.adaptation.controls.get("index", "")) if self.adaptation else None
+        if isinstance(self.adapter, KitAdapter) and type(index) is int:
+            # where the family's reader sees the thing on that screen: the same box whoever read the screen, so
+            # that what carries learn of one piece holds for the next
+            if (seen := self.adapter.source_on(before.png, index)) is not None:
+                return seen
+        sources = before.look.sources if before.look is not None else None
         if isinstance(sources, list) and type(index) is int and 0 <= index < len(sources) \
                 and isinstance(sources[index], list) and len(sources[index]) == 4:
             return [round(part) for part in sources[index]]
