@@ -415,3 +415,18 @@ async def test_a_viewer_is_sent_the_latest_frame_only():
     viewer.wake.set()
     await viewer.send(Socket())
     assert sent == [{"kind": "status"}, b"three"]
+
+
+async def test_a_demo_for_pages_only_refuses_an_app_without_touching_the_device(tmp_path):
+    demo = serve.Demo(options(tmp_path, "--web-only"), Recorded(Asked({"url": None, "objective": "play_until_end", "game": "2048"})),
+                      token=TOKEN, emulator=Running())
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/ask", json={"words": "2048 앱에서 30수"}, headers=mine)).status == 202
+        events, _ = await until(socket, "refused")
+        assert events[-1]["reason"] == "web_only" and demo.emulator.ensured == 0
+    finally:
+        await client.close()

@@ -308,6 +308,10 @@ class Demo:
                 # words that name no page and say nothing of a game do not start the emulator
                 self.tell({"kind": "refused", "reason": "no_game"})
                 return
+            if asked["url"] is None and self.args.web_only:
+                # the device is not this demo's to move (another run measures on it)
+                self.tell({"kind": "refused", "reason": "web_only"})
+                return
             if asked["url"] is None:
                 # no page: an app on the device, which is asked about again with the apps installed there
                 serial = await self.emulator.ensure(lambda: self.tell({"kind": "opening", "where": "emulator"}))
@@ -507,4 +511,6 @@ def configure(parser: argparse.ArgumentParser) -> None:
                         help="where generated adapters are kept by site and app and reused")
     parser.add_argument("--avd", default=AVD, help="the emulator started when no device is attached")
     parser.add_argument("--headed", action="store_true", help="show the browser window too")
+    parser.add_argument("--web-only", action="store_true",
+                        help="play pages only: a request for an app is refused and the device is never touched")
     measure.model_arguments(parser)
