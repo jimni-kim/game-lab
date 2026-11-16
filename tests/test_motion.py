@@ -14,7 +14,7 @@ from gamelab.carry import Carrier
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
 from gamelab.motion import Steady
-from test_adaptation_blocks import BOARD as BLOCKS_BOARD, CELL, Blocks, extent
+from test_adaptation_blocks import BOARD as BLOCKS_BOARD, CELL, PIECE as BLOCKS_PIECE, Blocks, extent
 from test_adaptation_mines import COMPUTE, SIZE as MINES_SIZE, Mines, Reader
 from test_direct import BESIDE, Lamps, Player
 
@@ -528,3 +528,76 @@ async def test_a_doubted_carry_that_cannot_measure_is_still_aimed_by_what_was_me
         carry.STEP_PX, carry.STEP_LEAST = carry_step, 32.0
     assert not second["measured"] and not second.get("quick") and abs(second["gain"] - 1.45) <= 0.08, second
     assert fake.placed[-1] == (1, [5, 4]), (second, fake.placed)
+
+
+class Twinkling(Following):
+    """A block game whose board twinkles over one place when told to (`field`): dots in the pieces' own colour that
+    change at every capture, close enough together to be one change the size of the place (as gems of a piece's
+    colour glinting over a board, 2026-11-16)."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.field, self.shown_twinkles = None, 0
+
+    async def capture(self, region=None):
+        png = await super().capture(region)
+        if self.field is None or region is not None:
+            return png
+        self.shown_twinkles += 1
+        image = Image.open(BytesIO(png)).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        left, top, right, bottom = self.field
+        for y in range(top, bottom, 9):
+            for x in range(left, right, 9):
+                if (x // 9 + y // 9 + self.shown_twinkles) % 2:
+                    draw.rectangle((x, y, x + 3, y + 3), fill=BLOCKS_PIECE)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_a_twinkling_board_is_not_taken_for_the_held_piece_once_its_size_is_known():
+    """A carry that could see the held piece once only, over a board that twinkles round where the pointer stops
+    first, in the piece's colour and proportions: the twinkling place is no piece of the size the carries before
+    measured, and the piece lands where it was meant to (2026-11-16: taken for the piece, it hung the piece from the
+    board's middle and let go off the board)."""
+    fake = Twinkling(gain=1.45, catch=0.5)
+    carrier = Carrier(fake)
+    first = await carrier.carry(slot_middle(fake, 1), goal_at(fake, 1, [0, 0]), 400)
+    assert first["measured"] and fake.placed == [(1, [0, 0])], first
+    # the third piece (a single block) to the top of the board: the pointer's first stop is in the middle of a
+    # twinkling square three pieces wide, well clear of where the piece was pressed
+    start, goal = slot_middle(fake, 2), goal_at(fake, 2, [0, 6])
+    stop = (start[0] + 0.2 * (goal[0] - start[0]), start[1] + 0.2 * (goal[1] - start[1]))
+    side = 3 * 2 * CELL
+    fake.field = (round(stop[0] - side / 2), round(start[1] - 24 - side), round(stop[0] + side / 2), round(start[1] - 24))
+    carry_step = carry.STEP_PX
+    try:
+        carry.STEP_PX = carry.STEP_LEAST = 0.0
+        second = await carrier.carry(start, goal, 400)
+    finally:
+        carry.STEP_PX, carry.STEP_LEAST = carry_step, 32.0
+    assert fake.placed[-1] == (2, [0, 6]), (second, fake.placed)
+
+
+def test_changes_where_small_things_keep_moving_are_left_out_and_a_place_of_another_size_is_no_held_piece():
+    image = Image.new("RGB", (200, 200), (20, 20, 60))
+    before = BytesIO()
+    image.save(before, format="PNG")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 17, 17), fill=(255, 255, 255))        # a glint
+    draw.rectangle((100, 100, 147, 147), fill=(200, 80, 40))      # a drawing 48 a side
+    after = BytesIO()
+    image.save(after, format="PNG")
+    assert len(carry._boxes(before.getvalue(), after.getvalue())) == 2
+    assert carry._boxes(before.getvalue(), after.getvalue(), ignore=[[8, 8, 12, 12]]) == [[100, 100, 48, 48]]
+    assert carry._scaled([100, 100, 48, 48], [0, 0, 24, 24], 2.0)
+    assert not carry._scaled([0, 0, 200, 200], [0, 0, 24, 24], 2.0)
+
+
+def test_a_carry_is_trusted_when_it_picked_the_piece_up_and_knew_how_it_hung():
+    assert carry.trusted({"picked": True, "measured": True})
+    assert carry.trusted({"picked": True, "quick": True})
+    assert not carry.trusted({"picked": True, "measured": False, "why": "nothing_followed"})
+    assert not carry.trusted({"picked": False, "measured": True})
+    assert not carry.trusted(None)

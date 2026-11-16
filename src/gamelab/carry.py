@@ -77,11 +77,22 @@ FOLLOWS_KEPT = 9
 # it rests where it was meant to. A carry whose move the game did not take sends the next back to measuring
 # (`doubt`)
 SURE_AFTER, SURE_SPREAD = 2, 0.06
+# what keeps moving where the screen is read (`motion.Steady.moving`) and is left out of what changed while a thing
+# is held: each place no larger than this share of the screen (a glint on a gem, a twinkling star; 2026-11-16, the
+# glints of a whole board joined into one change the size of the board and were taken for the held piece)
+IGNORED_MOST = 0.02
+# once carries measured how much larger the held drawing is than the thing picked up, a place is taken for it only
+# when its sides are that many times the thing's, within this share
+SCALE_SLACK = 0.35
+# a carry that saw the held drawing once only hangs it from where it was seen there, unless that is further from
+# where the carries before hung it than this many times the drawing's larger side: what was seen was not it
+ANCHOR_SLACK = 1.0
 
 
-def _boxes(before: bytes, after: bytes) -> list[list[int]]:
-    """The things that changed between two captures, each as the box [left, top, width, height] around it."""
-    from PIL import Image, ImageChops
+def _boxes(before: bytes, after: bytes, ignore: list[list[int]] | None = None) -> list[list[int]]:
+    """The things that changed between two captures, each as the box [left, top, width, height] around it.
+    `ignore`: places whose changes are left out (what keeps moving there all the time)."""
+    from PIL import Image, ImageChops, ImageDraw
 
     with Image.open(BytesIO(before)) as one, Image.open(BytesIO(after)) as other:
         if one.size != other.size:
@@ -89,6 +100,10 @@ def _boxes(before: bytes, after: bytes) -> list[list[int]]:
         changed = ImageChops.difference(one.convert("RGB"), other.convert("RGB"))
     bands = [band.point(lambda value: 255 if value > CHANGED else 0) for band in changed.split()]
     full = ImageChops.lighter(ImageChops.lighter(bands[0], bands[1]), bands[2])
+    if ignore:
+        draw = ImageDraw.Draw(full)
+        for left, top, w, h in ignore:
+            draw.rectangle((left, top, left + w - 1, top + h - 1), fill=0)
     mask = full.reduce(REDUCE)
     width, height = mask.size
     marked = [value > 40 for value in mask.tobytes()]
@@ -127,13 +142,15 @@ def _overlaps(one: list[int], other: list[int]) -> bool:
 
 
 def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer: tuple[float, float],
-               source: list[int] | None = None) -> tuple[list[int], list[list[int]]] | None:
+               source: list[int] | None = None, scale: float | None = None,
+               ignore: list[list[int]] | None = None) -> tuple[list[int], list[list[int]]] | None:
     """Where the thing pressed at `start` was (`origin`), and every place it may be drawn while the pointer holds
     it at `pointer`, nearest the pointer first: what changed between the capture before the press and the one
     during the hold, as large as what was picked up or larger and in its proportions. `source`: where the screen
-    was read to show the thing, taken for its place when something changed there. None when nothing can be
-    told apart (still overlapping, or nothing of the right shape moved)."""
-    boxes = [box for box in _boxes(before, during) if box[2] >= 2 * REDUCE and box[3] >= 2 * REDUCE]
+    was read to show the thing, taken for its place when something changed there. `scale`: how many times larger
+    than the thing the carries before saw it drawn held, when they measured it. `ignore`: places left out of what
+    changed. None when nothing can be told apart (still overlapping, or nothing of the right shape moved)."""
+    boxes = [box for box in _boxes(before, during, ignore) if box[2] >= 2 * REDUCE and box[3] >= 2 * REDUCE]
     if source is not None and source[2] > 0 and source[3] > 0:
         if not any(_overlaps(box, source) for box in boxes):
             return None
@@ -149,10 +166,15 @@ def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer
     # tutorial's overlay gone from where it was) is not in its proportions until it is
     narrowed = [_own(before, during, origin, box) for box in rest
                 if box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7]
-    shaped = [box for box in narrowed if _shaped(box, origin)]
+    shaped = [box for box in narrowed if _shaped(box, origin) and (scale is None or _scaled(box, origin, scale))]
     if not shaped:
         return None
     return origin, sorted(shaped, key=lambda box: _gap(pointer, box))
+
+
+def _scaled(box: list[int], origin: list[int], scale: float) -> bool:
+    """Whether a box is `scale` times as large as what was picked up, side by side, within SCALE_SLACK."""
+    return all(abs(side / max(scale * was, 1.0) - 1) <= SCALE_SLACK for side, was in ((box[2], origin[2]), (box[3], origin[3])))
 
 
 def _shaped(box: list[int], origin: list[int]) -> bool:
@@ -161,10 +183,11 @@ def _shaped(box: list[int], origin: list[int]) -> bool:
         and abs((box[2] / origin[2]) / (box[3] / origin[3]) - 1) <= ASPECT
 
 
-def gone(before: bytes, during: bytes, start: tuple[float, float], source: list[int] | None = None) -> bool:
+def gone(before: bytes, during: bytes, start: tuple[float, float], source: list[int] | None = None,
+         ignore: list[list[int]] | None = None) -> bool:
     """Whether the thing pressed at `start` left its place: what the screen showed there changed. A press that
     picked nothing up leaves it as it was."""
-    boxes = [box for box in _boxes(before, during) if box[2] >= 2 * REDUCE and box[3] >= 2 * REDUCE]
+    boxes = [box for box in _boxes(before, during, ignore) if box[2] >= 2 * REDUCE and box[3] >= 2 * REDUCE]
     if source is not None and source[2] > 0 and source[3] > 0:
         return any(_overlaps(box, source) for box in boxes)
     return any(_gap(start, box) <= REDUCE * JOIN for box in boxes)
@@ -245,6 +268,13 @@ def follows(one: tuple[list[int], tuple[float, float]], other: tuple[list[int], 
     return gain
 
 
+def trusted(told: dict[str, Any] | None) -> bool:
+    """Whether a carry is known to have put the thing where it was meant to go: it picked it up, and it either
+    measured how the drawing follows or, sure of that from the carries before, saw the drawing on the way (`quick`).
+    A move whose carry is not trusted and did nothing says nothing against how the screen was read."""
+    return bool(told and told.get("picked") and (told.get("measured") or told.get("quick")))
+
+
 def followed(one: tuple[list[int], tuple[float, float]], other: tuple[list[int], tuple[float, float]]) -> bool:
     """Whether a box found on one look and one found on the next are the same thing moving with the pointer."""
     return follows(one, other) is not None
@@ -290,6 +320,11 @@ class Carrier:
         self.gains: list[float] = []
         # how many of them were measured since a carry's move was last doubted: only those make a carry sure
         self.since_doubt = 0
+        # how many times larger than the thing picked up each measured held drawing was (its sides on average)
+        self.scales: list[float] = []
+        # this carry's places left out of what changed, and the scale it holds what it finds to
+        self._ignore: list[list[int]] = []
+        self._scale: float | None = None
         self.log: list[dict[str, Any]] = []
         # the press before moving that picks things up here (HOLDS), and whether any carry here picked one up
         self.hold_s = HOLDS[0]
@@ -307,6 +342,14 @@ class Carrier:
         recent = self.gains[-SURE_AFTER:]
         return self.since_doubt >= SURE_AFTER and len(recent) >= SURE_AFTER \
             and max(recent) <= min(recent) * (1 + SURE_SPREAD)
+
+    def _ignored(self, size: list[int]) -> list[list[int]]:
+        """The small places things keep moving at where the screen was last read (`motion.Steady.moving`)."""
+        area = size[0] * size[1]
+        return [list(box) for box in getattr(self.surface, "moving", None) or [] if box[2] * box[3] <= IGNORED_MOST * area]
+
+    def _scaled_by(self) -> float | None:
+        return sorted(self.scales)[len(self.scales) // 2] if self.scales else None
 
     def doubt(self) -> None:
         """A carry's move did not do what it should: the next carries measure how the drawing follows again. What
@@ -326,9 +369,10 @@ class Carrier:
             frame = await self.frames.frame(after)
             png, after = frame.png, frame.at + STILL_GAP_S
             shots += 1
-            found = candidates(before, png, start, near or pointer, source)
+            found = candidates(before, png, start, near or pointer, source, self._scale, self._ignore)
             boxes = found[1] if found else []
-            seen = {"png": png, "origin": found[0] if found else None, "gone": gone(before, png, start, source),
+            seen = {"png": png, "origin": found[0] if found else None,
+                    "gone": gone(before, png, start, source, self._ignore),
                     "still": [], "boxes": boxes}
             if previous is not None:
                 seen["still"] = [box for box in boxes if any(_same(box, other, STILL_PX) for other in previous)]
@@ -366,6 +410,9 @@ class Carrier:
             before = None
         if before is None:
             before = (await self.frames.frame()).png
+        self._ignore, self._scale = self._ignored(await surface.size()), self._scaled_by()
+        if self._ignore:
+            told["ignored"] = len(self._ignore)
         # pressed again longer only while no carry here has picked a thing up: after one has, a press that
         # shows nothing gone is a look that failed, and pressing a piece again and again may do something to it
         holds = [hold_s, *(step for step in HOLDS if step > hold_s)] if not self.picked_any else [hold_s]
@@ -410,8 +457,13 @@ class Carrier:
                 else:
                     follow = await self._measure(before, start, way, length, first, source, told) if first else None
                 if follow is None and first is not None and first[0]["still"]:
-                    # seen once only: it follows as the carries before showed, through the place it was seen at
-                    follow = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())
+                    # seen once only: it follows as the carries before showed, through the place it was seen at,
+                    # unless that hangs it far from where the carries before did (what was seen was not it)
+                    seen_once = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())
+                    if self._plausible(seen_once, first[0]["still"][0]):
+                        follow = seen_once
+                    else:
+                        told["anchor_refused"] = [round(part) for part in seen_once.anchor]
                 follow = follow or self.follow
                 if follow is not None:
                     told.update(gain=round(follow.gain, 3), anchor=[round(part) for part in follow.anchor],
@@ -424,6 +476,14 @@ class Carrier:
             finally:
                 await surface.lift()
         return told
+
+    def _plausible(self, follow: Follow, drawn: list[int]) -> bool:
+        """Whether a way of following hangs the drawing near where the last measured one did: within ANCHOR_SLACK
+        times the drawing's larger side (where on the thing it was pressed moves its middle by less than that)."""
+        if self.follow is None:
+            return True
+        reach = ANCHOR_SLACK * max(drawn[2], drawn[3])
+        return all(abs(a - b) <= reach for a, b in zip(follow.anchor, self.follow.anchor))
 
     async def _fits(self, png: bytes) -> bool:
         from PIL import Image
@@ -459,6 +519,9 @@ class Carrier:
             return None
         gain, _, held = pairs[0]
         told.update(measured=True, held=held, origin=again["origin"])
+        origin = again["origin"] or source
+        if origin and origin[2] > 0 and origin[3] > 0:
+            self.scales = [*self.scales, (held[2] / origin[2] + held[3] / origin[3]) / 2][-FOLLOWS_KEPT:]
         self.gains = [*self.gains, gain][-FOLLOWS_KEPT:]
         self.since_doubt += 1
         self.follow = Follow.through(start, pointer, _middle(held), gain)

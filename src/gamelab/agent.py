@@ -27,7 +27,7 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, catalog, direct, made, samples
+from . import adaptation, carry, catalog, direct, made, samples
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
@@ -451,7 +451,11 @@ class Agent:
             return
         # the adapter is doubted for a move it read either side of: a board it read wrongly is as often the
         # one after the move (a place it takes for empty) as the one before
-        if L3 in (before.by, after.by if after else None) and (self.trial > 0 or self.stalled >= MAX_STALLED):
+        # not for a move whose carry is not known to have put the piece where it was meant to go (it picked
+        # nothing up, or could not tell where the piece hung): that is the carry's, until moves keep failing
+        carried_unsure = self.carried_as is not None and not carry.trusted(self.carried_as)
+        if L3 in (before.by, after.by if after else None) and (
+                self.stalled >= MAX_STALLED or (self.trial > 0 and not carried_unsure)):
             self._doubt()
 
     def _spent(self, state: str, action: dict[str, Any]) -> None:
