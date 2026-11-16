@@ -68,6 +68,40 @@ def test_a_rule_model_or_solver_imports_only_pure_standard_modules(module):
     assert not names & IO_MODULES, names & IO_MODULES
 
 
+# the loop and what it stands on: none of it may lean on the evaluation's callers (`eval web`, `eval android`,
+# the demo server), which are the loop's users, not its parts (PLAN §14)
+LOOP = ("agent", "adaptation", "direct", "carry", "motion", "recovery", "made", "request", "catalog", "surface",
+        "model", "pixels", "samples", "run", "contracts", "execution", "resources", "adapters.generated",
+        "environments.web", "environments.android")
+
+
+def test_nothing_outside_the_evaluation_imports_it():
+    source = ROOT / "src/gamelab"
+    for path in source.rglob("*.py"):
+        if path.relative_to(source).parts[0] == "eval":
+            continue
+        package = ".".join(("gamelab", *path.relative_to(source).parent.parts))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom):
+                base = package.rsplit(".", node.level - 1)[0] if node.level else ""
+                names = [".".join(filter(None, (base, node.module or "")))]
+                names += [f"{names[0]}.{alias.name}" for alias in node.names]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                continue
+            assert not any(name == "gamelab.eval" or name.startswith("gamelab.eval.") for name in names), (path, names)
+
+
+def test_the_loop_runs_without_the_evaluation_loaded():
+    import subprocess
+    loaded = subprocess.run([sys.executable, "-c", "import importlib, sys\n"
+                             f"for name in {LOOP!r}: importlib.import_module('gamelab.' + name)\n"
+                             "print(sorted(name for name in sys.modules if name.startswith('gamelab.eval')))"],
+                            capture_output=True, text=True, check=True)
+    assert loaded.stdout.strip() == "[]", loaded.stdout
+
+
 def _play(family, rules, policy, budget, seed, moves):
     """A whole simulated game from a seed: the policy's moves, chosen from what the screen shows, the game's
     own draws."""

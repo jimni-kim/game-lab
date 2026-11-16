@@ -31,6 +31,9 @@ would; the harness is not told:
 
 N counts every input the harness sent, never the setup's.
 
+A page a request names (`--ask`) is opened only when its address is a public one, and everything it loads
+afterwards is held to the same rule (`guard`).
+
 The site's answer key (`sites.json`, read from the page's DOM) only scores the run; the harness never
 sees it. A site whose board the page does not expose (a canvas) may name instead where the page states
 the game's end (`ending`), read once the game is over and compared with the end the harness judged
@@ -41,18 +44,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import time
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import Any
+from typing import Any, Callable
 
 from pathlib import Path
 
 from .. import agent, request
 from ..adaptation import Store
 from ..environments.web import WebSurface, browser
-from . import measure
+from . import guard, measure
 
 SITES = files(__package__) / "sites.json"
 # setup waits for the page's document, not every ad frame: some sites never fire "load"; the
@@ -294,7 +298,11 @@ def perturbed(game: Game, recorder: measure.Recorder) -> list[dict[str, Any]]:
 
 
 async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, url: str,
-                   family_id: str | None, site: dict[str, Any], model: Any, writer: Any = None) -> dict[str, Any]:
+                   family_id: str | None, site: dict[str, Any], model: Any, writer: Any = None, *,
+                   cancel: asyncio.Event | None = None,
+                   watching: Callable[[measure.Recorder], agent.Watch] | None = None) -> dict[str, Any]:
+    """One game on the page, its files written; `cancel` ends it at the next input, and `watching` may hang
+    another watcher around the game's recorder."""
     goal, budget = measure.goal_and_budget(args)
     # a request in words set the goal and says what it can of the game
     goal, hint = (args.asked["goal"], args.asked["hint"]) if getattr(args, "asked", None) else (goal, None)
@@ -302,7 +310,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
     answered = len(model.answers)
     started = time.monotonic()
     await setup(page, url, site)
-    cancel = asyncio.Event()
+    cancel = cancel or asyncio.Event()
     game = Game(page, site, args.perturb, cancel)
     recorder = measure.Recorder(name, truth=game.oracle, after=game.after, during=game.during)
     try:
@@ -310,7 +318,8 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
         # from the game's first moves, and made again whenever play stops at a screen it cannot read
         run, adapted = await agent.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
                                         store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
-                                        watch=recorder, accept_consent=args.accept_consent, writer=writer, hint=hint)
+                                        watch=watching(recorder) if watching else recorder,
+                                        accept_consent=args.accept_consent, writer=writer, hint=hint)
     finally:
         await game.tidy()
     elapsed = time.monotonic() - started
@@ -325,6 +334,25 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
     return summary
 
 
+def site_for(args: argparse.Namespace, asked: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
+    """The site a run plays and the name its games are called by: `--site`'s entry in sites.json, else the
+    page a request named, opened as it is (`asked`)."""
+    site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site) if args.site else None
+    if site is None and args.site:
+        raise SystemExit(f"no evaluation setup for {args.site} in sites.json")
+    name = args.site
+    if site is None:
+        if asked is None or asked["url"] is None:
+            raise SystemExit("the request names no page: give --site, or the address in the request")
+        # a page nobody set up: opened as it is, at the usual window, and found out from its screen
+        site = {"url": asked["url"], "viewport": list(ASKED_VIEWPORT), "setup": [{"reload": True}, {"wait_ms": ASKED_WAIT_MS}],
+                "asked": True}
+        name = "asked"
+    if getattr(args, "viewport", None):
+        site = {**site, "resize": args.viewport}
+    return name, site
+
+
 async def main(args: argparse.Namespace) -> int:
     if not (args.site or args.ask):
         raise SystemExit("give --site, or --ask with a request that names the page")
@@ -337,28 +365,22 @@ async def main(args: argparse.Namespace) -> int:
         args.asked = await request.understand(model, args.ask)
         print(json.dumps({"asked": {"url": args.asked["url"], "goal": args.asked["goal"].to_json(), "hint": args.asked["hint"]}},
                          ensure_ascii=False), flush=True)
-    site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site) if args.site else None
-    if site is None and args.site:
-        raise SystemExit(f"no evaluation setup for {args.site} in sites.json")
-    if site is None:
-        if args.asked["url"] is None:
-            raise SystemExit("the request names no page: give --site, or the address in the request")
-        # a page nobody set up: opened as it is, at the usual window, and found out from its screen
-        site = {"url": args.asked["url"], "viewport": list(ASKED_VIEWPORT), "setup": [{"reload": True}, {"wait_ms": ASKED_WAIT_MS}]}
-        args.site = "asked"
-    if args.viewport:
-        site = {**site, "resize": args.viewport}
+    args.site, site = site_for(args, args.asked)
     # with --identify nobody says which game the page shows: the harness finds out from the screen
     # (a site whose entry names no family is always found out so)
     family_id = None if args.identify else site.get("family")
     writer_client, writer = measure.writer_model(args, model)
     results = []
     try:
-        async with browser(viewport=site["viewport"], headless=not args.headed, scale=args.scale) as page:
-            for number in range(1, args.games + 1):
-                result = await play_one(args, number, page, args.site, site["url"], family_id, site, model, writer)
-                results.append(result)
-                print(json.dumps(result, ensure_ascii=False), flush=True)
+        # each run has a browser of its own, so runs side by side do not meet (only a device is locked)
+        async with guarded(site) as held:
+            async with browser(viewport=site["viewport"], headless=not args.headed, scale=args.scale, **held) as page:
+                for number in range(1, args.games + 1):
+                    result = await play_one(args, number, page, args.site, site["url"], family_id, site, model, writer)
+                    results.append(result)
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+    except guard.Refused as refused:
+        raise SystemExit(str(refused)) from None
     finally:
         for opened in (client, writer_client):
             if opened is not None:
@@ -366,6 +388,19 @@ async def main(args: argparse.Namespace) -> int:
         if results:
             measure.write_summary(args.out, args, results, site=args.site)
     return 0
+
+
+@asynccontextmanager
+async def guarded(site: dict[str, Any], look: guard.Resolve = guard.resolve, connect: guard.Connect | None = None):
+    """The browser's options for a site: for a page a request named, refused unless its address is public, and
+    every connection it makes held to public addresses (`guard.Proxy`); a site of sites.json as it is."""
+    if not site.get("asked"):
+        yield {}
+        return
+    if not await guard.allowed(site["url"], look):
+        raise guard.Refused(f"{site['url']} is not a public address")
+    async with guard.Proxy(look, connect) as proxy:
+        yield {"proxy": proxy.settings, "args": guard.BROWSER_ARGS, "service_workers": "block", "accept_downloads": False}
 
 
 def configure(parser: argparse.ArgumentParser) -> None:

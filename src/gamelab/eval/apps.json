@@ -1,0 +1,3 @@
+{
+  "_comment": "Apps named by hand for requests in words (eval android --ask, eval serve): by package, the name a person calls it (label, in place of the one its APK gives) and whether each game starts from no data (clear: pm clear, which also forgets progress and sign-ins)."
+}

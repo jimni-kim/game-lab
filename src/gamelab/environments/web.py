@@ -159,15 +159,17 @@ class WebSurface:
 
 
 @asynccontextmanager
-async def browser(*, viewport: list[int], headless: bool = True, scale: float | None = None):
-    """A Chromium page of `viewport` CSS pixels, closed with its browser afterwards."""
+async def browser(*, viewport: list[int], headless: bool = True, scale: float | None = None,
+                  proxy: dict[str, str] | None = None, args: tuple[str, ...] = (), **options: Any):
+    """A Chromium page of `viewport` CSS pixels, closed with its browser afterwards. `proxy` and `args` go to
+    Playwright's launch as they are, and `options` to its new context."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
-        chromium = await playwright.chromium.launch(headless=headless)
+        chromium = await playwright.chromium.launch(headless=headless, args=list(args), **({"proxy": proxy} if proxy else {}))
         try:
             context = await chromium.new_context(viewport={"width": viewport[0], "height": viewport[1]},
-                                                 **({"device_scale_factor": scale} if scale else {}))
+                                                 **({"device_scale_factor": scale} if scale else {}), **options)
             yield await context.new_page()
         finally:
             await chromium.close()

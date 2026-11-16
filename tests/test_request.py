@@ -34,3 +34,33 @@ async def test_an_answer_the_request_does_not_bear_out_is_not_taken():
     assert asked["url"] is None and asked["goal"].objective == "play_until_end"
     asked = await request.understand(Says({"url": None, "objective": "actions", "target_value": 30, "game": "minesweeper"}), "30 moves of minesweeper")
     assert (asked["goal"].objective, asked["goal"].target_value, asked["hint"]) == ("actions", 30, "minesweeper")
+
+
+APPS = [{"package": "name.boyle.chris.sgtpuzzles", "label": "Puzzles"}, {"package": "com.tpcstld.twozerogame", "label": "2048"}]
+
+
+async def test_an_app_is_taken_when_it_is_one_of_the_devices_and_its_label_goes_to_the_model():
+    model = Says({"url": None, "app": "name.boyle.chris.sgtpuzzles", "objective": "play_until_end", "target_value": None,
+                  "game": "Fifteen"})
+    asked = await request.understand(model, "퍼즐 앱에서 Fifteen 끝까지", APPS)
+    assert (asked["url"], asked["app"], asked["hint"]) == (None, "name.boyle.chris.sgtpuzzles", "Fifteen")
+    assert model.asked[0]["apps"] == APPS and model.asked[0]["request"] == "퍼즐 앱에서 Fifteen 끝까지"
+
+
+async def test_an_app_not_installed_or_not_shown_is_not_taken():
+    answer = {"url": None, "app": "com.android.settings", "objective": "play_until_end", "game": None}
+    assert (await request.understand(Says(answer), "open the settings app", APPS))["app"] is None
+    # no apps were shown: whatever package the model names is none of the device's
+    answer["app"] = "com.tpcstld.twozerogame"
+    model = Says(answer)
+    asked = await request.understand(model, "2048 앱에서 30수")
+    assert asked["app"] is None and "apps" not in model.asked[0]
+
+
+async def test_a_request_with_a_page_is_the_web_even_when_an_app_is_named_and_with_neither_it_is_not_taken():
+    words = "play https://example.com/2048 or the 2048 app"
+    asked = await request.understand(Says({"url": "https://example.com/2048", "app": "com.tpcstld.twozerogame",
+                                           "objective": "play_until_end"}), words, APPS)
+    assert (asked["url"], asked["app"]) == ("https://example.com/2048", None)
+    asked = await request.understand(Says({"url": None, "app": None, "objective": "play_until_end"}), "play something", APPS)
+    assert (asked["url"], asked["app"]) == (None, None)
