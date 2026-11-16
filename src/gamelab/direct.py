@@ -26,7 +26,7 @@ import json
 import time
 from typing import Any
 
-from . import carry, motion, recovery, resources
+from . import carry, frames, motion, recovery, resources
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
@@ -188,35 +188,41 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None, before
                 await asyncio.sleep(SEQUENCE_GAP_S)
             await send(surface, part, carrier, before if index == 0 else None)
     elif kind == WAIT and action.get("until_change"):
-        before = await surface.capture()
+        look = _looker(surface)
+        before = previous = await look(None)
         moving = list(getattr(surface, "moving", []))
         deadline = time.monotonic() + action["ms"] / 1000
         while time.monotonic() < deadline:
-            await asyncio.sleep(CHANGE_LOOK_S)
-            seen = await surface.capture()
+            previous = await look(previous.at + CHANGE_LOOK_S)
             moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-            if motion.outside(carry._boxes(before, seen), moving):
+            if motion.outside(carry._boxes(before.png, previous.png), moving):
                 return None
     elif kind == WAIT:
         await asyncio.sleep(action["ms"] / 1000)
     return None
 
 
+def _looker(surface: Any) -> Any:
+    """How the screen is looked at no earlier than a time: drawn through what keeps moving on it when the surface
+    can (`motion.Steady`), else a frame as it is."""
+    steady = getattr(surface, "steady", None)
+    return steady if callable(steady) else frames.source_of(surface).frame
+
+
 async def settled(surface: Any) -> bytes:
     """The screen once an input's effect is over: the same twice in a row, or as it is at the time limit.
     What keeps moving all the while (`motion.Steady`) is no effect still going on."""
-    await asyncio.sleep(SETTLE_S)
-    previous = await surface.capture()
+    look = _looker(surface)
+    previous = await look(time.monotonic() + SETTLE_S)
     moving = list(getattr(surface, "moving", []))
     deadline = time.monotonic() + STILL_TIMEOUT_S
     while time.monotonic() < deadline:
-        await asyncio.sleep(STILL_GAP_S)
-        seen = await surface.capture()
+        seen = await look(previous.at + STILL_GAP_S)
         moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-        if not motion.outside(carry._boxes(previous, seen), moving):
-            return seen
+        if not motion.outside(carry._boxes(previous.png, seen.png), moving):
+            return seen.png
         previous = seen
-    return previous
+    return previous.png
 
 
 class Direct:

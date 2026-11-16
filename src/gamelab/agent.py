@@ -169,6 +169,9 @@ class Agent:
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
         # the screen as a model is shown it: what keeps moving over it (a tutorial's hand) left out (`motion`)
         self.seen = Steady(surface)
+        # the frames every wait on the screen takes, each with the time it was taken (`frames`): captured one at a
+        # time from the surface, unless it gives frames of its own as they are drawn
+        self.frames = self.seen.frame_source
         # the model that writes adapters, when it is another: its questions count in the game's as the reader's do
         self.writer = self.model.also(writer) if writer is not None else None
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
@@ -281,6 +284,7 @@ class Agent:
         return {"reused": self.made.reused if self.made else None, "generations": self.generations,
                 "relearned": self.relearned, "told_by_rules": self.told_by_rules,
                 "quick_looks": self.seen.quick, "looks": len(self.trace.looks) if self.trace else 0,
+                "frames": self.frames.summary() if hasattr(self.frames, "summary") else None,
                 "rereads": self._rereads(),
                 "questions": self.model.questions, "seconds": round(self.model_seconds, 1),
                 "tokens": {"input": self.model.input, "output": self.model.output},
@@ -630,16 +634,16 @@ class Agent:
         """The adapter's reading once the screen has come to rest: a state seen unchanged for the settling's
         stable time, or sooner the predicted result of the move just played."""
         policy, clock = self.settling, time.monotonic
-        if expect is not None and policy.animation_s:
-            await asyncio.sleep(policy.animation_s)
-        deadline = clock() + policy.timeout_s
+        # the first frame looked at: one taken once the move's animation is over
+        after = clock() + policy.animation_s if expect is not None and policy.animation_s else None
+        deadline = (after or clock()) + policy.timeout_s
         previous = pictured = read = unread = None
         stable_since = rested = read_since = unread_since = clock()
         while True:
             self._check_time()
-            looked = clock()
             # a screen something kept moving over is read as it is under that, for as long as it keeps moving
-            png = await (self.seen.capture() if self.seen.animating else self.surface.capture())
+            frame = await (self.seen.steady(after) if self.seen.animating else self.frames.frame(after))
+            png, looked = frame.png, frame.at
             self.shots += 1
             self.last_png = png
             if self.watch is not None:
@@ -684,7 +688,8 @@ class Agent:
                 if clock() >= deadline:
                     self.why, self.unread = "surface_unsettled", None
                     return None
-            await asyncio.sleep(max(0.0, min(policy.interval_s, deadline - clock())))
+            # the next frame: one taken this long after this one, and no later than the deadline
+            after = min(looked + policy.interval_s, deadline)
 
     def _learn_unread(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
         """What the adapter's code left unread on the result of a move (a look of a value it has no sample of
@@ -786,16 +791,16 @@ class Agent:
                                for box in look.sources if box)]
         left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
         right, bottom = max(box[0] + box[2] for box in boxes), max(box[1] + box[3] for box in boxes)
-        previous, deadline = None, time.monotonic() + STILL_TIMEOUT_S
+        previous, after, deadline = None, None, time.monotonic() + STILL_TIMEOUT_S
         while True:
-            with Image.open(BytesIO(await self.surface.capture())) as image:
+            frame = await self.frames.frame(after)
+            with Image.open(BytesIO(frame.png)) as image:
                 seen = list(image.convert("L").crop((left, top, right, bottom)).resize((STILL_SIDE, STILL_SIDE)).tobytes())
             if previous is not None and sum(abs(a - b) for a, b in zip(seen, previous)) / len(seen) <= STILL_DISTANCE:
                 return
             if time.monotonic() >= deadline:
                 return
-            previous = seen
-            await asyncio.sleep(STILL_GAP_S)
+            previous, after = seen, frame.at + STILL_GAP_S
 
     def _prior(self, expect: tuple[Reading, dict[str, Any]] | None) -> dict[str, Any] | None:
         """What is known of the screen about to be read: what the rules say the move just played leaves (where

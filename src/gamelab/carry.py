@@ -26,8 +26,10 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from io import BytesIO
+import time
 from typing import Any
 
+from .frames import source_of
 from .surface import HOLD
 
 # the picture the change is looked for in is this many times smaller a side; a change smaller than this many
@@ -53,9 +55,11 @@ STEP_PX, STEP_SHARE, STEP_LEAST = 96.0, 0.3, 32.0
 # and at most (a game moves it further than the finger, or less), no further across that way than this share of
 # its move or FOLLOW_PX, and keeping its size within SAME_SIZE
 GAIN_RANGE, ACROSS, FOLLOW_PX, SAME_SIZE = (0.5, 3.0), 0.2, 12.0, 0.25
-# a look is taken once what may be held is drawn in the same place on two captures in a row, within this many
-# pixels a side (the drawing catches up with the pointer a moment late), and no longer looked for than this
-STILL_PX, STILL_MOST_S = 4, 1.5
+# a look is taken once what may be held is drawn in the same place on two frames in a row, within this many
+# pixels a side (the drawing catches up with the pointer a moment late), the two at least STILL_GAP_S apart (from
+# a source that gives frames as they are drawn, two in a row are milliseconds apart and say nothing of rest; a
+# polled capture takes longer than this anyway), and no longer looked for than this
+STILL_PX, STILL_GAP_S, STILL_MOST_S = 4, 0.15, 1.5
 # before letting go, the drawing is looked at once more; it is moved further when its middle is off the place
 # asked for by more than this share of its smaller side or AIM_PX, at most AIMS times
 AIM_SHARE, AIM_PX, AIMS = 0.08, 10.0, 1
@@ -274,8 +278,11 @@ class Follow:
 class Carrier:
     """Carries drags on one surface, remembering what the carries before showed."""
 
-    def __init__(self, surface: Any) -> None:
+    def __init__(self, surface: Any, source: Any = None) -> None:
         self.surface = surface
+        # the frames looked at on the way, as they are: a drawing at rest is told from what keeps moving by the
+        # looks themselves, and a picture drawn through several frames would take seconds each
+        self.frames = source or source_of(surface)
         # how the held drawing followed the pointer, as last measured: all a surface that cannot hold is given
         self.follow: Follow | None = None
         # how many times the pointer's move each measured drawing moved: their middle one stands in for a carry
@@ -301,17 +308,17 @@ class Carrier:
         """A carry's move did not do what it should: the next carries measure how the drawing follows again."""
         self.gains = []
 
-    async def _look(self, look: Any, before: bytes, start: tuple[float, float], pointer: tuple[float, float],
+    async def _look(self, before: bytes, start: tuple[float, float], pointer: tuple[float, float],
                     source: list[int] | None, near: tuple[float, float] | None = None) -> dict[str, Any]:
         """What the screen shows while the pointer holds still at `pointer`, once the held drawing has come to
-        rest: captures in a row until the things that may be held are drawn where they were on the one before.
-        `near`: the place the held thing is looked for nearest (else the pointer). Gives `still` (those things,
-        nearest first), `gone` (whether the thing left its place), and how long it took."""
-        began, shots, previous, seen = asyncio.get_running_loop().time(), 0, None, None
-        if LIFT_S:
-            await asyncio.sleep(LIFT_S)
+        rest: frames from LIFT_S after the pointer stopped, until the things that may be held are drawn where they
+        were on the one before. `near`: the place the held thing is looked for nearest (else the pointer). Gives
+        `still` (those things, nearest first), `gone` (whether the thing left its place), and how long it took."""
+        began, shots, previous, seen = time.monotonic(), 0, None, None
+        after = began + LIFT_S
         while True:
-            png = await look()
+            frame = await self.frames.frame(after)
+            png, after = frame.png, frame.at + STILL_GAP_S
             shots += 1
             found = candidates(before, png, start, near or pointer, source)
             boxes = found[1] if found else []
@@ -321,12 +328,12 @@ class Carrier:
                 seen["still"] = [box for box in boxes if any(_same(box, other, STILL_PX) for other in previous)]
                 if seen["still"] or (not boxes and not previous):
                     break
-            if asyncio.get_running_loop().time() - began >= STILL_MOST_S:
+            if time.monotonic() - began >= STILL_MOST_S:
                 # never at rest: what was drawn last is all there is
                 seen["still"], seen["restless"] = boxes, True
                 break
             previous = boxes
-        seen.update(shots=shots, waited_s=round(asyncio.get_running_loop().time() - began, 2))
+        seen.update(shots=shots, waited_s=round(time.monotonic() - began, 2))
         return seen
 
     async def carry(self, start: tuple[float, float], goal: tuple[float, float], duration_ms: int,
@@ -349,13 +356,10 @@ class Carrier:
             told["end"] = [round(part, 1) for part in end]
             await surface.drag(*start, *end, duration_ms)
             return told
-        # the looks are captures as they are: a drawing at rest is told from what keeps moving by the looks
-        # themselves, and a picture made of several captures would take seconds each
-        look = getattr(surface, "snap", surface.capture)
         if before is not None and not await self._fits(before):
             before = None
         if before is None:
-            before = await look()
+            before = (await self.frames.frame()).png
         # pressed again longer only while no carry here has picked a thing up: after one has, a press that
         # shows nothing gone is a look that failed, and pressing a piece again and again may do something to it
         holds = [hold_s, *(step for step in HOLDS if step > hold_s)] if not self.picked_any else [hold_s]
@@ -373,7 +377,7 @@ class Carrier:
                     reach = max(share, min(1.0, LEAST_LEG / length))
                     pointer = (start[0] + along[0] * reach, start[1] + along[1] * reach)
                     await surface.move(*pointer, LEG_MS)
-                    seen = await self._look(look, before, start, pointer, source)
+                    seen = await self._look(before, start, pointer, source)
                     told["looks"].append(self._told(seen, pointer))
                     if seen["still"]:
                         first = (seen, pointer)
@@ -398,7 +402,7 @@ class Carrier:
                     told["quick"] = True
                     follow = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())
                 else:
-                    follow = await self._measure(look, before, start, way, length, first, source, told) if first else None
+                    follow = await self._measure(before, start, way, length, first, source, told) if first else None
                 if follow is None and first is not None and first[0]["still"]:
                     # seen once only: it follows as the carries before showed, through the place it was seen at
                     follow = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())
@@ -407,7 +411,7 @@ class Carrier:
                     told.update(gain=round(follow.gain, 3), anchor=[round(part) for part in follow.anchor],
                                 offset=[round(part) for part in follow.anchor])
                 end = follow.pointer(start, goal) if follow else goal
-                end = await self._aim(look, before, start, goal, end, follow, source, duration_ms, told)
+                end = await self._aim(before, start, goal, end, follow, source, duration_ms, told)
                 told["end"] = [round(part, 1) for part in end]
                 await asyncio.sleep(REST_S)
                 break
@@ -430,7 +434,7 @@ class Carrier:
                 "waited_s": seen["waited_s"], "held": seen["still"][0] if seen["still"] else None,
                 **({"restless": True} if seen.get("restless") else {})}
 
-    async def _measure(self, look: Any, before: bytes, start: tuple[float, float], way: tuple[float, float],
+    async def _measure(self, before: bytes, start: tuple[float, float], way: tuple[float, float],
                        length: float, first: tuple[dict[str, Any], tuple[float, float]], source: list[int] | None,
                        told: dict[str, Any]) -> Follow | None:
         """The pointer moved a little further and the screen looked at again: what moved the way it did is
@@ -439,7 +443,7 @@ class Carrier:
         step = max(STEP_LEAST, min(STEP_PX, STEP_SHARE * length))
         pointer = (at[0] + way[0] * step, at[1] + way[1] * step)
         await self.surface.move(*pointer, LEG_MS)
-        again = await self._look(look, before, start, pointer, source)
+        again = await self._look(before, start, pointer, source)
         told["looks"].append(self._told(again, pointer))
         pairs = sorted(((gain, one, other) for one in seen["still"] for other in again["still"]
                         if (gain := follows((one, at), (other, pointer))) is not None),
@@ -453,7 +457,7 @@ class Carrier:
         self.follow = Follow.through(start, pointer, _middle(held), gain)
         return self.follow
 
-    async def _aim(self, look: Any, before: bytes, start: tuple[float, float], goal: tuple[float, float],
+    async def _aim(self, before: bytes, start: tuple[float, float], goal: tuple[float, float],
                    end: tuple[float, float], follow: Follow | None, source: list[int] | None, duration_ms: int,
                    told: dict[str, Any]) -> tuple[float, float]:
         """The pointer moved to `end`, the drawing looked at once it rests there and the pointer moved further by
@@ -465,7 +469,7 @@ class Carrier:
             return end
         held = told.get("held") or (told["looks"][-1]["held"] if told["looks"] else None)
         for _ in range(AIMS + 1):
-            seen = await self._look(look, before, start, end, source, near=goal)
+            seen = await self._look(before, start, end, source, near=goal)
             told["looks"].append(self._told(seen, end))
             same = [box for box in seen["still"] if held is None or (
                 abs(box[2] / max(held[2], 1) - 1) <= SAME_SIZE and abs(box[3] / max(held[3], 1) - 1) <= SAME_SIZE)]

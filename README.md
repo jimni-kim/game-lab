@@ -23,6 +23,7 @@ agent.py                    한 판의 루프: 모델이나 어댑터가 판을 
 ├─ adapters/generated.py    모델이 쓴 어댑터 코드 (sandbox/에서 실행)
 ├─ recovery.py              판을 못 읽는 화면에서 모델이 고른 입력 하나
 ├─ samples.py, carry.py     어댑터가 맡긴 칸의 견본, 끌어 옮기기
+├─ frames.py, motion.py     찍힌 시각이 붙은 프레임(지금은 캡처 한 장씩), 계속 움직이는 것을 걸러 본 화면
 └─ 계열 (catalog, families)  규칙 모델(rules/) + 풀이기(solvers/) + 기술자(blueprint/families/)
 화면 (surface.py)
 ├─ environments/web.py      Playwright Chromium

@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import logging
-from . import catalog, resources, samples
+from . import catalog, frames, resources, samples
 from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check_layout
 from .contracts import NeedObservation, Observation
 from .surface import Surface
@@ -312,15 +312,15 @@ class Adaptation:
         """FRAMES more captures of the screen just read, those that still look like it."""
         from .recovery import _distance, signature
 
-        seen, frames = signature(png), []
-        # captures as they are: what they are held to is how the screen differs from moment to moment
-        snap = getattr(surface, "snap", surface.capture)
+        seen, kept = signature(png), []
+        # frames as they are: what they are held to is how the screen differs from moment to moment
+        source, after = frames.source_of(surface), time.monotonic() + FRAME_GAP_S
         for _ in range(FRAMES):
-            await asyncio.sleep(FRAME_GAP_S)
-            frame = await snap()
-            if frame != png and _distance(seen, signature(frame)) <= FRAME_DISTANCE:
-                frames.append(frame)
-        return frames
+            frame = await source.frame(after)
+            after = frame.at + FRAME_GAP_S
+            if frame.png != png and _distance(seen, signature(frame.png)) <= FRAME_DISTANCE:
+                kept.append(frame.png)
+        return kept
 
     async def probe(self, surface: Surface) -> bool:
         """Whether the screen as it is shows a board of this family: read once by the model, with nothing done
