@@ -74,6 +74,9 @@ MAX_IDLE, MAX_SILENT = 6, 3
 # a game the model plays itself after a family's play broke off is tried by that family again when a move of its
 # changes this share of the screen (a tutorial gives way to the game), at most RESUMES_MOST times a game
 RESUME_SHARE, RESUMES_MOST = 0.3, 3
+# and when this many of its moves were confirmed since it was last tried: a scene that changes a little at a time
+# (a tutorial's last step giving way to the game's board) shows no such change
+RESUME_EVERY = 4
 # the question of which game this is, asked again when the model could not be reached
 IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 # a state reached this many times by confirmed moves ends the game as going nowhere
@@ -221,6 +224,8 @@ class Agent:
         # screens the model read for an adapter that could not (`relearned`), and how often the adapter then had to
         # be written again: only that is bounded, since a screen that only adds samples costs one question
         self.relearned = self.rewrites = self.generations = self.attempts = 0
+        # each screen the model read while there was an adapter, and why (`_reread`)
+        self.rereads: list[dict[str, Any]] = []
         self.need = adaptation.EXPLORE_MOVES
         self.failures: list[dict[str, Any]] = []
         self.model_seconds = 0.0
@@ -230,6 +235,8 @@ class Agent:
         self.resumable: str | None = None
         self.resumes = 0
         self.resumed = False
+        # the model's own moves confirmed since the family was last tried
+        self.since_tried = 0
         # the model's own play, kept when play goes back to a family and comes back to it
         self.player: direct.Direct | None = None
 
@@ -265,6 +272,7 @@ class Agent:
     def summary(self) -> dict[str, Any]:
         return {"reused": self.made.reused if self.made else None, "generations": self.generations,
                 "relearned": self.relearned, "looks": len(self.trace.looks) if self.trace else 0,
+                "rereads": self._rereads(),
                 "questions": self.model.questions, "seconds": round(self.model_seconds, 1),
                 "tokens": {"input": self.model.input, "output": self.model.output},
                 "recovery": self.recovery.summary() if self.recovery else None,
@@ -545,7 +553,9 @@ class Agent:
                 # nothing vouches for what the model will read here until a move from it is confirmed
                 self.distrusted = self.blind = True
             else:
+                why = self.why
                 reading = await self._read_model(expect, self.unread)
+                self._reread(why)
                 if reading is not None:
                     self.relearned += 1
                     await self._recheck()
@@ -554,7 +564,21 @@ class Agent:
                     # adapter is doubted, and the screen read without it
                     self.distrusted = True
                 return reading
-        return await self._read_model(expect, None)
+        reading = await self._read_model(expect, None)
+        if self.adapter is not None:
+            self._reread("distrusted")
+        return reading
+
+    def _rereads(self) -> dict[str, Any]:
+        by: dict[str, int] = {}
+        for entry in self.rereads:
+            by[entry["why"]] = by.get(entry["why"], 0) + 1
+        return {"by_why": by, "moving": sum(entry["moving"] for entry in self.rereads), "each": self.rereads[-60:]}
+
+    def _reread(self, why: str) -> None:
+        """A screen the adapter was there for and the model read: why, and whether what kept moving on it was
+        left out of the picture the model was shown (`motion`)."""
+        self.rereads.append({"at_action": self.used, "why": why, "moving": bool(self.seen.moving)})
 
     def _observe(self, png: bytes) -> tuple[Any, str | None]:
         """One capture read by the adapter: its state, or why there is none."""
@@ -1050,8 +1074,13 @@ class Agent:
                 idle += 1
                 if idle >= MAX_IDLE:
                     raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
-            if changed and self._new_scene(before, after, moving) and await self._resume():
+            self.since_tried += bool(changed)
+            if changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
+
+    def _due(self) -> bool:
+        """Whether enough of the model's moves were confirmed since the family was last tried to try it again."""
+        return self.resumable is not None and self.resumes < RESUMES_MOST and self.since_tried >= RESUME_EVERY
 
     def _new_scene(self, before: bytes, after: bytes, moving: list[list[int]]) -> bool:
         """Whether a move of the model's changed so much of the screen (left out what kept moving) that a family
@@ -1068,7 +1097,7 @@ class Agent:
 
     async def _resume(self) -> bool:
         """The family whose play broke off, tried again on the screen as it is now: taken when its board reads."""
-        family_id, self.resumes = self.resumable, self.resumes + 1
+        family_id, self.resumes, self.since_tried = self.resumable, self.resumes + 1, 0
         tried = {"family": family_id, "at_action": self.used, "taken": False}
         self.found.setdefault("resumes", []).append(tried)
         try:

@@ -11,8 +11,9 @@ What keeps moving on the screen whatever is done (a tutorial's hand, a pulsing b
 pictures the model is shown and of what is said to have changed (`motion`); the model is told where it was. A
 drag the model marks `carry` is aimed by where the thing it picked up is drawn while held, which the code
 measures on the way (`carry.Carrier`), not by where the finger is: a game draws a held piece above the finger,
-larger. A drag that did nothing at one press and something at a longer one sets the shortest press for the rest
-of the game.
+larger. Such a drag also tells whether the thing was picked up at all: one that was not at one press and was at
+a longer one sets the shortest press for the rest of the game. A drag that missed with the thing picked up
+missed its place, not its press, and the model is told so.
 
 The game ends when the model says its own end screen stands there, when it sees nothing more to do, when its
 inputs keep changing nothing, or at a budget.
@@ -290,15 +291,16 @@ class Direct:
                         key=lambda box: -box[2] * box[3])[:PLACES_TOLD]
         entry = {"action": answer["told"], "expected": answer["expect"], "screen_changed": bool(places),
                  "changed_at": [[round(part * scale) for part in box] for box in places]}
-        if carried and carried.get("measured"):
-            entry["held_drawn_from_finger"] = [round(part * scale) for part in carried["offset"]]
+        if carried:
+            # whether the thing was seen held on the way, and the press it was given
+            entry["picked_up"], entry["held_ms"] = bool(carried.get("measured")), round(carried.get("hold_s", 0) * 1000)
+            if carried.get("measured"):
+                entry["held_drawn_from_finger"] = [round(part * scale) for part in carried["offset"]]
         self.history.append(entry)
-        action = answer["told"]
-        if action["kind"] == DRAG and places and any(
-                old["action"].get("kind") == DRAG and not old["screen_changed"]
-                and old["action"].get("hold_ms", 0) < action["hold_ms"] for old in self.history[:-1]):
-            # a drag that did nothing at a shorter press and something at this one: this game wants the press
-            self.hold_ms = max(self.hold_ms, action["hold_ms"])
+        if entry.get("picked_up") and any(old.get("picked_up") is False and old["held_ms"] < entry["held_ms"]
+                                          for old in self.history[:-1]):
+            # nothing was picked up at a shorter press and something was at this one: this game wants the press
+            self.hold_ms = max(self.hold_ms, entry["held_ms"])
         return bool(places)
 
     def summary(self) -> dict[str, Any]:

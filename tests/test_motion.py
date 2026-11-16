@@ -196,14 +196,39 @@ class Springy(Lamps):
             self.lit += 1
 
 
-async def test_a_drag_that_did_nothing_at_a_short_press_and_something_at_a_longer_sets_the_press_for_the_game():
+async def test_a_drag_that_missed_says_nothing_of_its_press_when_nothing_showed_whether_it_was_picked_up():
+    """A plain drag that did nothing may have missed its place as well as its press: no press is set from it."""
     fake = Springy()
     drag = {"kind": "drag", "path": [[300, 325], [300, 150]], "ms": 300}
     model = Player([{**drag, "hold_ms": 150}, {**drag, "hold_ms": 500}, {**drag, "hold_ms": 150},
                     {"kind": "done", "end": "won"}])
     played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
-    assert fake.holds == [150, 500, 500], played.record
-    assert "drag_hold_ms_at_least" not in model.asked[1] and model.asked[2]["drag_hold_ms_at_least"] == 500
+    assert fake.holds == [150, 500, 150], played.record
+    assert all("drag_hold_ms_at_least" not in asked for asked in model.asked)
+
+
+async def test_a_carried_drag_that_picked_nothing_up_at_a_short_press_and_did_at_a_longer_sets_the_press(monkeypatch):
+    monkeypatch.setattr(carry, "HOLDS", (0.0, 0.08, 0.16))
+    fake = Stiff()
+    start = list(slot_middle(fake, 0))
+    drag = {"kind": "drag", "path": [start, goal_at(fake, 0, [2, 2])], "ms": 400, "hold_ms": 0, "carry": True}
+    model = Player([drag, drag, {"kind": "done", "end": "won"}])
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
+    assert fake.placed == [(0, [2, 2])], (played.record, fake.missed)
+    first, second = model.asked[2]["history"][-2:]
+    assert (first["picked_up"], first["held_ms"], second["picked_up"], second["held_ms"]) == (False, 0, True, 80)
+    assert model.asked[2]["drag_hold_ms_at_least"] == 80
+
+
+async def test_a_carried_drag_that_picked_the_piece_up_and_missed_sets_no_press():
+    fake = Blocks()
+    start = list(slot_middle(fake, 0))
+    missed = {"kind": "drag", "path": [start, [5, 5]], "ms": 400, "hold_ms": 0, "carry": True}
+    placed = {**missed, "path": [start, goal_at(fake, 0, [2, 2])], "hold_ms": 500}
+    model = Player([missed, placed, {"kind": "done", "end": "won"}])
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
+    assert fake.placed == [(0, [2, 2])], (played.record, fake.missed)
+    assert model.asked[1]["history"][0]["picked_up"] and "drag_hold_ms_at_least" not in model.asked[2]
 
 
 class HandLamps(Lamps):
@@ -281,3 +306,31 @@ async def test_a_family_whose_board_a_tutorial_hid_is_gone_back_to_once_the_mode
     assert made["resumes"] == [{"family": "minesweeper", "at_action": 1, "taken": True}], (played.record, made)
     assert played.record["family"] == "minesweeper" and played.record["levels"]["L0"] == 1
     assert played.record["levels"]["L2"] >= 1 and fake.played >= 1
+
+
+class Slow(Reader):
+    """The model: it names minesweeper, cannot read the board at first (as under a tutorial's last step, which
+    changes the screen only a little), and plays four safe cells itself; after that it reads the board."""
+    TAPS = [(6, 0), (6, 2), (6, 3), (6, 4), (6, 5)]
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if "families" in context:
+            return TurnResult(text=json.dumps({"screen": "game", "families": ["minesweeper"], "situation": "a board"}))
+        if context.get("play"):
+            self.asked.append(("play", context, 1))
+            row, col = self.TAPS[min(self.fake.played, len(self.TAPS) - 1)]
+            return TurnResult(text=json.dumps({"situation": "a board", "score": None,
+                                               "action": {"kind": "tap", "at": [150 + col * 48 + 24, 100 + row * 48 + 24]},
+                                               "expect": "a cell opens", "notes": ""}))
+        if self.fake.played < 4:
+            return TurnResult(text=json.dumps({"screen": "other", "board": None, "rules": None, "state": None}))
+        return await super().complete(request)
+
+
+async def test_the_family_is_tried_again_after_some_of_the_models_own_moves_even_when_the_screen_changed_little():
+    fake = Mines(draw=0)
+    model = Slow(fake)
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(8, COMPUTE, 60))
+    assert made["resumes"] == [{"family": "minesweeper", "at_action": 4, "taken": True}], (played.record, made)
+    assert played.record["levels"]["L0"] == 4 and played.record["levels"]["L2"] >= 1
