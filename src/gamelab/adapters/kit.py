@@ -82,6 +82,30 @@ class KitAdapter:
         said = [said for seen, said in zip(state["tray"], look.state.get("tray") or []) if seen != []]
         return state["board"] == look.state.get("board") and tray == said
 
+    def reads(self, png: bytes) -> bool:
+        """Whether a screen is read whole at the size the game has: every cell told."""
+        state, _ = self.kit.read(png)
+        return state is not None and all(cell is not None for row in state["board"] for cell in row)
+
+    def arrange(self, things: list[tuple[Any, Any]]) -> tuple[list[Any], list[Any]] | None:
+        """Things a reading lists, each with its box, put into the slots they wait in: each in the slot whose
+        middle its own is nearest. None when the slots are not known or two fall into one."""
+        slots = (self.kit.tray or {}).get("slots")
+        if not slots:
+            return None
+        listed: list[Any] = [None] * len(slots)
+        boxes: list[Any] = [None] * len(slots)
+        for thing, box in things:
+            if not (isinstance(box, list) and len(box) == 4 and all(type(part) in (int, float) for part in box)):
+                return None
+            middle = (box[0] + box[2] / 2, box[1] + box[3] / 2)
+            slot = min(range(len(slots)), key=lambda index: abs(slots[index][0] + slots[index][2] / 2 - middle[0])
+                       + abs(slots[index][1] + slots[index][3] / 2 - middle[1]))
+            if listed[slot] is not None:
+                return None
+            listed[slot], boxes[slot] = thing, box
+        return listed, boxes
+
     def measure(self, png: bytes) -> bool | NeedObservation:
         try:
             with pixels.decode(png, None) as image:

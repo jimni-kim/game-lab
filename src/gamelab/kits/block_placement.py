@@ -38,6 +38,11 @@ EMPTIES_MOST = 64
 # when this share of its place differs, not there when less than BLOCK_NOT; a piece is at most PIECE_MOST blocks
 # a side; a slot reaches this many blocks either side of the middle of the pieces
 DIFFERS, BLOCK_IS, BLOCK_NOT, PIECE_MOST, SLOT_REACH = 16, 0.6, 0.25, 5, 3.1
+# counting a board's rows and columns from its picture (`pitch`): a board has from GAUGE_FEWEST to GAUGE_MOST cells
+# a side and a cell is at least GAUGE_LEAST pixels; an edge is looked for this many pixels either side of where a
+# count puts it; the best count's lines must stand this far above its cells' middles (of 255) and that margin be
+# this share larger than the next count's
+GAUGE_FEWEST, GAUGE_MOST, GAUGE_LEAST, GAUGE_REACH, GAUGE_CLEAR, GAUGE_APART = 3, 14, 8, 2, 6.0, 0.2
 # the strip at each edge of a slot its background is taken from
 EDGE = 4
 # while a piece is held over the board: its cells are looked for this many cells around where it is to go, and it
@@ -175,6 +180,42 @@ class BlockKit:
             return False
         rest = [look for group in groups[1:] for look in group]
         return self._learn(groups[0], rest)
+
+    @staticmethod
+    def pitch(png: bytes, box: list[int]) -> tuple[int, int] | None:
+        """How many rows and columns the board in `box` has, counted from the picture alone: of every count a
+        board may have, the one whose lines between cells lie where the picture has its edges and whose cell
+        middles lie where it has none (half the count puts middles on lines, twice it puts lines on middles).
+        None when no count stands out (a board with no lines between its cells and nothing on it)."""
+        from PIL import Image, ImageFilter
+
+        image = _open(png)
+        left, top, width, height = (round(part) for part in box)
+        if width < GAUGE_MOST * GAUGE_LEAST or height < GAUGE_MOST * GAUGE_LEAST:
+            return None
+        edges = image.crop((left, top, left + width, top + height)).convert("L").filter(ImageFilter.FIND_EDGES)
+
+        def count(profile: list[int]) -> int | None:
+            size = len(profile)
+
+            def near(at: float) -> float:
+                middle = min(size - 1, max(0, round(at)))
+                return max(profile[max(0, middle - GAUGE_REACH):middle + GAUGE_REACH + 1])
+            scores = {}
+            for cells in range(GAUGE_FEWEST, GAUGE_MOST + 1):
+                side = size / cells
+                lines = [near(index * side) for index in range(1, cells)]
+                middles = [near((index + 0.5) * side) for index in range(cells)]
+                scores[cells] = sum(lines) / len(lines) - sum(middles) / len(middles)
+            ranked = sorted(scores, key=scores.get, reverse=True)
+            best, second = ranked[0], ranked[1]
+            if scores[best] < GAUGE_CLEAR or scores[best] - scores[second] < GAUGE_APART * scores[best]:
+                return None
+            return best
+        across = list(edges.resize((width, 1), Image.BOX).tobytes())
+        down = list(edges.resize((1, height), Image.BOX).tobytes())
+        cols, rows = count(across), count(down)
+        return (rows, cols) if rows and cols else None
 
     # ── the tray ──────────────────────────────────────────────────────
 

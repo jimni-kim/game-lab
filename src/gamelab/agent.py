@@ -50,6 +50,8 @@ L0, L2, L3 = "L0", "L2", "L3"
 # the first moves read by an adapter (made now, or kept from another game) that must each do what the rules
 # predict: one that does not sends the screen to the model
 TRIAL_MOVES = 3
+# moves that must be confirmed by rule values taken anew from a screen before what the game had is let go
+RESIZE_TRIAL = 2
 # moves in a row that did not do what the rules predict before the reading (L3) or the screen (L2) is doubted
 MAX_STALLED = 3
 # confirmed moves read by the model after an adapter could not be written, before it is tried once more, and
@@ -205,6 +207,12 @@ class Agent:
         # whether it began from what was kept of the site
         self.kit_adopted = self.kit_reads = 0
         self.kit_demoted = False
+        # the game's rule values were taken anew from a screen (a board of another size, a tray grown): what they
+        # were and what the reader had learned, until RESIZE_TRIAL moves by the new ones are confirmed (`_resize`);
+        # and whether the reading just made was such a one (`_turn` does not hold it to the move before it)
+        self.resized: dict[str, Any] | None = None
+        self.fresh_scene = False
+        self.resizes = 0
         self.kit_restored = False
         self.settling = Settling()
         # where the model was told the board is, and the rules it is read by
@@ -306,7 +314,7 @@ class Agent:
         kit = self.adapter.kit if isinstance(self.adapter, KitAdapter) else None
         return {"adopted": self.kit_adopted, "relearned_alone": kit.relearned if kit else None,
                 "empties": len(kit.empties) if kit else None, "reads": self.kit_reads,
-                "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored}
+                "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
 
     def _keep_profile(self) -> None:
         """What the family's reader learned of this site and how the game hangs held things, for its next game."""
@@ -377,6 +385,11 @@ class Agent:
                                      known=self.store.recoveries(self.site, family_id) if self.store else None)
             self.adaptation = Adaptation(self.model, family_id, policy=self.policy, compute=self.budget.compute,
                                          writer=self.writer)
+            if kits.has(family_id):
+                # the reader's own knowledge, lent to the reading of a screen by a model
+                self.adaptation.arrange = lambda things: self.adapter.arrange(things) \
+                    if isinstance(self.adapter, KitAdapter) else None
+                self.adaptation.gauge = lambda png, box: kits.count(self.family_id, png, box)
         except AdaptationFailed as error:
             raise _End(Outcome.UNSUPPORTED, error.reason, error.detail) from None
         except ValueError as error:
@@ -425,6 +438,40 @@ class Agent:
         self.kit_restored = True
         return True
 
+    def _resize(self, rules: dict[str, Any]) -> None:
+        """The screen shows a board of another size (or more places for pieces) than the game had: the game goes
+        on by the rule values read from it, and the reader learns the screen anew. What was is kept until
+        RESIZE_TRIAL moves are confirmed, and comes back when one is not (the model miscounted)."""
+        log.info("the game's rule values change: %s -> %s", self.trace.rules, rules)
+        kept = self.adapter.record() if isinstance(self.adapter, KitAdapter) and self.adapter.layout else None
+        self.resized = {"rules": dict(self.trace.rules), "kit": kept, "board": self.board, "left": RESIZE_TRIAL}
+        self.resizes += 1
+        self._rebind(rules, None)
+        self.fresh_scene = True
+
+    def _rebind(self, rules: dict[str, Any], kit: dict[str, Any] | None) -> None:
+        self.trace.rules = dict(rules)
+        self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+        if self.adapter is not None:
+            self.adapter.close()
+        self.adapter = None
+        if kit is not None:
+            adapter = KitAdapter(self.family_id, rules=self.trace.rules, site=self.site)
+            if adapter.restore(kit):
+                self.adapter = adapter
+                self.settling = Settling(**adapter.played.get("settling", {}))
+        self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
+        self.carried = self.unread_move = self.ineffective = self.state = self.unproven = None
+        self.visits = {}
+
+    def _unresize(self) -> None:
+        """A move by the rule values just taken was not confirmed: the game goes on by the ones it had."""
+        was, self.resized = self.resized, None
+        log.info("the game's rule values are taken back: %s", was["rules"])
+        self._rebind(was["rules"], was["kit"])
+        self.board = was["board"] or self.board
+        self.failures.append({"reason": "resize_taken_back", "detail": json.dumps(was["rules"])})
+
     def _adopt_kit(self) -> bool:
         """The family's own reader, taught this screen by the looks the model read: it reads from here on. No
         code is written for the game."""
@@ -459,6 +506,8 @@ class Agent:
                 self.unread_move = held
                 await self._unstick(self.why)
                 return
+            if self.fresh_scene:
+                self.fresh_scene, held = False, None
             if held is not None and self._effect(held[0].state, held[1], before.state) == "absent":
                 self._spent(held[0].id, held[1])
         self.state = before.state
@@ -487,6 +536,12 @@ class Agent:
         except _End:
             self._remember(before, action, "unknown", None)
             raise
+        if self.fresh_scene and after is not None:
+            # the screen was read as another board altogether: it says nothing of the move, and play goes on from it
+            self.fresh_scene = False
+            self._remember(before, action, "unknown", after)
+            self.carried, self.state = after, after.state
+            return
         effect = "unknown" if after is None else self._effect(before.state, action, after.state)
         self._remember(before, action, effect, after)
         if self.over:
@@ -498,7 +553,14 @@ class Agent:
                 # it, the same screen is read once more as that move's result
                 return
         if effect == "confirmed":
+            if self.resized is not None:
+                self.resized["left"] -= 1
+                if self.resized["left"] <= 0:
+                    self.resized = None
             await self._confirmed(before, action, sent, after, sent_at)
+            return
+        if self.resized is not None and effect in ("absent", "inconsistent") and carry.trusted(self.carried_as):
+            self._unresize()
             return
         self.stalled += 1
         if self.carried_as and self.carried_as.get("picked") and effect in ("absent", "inconsistent"):
@@ -845,6 +907,8 @@ class Agent:
         if first:
             self.trace = Trace(self.family_id, rules, self.site)
             self.family = catalog.family(self.family_id).bind({"rules": rules})
+        elif rules != self.trace.rules:
+            self._resize(rules)
         # where the board is now: the first screen's box, or another when the game has moved on the screen
         self.board = board
         look = Look(png, state, self.board, frames=tool.frames, sources=tool.sources)

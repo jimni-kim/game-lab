@@ -216,3 +216,138 @@ async def test_a_glow_beside_where_the_piece_is_to_go_does_not_move_it_and_an_un
     state, why = kit.read(png, {"board": after, "tray": [None, None, None]}, fake.state)
     assert why is None and state["board"] == board and state["tray"] == fake.state["tray"], (why, state)
     assert kit.read(png, {"board": after, "tray": [None, None, None]})[1] == "scene_changed"
+
+
+class Terse(Dealer):
+    """A model that lists only the pieces left in the tray, not the emptied slots between them."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if "state" not in answer:
+            return result
+        kept = [(piece, box) for piece, box in zip(answer["state"]["tray"], answer["sources"]) if piece]
+        answer["state"]["tray"], answer["sources"] = [piece for piece, _ in kept], [box for _, box in kept]
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_reading_that_lists_only_the_pieces_left_is_laid_out_by_where_each_piece_is():
+    fake = Centred()
+    tool = adaptation.Adaptation(Dealer(fake, []), "block_placement")
+    rules = {"rows": 8, "cols": 8, "tray_size": 3}
+    png, state, board, _ = await tool._label(fake, None, None)
+    adapter = KitAdapter("block_placement", rules=rules)
+    assert adapter.kit.calibrate(png, board, state, tool.sources)
+    # the first and the last piece are placed: only the middle one waits
+    left = fake.state["tray"][1]
+    fake.state = {**fake.state, "tray": [None, left, None]}
+    tool.model, tool.arrange = Terse(fake, []), adapter.arrange
+    _, state, _, chosen = await tool._label(fake, board, rules)
+    assert state["tray"] == [None, left, None] and chosen == rules and tool.sources[0] is None and tool.sources[1]
+    # with nobody who knows the slots, such a reading is refused as before
+    tool.arrange = None
+    with pytest.raises(adaptation.AdaptationFailed):
+        await tool._label(fake, board, rules, retries=0)
+
+
+class Growing(Centred):
+    """A block game whose board becomes six by six cells, in the same place, after some placements: as a game
+    that gives each level a board of its own."""
+
+    def __init__(self, after=4, **options):
+        super().__init__(**options)
+        self.after, self.small = after, False
+
+    def _sized(self, call):
+        if not self.small:
+            return call()
+        old = blocks.CELL
+        blocks.CELL = 64
+        try:
+            return call()
+        finally:
+            blocks.CELL = old
+
+    async def lift(self):
+        await super().lift()
+        if not self.small and len(self.placed) >= self.after:
+            self.small = True
+            self.family = self.family.bind({"rules": {"rows": 6, "cols": 6}})
+            self.state = self.family.initial_state(self.draw + 50)
+
+    def _held_box(self):
+        return self._sized(lambda: Blocks._held_box(self))
+
+    def _anchor(self):
+        return self._sized(lambda: Blocks._anchor(self))
+
+    async def capture(self, region=None):
+        if not self.small:
+            return await super().capture(region)
+        old = blocks.CELL
+        blocks.CELL = 64
+        try:
+            return await super().capture(region)
+        finally:
+            blocks.CELL = old
+
+
+class Counting(Dealer):
+    """A model that says how many rows and columns the board has now."""
+
+    def __init__(self, fake, modules=(), rows=None):
+        super().__init__(fake, modules)
+        self.rows = rows
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if "state" in answer:
+            board = answer["state"]["board"]
+            if self.rows and len(board) != self.rows:
+                # miscounted: a row too many
+                board = answer["state"]["board"] = [*board, [0] * len(board[0])][:self.rows] if self.rows > len(board) else board[:self.rows]
+            answer["rules"] = {"rows": len(board), "cols": len(board[0]), "tray_size": 3}
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_board_that_becomes_another_size_is_read_at_that_size_and_played_on():
+    fake = Growing()
+    dealer = Counting(fake, [])
+    played, made = await agent.play(fake, dealer, "block_placement", goal=GoalSpec("actions", 14), budget=Budget(40, 200, 120))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    assert made["kit"]["resizes"] == 1 and made["generations"] == 0 and len(fake.state["board"]) == 6
+    # the model read the first screen and the first of the new board: the reader every other
+    assert [kind for kind, _ in dealer.asked].count("label") <= 3, dealer.asked
+    after = [move for move in played.moves[fake.after + 1:]]
+    assert len(after) >= 8 and all(move["effect"] == "confirmed" and move["level"] == "L3" for move in after[1:]), played.moves
+
+
+def test_a_boards_rows_and_columns_are_counted_from_its_picture():
+    import asyncio
+
+    fake = Growing()
+    assert kits.count("block_placement", asyncio.run(fake.capture()), BOARD) == (8, 8)
+    fake.small = True
+    fake.family = fake.family.bind({"rules": {"rows": 6, "cols": 6}})
+    fake.state = fake.family.initial_state(3)
+    assert kits.count("block_placement", asyncio.run(fake.capture()), BOARD) == (6, 6)
+    assert kits.count("minesweeper", b"", BOARD) is None
+
+
+async def test_a_reading_of_another_size_is_not_believed_when_the_picture_counts_out_to_the_size_the_game_has():
+    fake = Centred()
+    tool = adaptation.Adaptation(Counting(fake, [], rows=9), "block_placement")
+    tool.gauge = lambda png, box: kits.count("block_placement", png, box)
+    rules = {"rows": 8, "cols": 8, "tray_size": 3}
+    png = await fake.capture()
+    nine = {"state": {"board": [[0] * 8 for _ in range(9)], "tray": fake.state["tray"]}, "sources": [fake.source(0), fake.source(1), fake.source(2)]}
+    # read with no grid drawn on it, the cells near enough square: still the picture says eight rows
+    assert tool._resized(rules, nine, [BOARD[0], BOARD[1], BOARD[2], BOARD[3] + 40], True, png) == rules
+    # and a board of the game's own size is never looked at again for another, whatever the model says
+    with pytest.raises(adaptation.AdaptationFailed):
+        await tool._label(fake, BOARD, rules, retries=0)
+    # a tray that shows more pieces than the game had slots for grows (a tutorial's single piece, then three)
+    one = {"rows": 8, "cols": 8, "tray_size": 1}
+    three = {"state": {"board": fake.state["board"], "tray": fake.state["tray"]}, "sources": [fake.source(0), fake.source(1), fake.source(2)]}
+    assert tool._resized(one, three, BOARD, False, png) == rules
