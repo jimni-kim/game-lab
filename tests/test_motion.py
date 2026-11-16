@@ -1,0 +1,283 @@
+"""What keeps moving on a screen, left out of what is read of it (PLAN §13): a tutorial's hand circling over a
+board, a drag aimed by where the held thing is drawn in the model's own play, a press long enough for the game
+to pick a thing up, and a family gone back to once a tutorial has given way to the game."""
+from functools import partial
+from io import BytesIO
+import json
+
+from PIL import Image, ImageChops, ImageDraw
+import pytest
+
+from gamelab import adaptation, agent, carry, direct, motion, recovery
+from gamelab.agent import play
+from gamelab.carry import Carrier
+from gamelab.contracts import Budget, GoalSpec
+from gamelab.model import TurnResult
+from gamelab.motion import Steady
+from test_adaptation_blocks import BOARD as BLOCKS_BOARD, CELL, Blocks, extent
+from test_adaptation_mines import COMPUTE, SIZE as MINES_SIZE, Mines, Reader
+from test_direct import BESIDE, Lamps, Player
+
+
+@pytest.fixture(autouse=True)
+def quick(monkeypatch):
+    monkeypatch.setattr(adaptation, "SETTLE_S", 0.0)
+    monkeypatch.setattr(adaptation, "PLAIN_INSETS", ())
+    monkeypatch.setattr(adaptation, "FRAME_GAP_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_GAP_S", 0.0)
+    monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
+    monkeypatch.setattr(direct, "SETTLE_S", 0.0)
+    monkeypatch.setattr(direct, "STILL_GAP_S", 0.0)
+    monkeypatch.setattr(carry, "LIFT_S", 0.0)
+    monkeypatch.setattr(carry, "REST_S", 0.0)
+    monkeypatch.setattr(adaptation, "GeneratedAdapter", partial(
+        adaptation.GeneratedAdapter, settling={"timeout_s": 0.4, "interval_s": 0.05, "stable_s": 0.1}))
+
+
+def with_hand(png, at, colour=(255, 255, 255)):
+    """A hand-sized blot over a capture, as a tutorial's pointer is drawn."""
+    image = Image.open(BytesIO(png)).convert("RGB")
+    x, y = at
+    ImageDraw.Draw(image).ellipse((x, y, x + 40, y + 40), fill=colour)
+    out = BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue()
+
+
+def same(one, other):
+    with Image.open(BytesIO(one)) as a, Image.open(BytesIO(other)) as b:
+        return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+
+
+class Circling:
+    """A screen with a hand that moves on at every capture, along `path` and round again."""
+
+    def __init__(self, path, colour=(255, 255, 255)):
+        self.path, self.colour, self.shown, self.captures = list(path), colour, 0, 0
+
+    def hand(self, png):
+        self.captures += 1
+        at = self.path[self.shown % len(self.path)]
+        self.shown += 1
+        return with_hand(png, at, self.colour)
+
+
+class HandBlocks(Blocks):
+    """The block game under a tutorial's hand that circles over its board for ever."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        left, top = BLOCKS_BOARD[0], BLOCKS_BOARD[1]
+        self.circling = Circling([(left + 10 + 52 * step, top + 150) for step in range(7)])
+
+    async def capture(self, region=None):
+        return self.circling.hand(await super().capture(region))
+
+
+async def test_a_hand_that_keeps_circling_over_a_still_board_is_left_out_and_where_it_moved_is_kept():
+    fake = HandBlocks()
+    clean = await Blocks.capture(fake)
+    seen = Steady(fake)
+    png = await seen.capture()
+    assert same(png, clean)
+    assert seen.animating and fake.circling.captures == motion.FRAMES
+    # what moved is where the hand went, all of it
+    left = min(box[0] for box in seen.moving)
+    right = max(box[0] + box[2] for box in seen.moving)
+    assert left <= BLOCKS_BOARD[0] + 10 and right >= BLOCKS_BOARD[0] + 10 + 52 * 6 + 40
+
+
+async def test_a_still_screen_is_looked_at_twice_and_given_as_it_is():
+    fake = Blocks()
+    looks = []
+    capture = fake.capture
+
+    async def counted(region=None):
+        looks.append(1)
+        return await capture(region)
+    fake.capture = counted
+    seen = Steady(fake)
+    png = await seen.capture()
+    assert same(png, await capture()) and len(looks) == 2 and not seen.animating
+
+
+async def test_a_screen_that_changes_almost_everywhere_is_a_new_scene_and_given_as_it_is_last():
+    colours = iter([(40 * step, 0, 0) for step in range(20)])
+
+    class Fading:
+        async def capture(self, region=None):
+            out = BytesIO()
+            Image.new("RGB", (200, 100), next(colours)).save(out, format="PNG")
+            return out.getvalue()
+    seen = Steady(Fading())
+    png = await seen.capture()
+    with Image.open(BytesIO(png)) as image:
+        assert image.getpixel((5, 5)) == (240, 0, 0)
+    assert not seen.animating
+
+
+def goal_at(fake, slot, anchor):
+    """Where the middle of the piece in `slot` lies when it covers the cells from `anchor`."""
+    rows, cols = extent(fake.state["tray"][slot])
+    return [BLOCKS_BOARD[0] + (anchor[1] + cols / 2) * CELL, BLOCKS_BOARD[1] + (anchor[0] + rows / 2) * CELL]
+
+
+def slot_middle(fake, slot):
+    left, top, width, height = fake.source(slot)
+    return (left + width / 2, top + height / 2)
+
+
+async def test_a_carried_drag_under_a_circling_hand_puts_the_piece_where_it_was_meant_to_go():
+    fake = HandBlocks()
+    seen = Steady(fake)
+    await seen.capture()
+    told = await Carrier(seen).carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert told["measured"] and fake.placed == [(0, [2, 2])], (told, fake.missed)
+
+
+class Stiff(Blocks):
+    """A block game that picks a piece up only when it was pressed a while before the pointer moved."""
+    NEEDS_S = 0.05
+
+    async def press(self, x, y):
+        import time
+        self.pressed_at = time.monotonic()
+        await super().press(x, y)
+
+    async def move(self, x, y, duration_ms):
+        import time
+        if self.held and time.monotonic() - self.pressed_at < self.NEEDS_S and self.held[1] != (x, y):
+            if not getattr(self, "moved", False):
+                self.held = None        # moved too soon: nothing was picked up
+                return
+        self.moved = True
+        await super().move(x, y, duration_ms)
+
+    async def lift(self):
+        self.moved = False
+        await super().lift()
+
+
+async def test_a_carry_that_found_nothing_held_presses_longer_the_next_time(monkeypatch):
+    monkeypatch.setattr(carry, "HOLDS", (0.0, 0.08, 0.16))
+    fake = Stiff()
+    carrier = Carrier(fake)
+    first = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert not first["measured"] and fake.placed == [] and carrier.hold_s == 0.08
+    second = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert second["measured"] and second["hold_s"] == 0.08 and fake.placed == [(0, [2, 2])]
+
+
+async def test_a_drag_the_model_marks_carried_is_aimed_by_where_the_held_piece_is_drawn():
+    """In the model's own play, a carried drag's end is where the piece's middle goes; the code finds where the
+    game draws it held (above the finger, larger) and tells the model."""
+    fake = Blocks()
+    goal = goal_at(fake, 0, [3, 1])
+    start = list(slot_middle(fake, 0))
+    model = Player([{"kind": "drag", "path": [start, goal], "ms": 400, "hold_ms": 0, "carry": True},
+                    {"kind": "done", "end": "won"}])
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
+    assert fake.placed == [(0, [3, 1])], (played.record, fake.missed)
+    seen = model.asked[1]["history"][0]
+    assert seen["screen_changed"] and seen["held_drawn_from_finger"][1] < 0
+
+
+class Springy(Lamps):
+    """The lamp game played by dragging: a lamp lights for a drag pressed at least 400 ms before it moved."""
+    kinds = frozenset({"tap", "drag"})
+
+    def __init__(self):
+        super().__init__()
+        self.holds = []
+
+    async def stroke(self, points, duration_ms, hold_ms):
+        self.holds.append(hold_ms)
+        if hold_ms >= 400 and self.lit < 3:
+            self.lit += 1
+
+
+async def test_a_drag_that_did_nothing_at_a_short_press_and_something_at_a_longer_sets_the_press_for_the_game():
+    fake = Springy()
+    drag = {"kind": "drag", "path": [[300, 325], [300, 150]], "ms": 300}
+    model = Player([{**drag, "hold_ms": 150}, {**drag, "hold_ms": 500}, {**drag, "hold_ms": 150},
+                    {"kind": "done", "end": "won"}])
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
+    assert fake.holds == [150, 500, 500], played.record
+    assert "drag_hold_ms_at_least" not in model.asked[1] and model.asked[2]["drag_hold_ms_at_least"] == 500
+
+
+class HandLamps(Lamps):
+    """The lamp game under a hand that keeps moving beside the lamps."""
+
+    def __init__(self):
+        super().__init__()
+        # drawn dark: the page is nearly white
+        self.circling = Circling([(30 + 60 * step, 230) for step in range(7)], colour=(40, 40, 40))
+
+    async def capture(self, region=None):
+        return self.circling.hand(await super().capture(region))
+
+
+async def test_in_the_models_own_play_a_hand_that_keeps_moving_is_no_change_and_the_model_is_told_where_it_moves():
+    fake = HandLamps()
+    model = Player([BESIDE])
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60))
+    assert (played.record["outcome"], played.record["reason"]) == ("gave_up", "no_effect"), played.record
+    assert not any(entry["screen_changed"] for entry in model.asked[-1]["history"])
+    assert model.asked[0]["moving"]
+
+
+class Tutorial(Mines):
+    """A minesweeper game behind a tutorial screen that covers it whole until it is tapped."""
+
+    def __init__(self, **options):
+        self.tutorial = True
+        super().__init__(**options)
+
+    @property
+    def covered(self):
+        return self.tutorial
+
+    @covered.setter
+    def covered(self, value):
+        pass
+
+    async def capture(self, region=None):
+        if not self.tutorial:
+            return await super().capture(region)
+        image = Image.new("RGB", MINES_SIZE, (30, 60, 150))
+        ImageDraw.Draw(image).rectangle((380, 300, 520, 380), fill=(250, 200, 0))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+    async def tap(self, x, y, duration_ms):
+        if self.tutorial:
+            self.taps.append((x, y))
+            self.tutorial = False
+            return
+        await super().tap(x, y, duration_ms)
+
+
+class Guide(Reader):
+    """The model: it names minesweeper for the game, plays the tutorial itself with a tap, and reads the board."""
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if "families" in context:
+            return TurnResult(text=json.dumps({"screen": "game", "families": ["minesweeper"], "situation": "a tutorial"}))
+        if context.get("play"):
+            self.asked.append(("play", context, 1))
+            return TurnResult(text=json.dumps({"situation": "a tutorial", "score": None,
+                                               "action": {"kind": "tap", "at": [450, 340]},
+                                               "expect": "the tutorial closes", "notes": ""}))
+        return await super().complete(request)
+
+
+async def test_a_family_whose_board_a_tutorial_hid_is_gone_back_to_once_the_models_own_play_got_past_it():
+    fake = Tutorial()
+    model = Guide(fake)
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(6, COMPUTE, 60))
+    assert made["resumes"] == [{"family": "minesweeper", "at_action": 1, "taken": True}], (played.record, made)
+    assert played.record["family"] == "minesweeper" and played.record["levels"]["L0"] == 1
+    assert played.record["levels"]["L2"] >= 1 and fake.played >= 1

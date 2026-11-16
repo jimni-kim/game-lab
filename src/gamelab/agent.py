@@ -36,6 +36,9 @@ from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
 from .model import Model, TurnRequest, TurnResult
+from . import motion
+from .carry import _boxes as carry_boxes
+from .motion import Steady
 from .run import Run, check
 from .recovery import GIVE_UP, MAX_TRIES, NONE, Recovery
 
@@ -68,6 +71,9 @@ THEN_S = 0.3
 # a game played by the model's own inputs (L0) is given up when this many of them in a row changed nothing on
 # the screen, or when the model gave this many answers in a row that are no input
 MAX_IDLE, MAX_SILENT = 6, 3
+# a game the model plays itself after a family's play broke off is tried by that family again when a move of its
+# changes this share of the screen (a tutorial gives way to the game), at most RESUMES_MOST times a game
+RESUME_SHARE, RESUMES_MOST = 0.3, 3
 # the question of which game this is, asked again when the model could not be reached
 IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 # a state reached this many times by confirmed moves ends the game as going nowhere
@@ -154,6 +160,8 @@ class Agent:
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True) -> None:
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
+        # the screen as a model is shown it: what keeps moving over it (a tutorial's hand) left out (`motion`)
+        self.seen = Steady(surface)
         # the model that writes adapters, when it is another: its questions count in the game's as the reader's do
         self.writer = self.model.also(writer) if writer is not None else None
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
@@ -167,7 +175,7 @@ class Agent:
         self.asked_policy, self.watch, self.cancel, self.accept_consent = policy, watch, cancel, accept_consent
         self.started = time.monotonic()
         # drags are carried: what a held thing is drawn like is measured on the way (`carry`)
-        self.carrier = Carrier(surface)
+        self.carrier = Carrier(self.seen)
         self.carried_as: dict[str, Any] | None = None
         # what was found of the game nobody named, and the families still to try for it
         self.found: dict[str, Any] = {}
@@ -217,6 +225,13 @@ class Agent:
         self.failures: list[dict[str, Any]] = []
         self.model_seconds = 0.0
         self.levels = {L2: 0, L3: 0}
+        # the registered family whose board the screen was read as, to go back to from the model's own play
+        # (`_resume`), the times that was tried, and whether play is by a family gone back to
+        self.resumable: str | None = None
+        self.resumes = 0
+        self.resumed = False
+        # the model's own play, kept when play goes back to a family and comes back to it
+        self.player: direct.Direct | None = None
 
     # ── the game ──────────────────────────────────────────────────────
 
@@ -291,7 +306,7 @@ class Agent:
         for attempt in range(1 + IDENTIFY_RETRIES):
             try:
                 recovery = Recovery(self.model, None, known=[], accept_consent=self.accept_consent)
-                return await self._asking(identify(self.surface, self.model, recovery, hint=self.hint))
+                return await self._asking(identify(self.seen, self.model, recovery, hint=self.hint))
             except Exception as error:
                 log.info("the game could not be asked about: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -306,7 +321,7 @@ class Agent:
                 return True
         return False
 
-    async def _take(self, family_id: str) -> bool:
+    async def _take(self, family_id: str, probe: bool = False) -> bool:
         if self.adapter is not None:
             self.adapter.close()
         self.adapter = self.trace = self.made = self.board = self.carried = self.unproven = self.unread_move = None
@@ -327,10 +342,15 @@ class Agent:
             self.made, self.generations = Made(source, meta["generations"], True, meta["report"]), meta["generations"]
             self.board = self.trace.looks[0].board
             self._adopted()
-        elif self.named:
-            self.found["identified"]["tried"].append(family_id)
+        elif self.named or probe:
+            if self.named and not probe:
+                self.found["identified"]["tried"].append(family_id)
+            # the first registered family named for the game is the one to go back to from the model's own
+            # play, even when its board is not read now: a tutorial or a notice may be in the way
+            if self.resumable is None and (self.game is None or family_id != self.game.id):
+                self.resumable = family_id
             # a family the screen's board cannot be read as is not this game
-            if not await self._asking(self.adaptation.probe(self.surface)):
+            if not await self._asking(self.adaptation.probe(self.seen)):
                 return False
         self.family = catalog.family(family_id).bind({"rules": self.trace.rules} if self.trace else None)
         if "identified" in self.found:
@@ -568,7 +588,8 @@ class Agent:
         while True:
             self._check_time()
             looked = clock()
-            png = await self.surface.capture()
+            # a screen something kept moving over is read as it is under that, for as long as it keeps moving
+            png = await (self.seen.capture() if self.seen.animating else self.surface.capture())
             self.shots += 1
             self.last_png = png
             if self.watch is not None:
@@ -635,9 +656,9 @@ class Agent:
                 (png, state, board, rules), tool.first = tool.first, None
             else:
                 png, state, board, rules = await self._asking(tool._label(
-                    self.surface, self.board, self.trace.rules if self.trace else None,
+                    self.seen, self.board, self.trace.rules if self.trace else None,
                     accept if expect is not None or partial is not None else None, patient=False, prior=self._prior(expect)))
-                tool.last_state, tool.frames = state, await tool._frames(self.surface, png)
+                tool.last_state, tool.frames = state, await tool._frames(self.seen, png)
         except AdaptationFailed as error:
             # no board on the screen, or one the model could not read as the rules have it
             if expect is not None and error.detail == "transition_refused" and tool.refused is not None:
@@ -668,6 +689,9 @@ class Agent:
         from io import BytesIO
         from PIL import Image
 
+        if self.seen.animating:
+            # it never rests: the reading leaves out what keeps moving instead
+            return
         boxes = [self.board, *(box for look in self.trace.looks[-1:] if isinstance(look.sources, list)
                                for box in look.sources if box)]
         left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
@@ -870,11 +894,12 @@ class Agent:
             if await self._other_family():
                 return
             await self._give_up(reason)
+            return
         self._afford()
         self.tries += 1
         self.carried = None
         recent = [{key: move[key] for key in ("action_id", "kind", "effect")} for move in self.moves[-HISTORY_KEPT:]]
-        if await self._asking(self.recovery.attempt(self.surface, reason, {"state": self.state, "recent": recent},
+        if await self._asking(self.recovery.attempt(self.seen, reason, {"state": self.state, "recent": recent},
                                                     timeout_s=self._left())):
             if self.blind:
                 self.distrusted = self.blind = False
@@ -903,7 +928,7 @@ class Agent:
             return False
         self._afford()
         try:
-            game = await self._asking(made.describe(self.surface, self.model, self.site, hint=self.hint))
+            game = await self._asking(made.describe(self.seen, self.model, self.site, hint=self.hint))
         except Exception as error:
             log.info("the game could not be described: %s", error)
             self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -941,25 +966,32 @@ class Agent:
     async def _give_up(self, reason: str) -> None:
         """Play cannot go on by the family's rules. A made family's rules may simply be wrong: the game is
         then the model's to play with its own inputs. Otherwise the game is given up."""
-        if self._made_plays():
-            log.info("the made family is dropped: %s", reason)
-            self.failures.append({"reason": "made_family_dropped", "detail": reason})
+        if self._made_plays() or self.resumed:
+            # a family gone back to from the model's own play is left again the same way
+            log.info("the family is dropped: %s", reason)
+            self.failures.append({"reason": "made_family_dropped" if self._made_plays() else "family_dropped",
+                                  "detail": reason})
             await self._play_direct(self._situation())
+            return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
 
     async def _play_direct(self, situation: str) -> None:
         """The game is none the harness has rules for: a model plays it with inputs of its own (L0), told after
-        each what the code saw change on the screen. Always ends the game (`_End`): at the game's own end as
-        the model reads it, when nothing more can be done, or at a budget. A move counts as confirmed when
-        the screen changed after it, which is all the code can say without rules."""
+        each what the code saw change on the screen. Ends the game (`_End`) at the game's own end as the model
+        reads it, when nothing more can be done, or at a budget; returns only when a family's play broke off
+        before and a move of the model's changed the scene so that the family reads the board again (`_resume`).
+        A move counts as confirmed when the screen changed after it, which is all the code can say without
+        rules."""
         if not self.direct:
             raise _End(Outcome.UNSUPPORTED, "game_not_identified", situation)
         if self.adapter is not None:
             self.adapter.close()
         self.adapter, self.family_id, self.policy = None, None, "model"
-        player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent)
+        if self.player is None:
+            self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent)
+        player = self.player
         self.found["direct"] = told = player.summary()
-        self.levels[L0] = 0
+        self.levels.setdefault(L0, 0)
         objective, idle, silent = str(self.goal.objective), 0, 0
         while True:
             told.update(player.summary())
@@ -970,7 +1002,8 @@ class Agent:
                 raise _End(Outcome.GOAL_REACHED, objective)
             self._check_stops()
             self._afford()
-            before = await self.surface.capture()
+            before = await self.seen.capture()
+            moving = list(self.seen.moving)
             looked = time.monotonic()
             self.shots += 1
             self.last_png = before
@@ -979,7 +1012,7 @@ class Agent:
             left = {"inputs": self.budget.max_actions - self.used,
                     "seconds": None if self._left() is None else round(self._left())}
             try:
-                answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left))
+                answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving))
             except Exception as error:
                 log.info("the model could not be asked for a move: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -1000,11 +1033,13 @@ class Agent:
                 raise _End(Outcome.GAVE_UP, "model_gave_up", player.situation)
             if self.watch is not None:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
-            await direct.send(self.surface, action)
+            carried = await direct.send(self.seen, action, self.carrier)
             self.used += 1
             if self.watch is not None:
                 await self.watch.sent()
-            changed = player.saw(answer, before, await direct.settled(self.surface))
+            after = await direct.settled(self.seen)
+            moving = motion.joined(moving + self.seen.moving)
+            changed = player.saw(answer, before, after, moving, carried)
             self.levels[L0] += 1
             self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": answer["told"], "level": L0,
                                "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
@@ -1015,6 +1050,45 @@ class Agent:
                 idle += 1
                 if idle >= MAX_IDLE:
                     raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
+            if changed and self._new_scene(before, after, moving) and await self._resume():
+                return
+
+    def _new_scene(self, before: bytes, after: bytes, moving: list[list[int]]) -> bool:
+        """Whether a move of the model's changed so much of the screen (left out what kept moving) that a family
+        whose play broke off may read the board now: a tutorial gave way to the game, a level to the next."""
+        if self.resumable is None or self.resumes >= RESUMES_MOST:
+            return False
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(after)) as image:
+            area = image.width * image.height
+        changed = motion.outside(carry_boxes(before, after), moving)
+        return sum(box[2] * box[3] for box in changed) >= RESUME_SHARE * area
+
+    async def _resume(self) -> bool:
+        """The family whose play broke off, tried again on the screen as it is now: taken when its board reads."""
+        family_id, self.resumes = self.resumable, self.resumes + 1
+        tried = {"family": family_id, "at_action": self.used, "taken": False}
+        self.found.setdefault("resumes", []).append(tried)
+        try:
+            taken = await self._take(family_id, probe=True)
+        except _End:
+            raise
+        except Exception as error:
+            log.info("the family could not be tried again: %s", error)
+            taken = False
+        if not taken:
+            # the model's own play goes on
+            if self.adapter is not None:
+                self.adapter.close()
+            self.adapter, self.family_id, self.policy = None, None, "model"
+            return False
+        tried["taken"] = self.resumed = True
+        self.tries = self.stalled = 0
+        self.shrugged = False
+        self.carried = self.unread_move = self.ineffective = self.state = None
+        return True
 
     def _won_meets_goal(self) -> bool:
         """Whether the game's own win message, with nothing under it read, is the goal reached: the rule

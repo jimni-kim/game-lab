@@ -313,9 +313,11 @@ class Adaptation:
         from .recovery import _distance, signature
 
         seen, frames = signature(png), []
+        # captures as they are: what they are held to is how the screen differs from moment to moment
+        snap = getattr(surface, "snap", surface.capture)
         for _ in range(FRAMES):
             await asyncio.sleep(FRAME_GAP_S)
-            frame = await surface.capture()
+            frame = await snap()
             if frame != png and _distance(seen, signature(frame)) <= FRAME_DISTANCE:
                 frames.append(frame)
         return frames
