@@ -351,3 +351,69 @@ async def test_a_reading_of_another_size_is_not_believed_when_the_picture_counts
     one = {"rows": 8, "cols": 8, "tray_size": 1}
     three = {"state": {"board": fake.state["board"], "tray": fake.state["tray"]}, "sources": [fake.source(0), fake.source(1), fake.source(2)]}
     assert tool._resized(one, three, BOARD, False, png) == rules
+
+
+async def test_a_piece_as_long_as_its_slot_is_wide_and_one_set_on_a_slant_are_read(monkeypatch):
+    monkeypatch.setattr(blocks, "SMALL", 25)       # five blocks: 125 of a slot's 128 pixels
+    fake = Centred()
+    long, slant = [[0, c] for c in range(5)], [[0, 0], [1, 1], [2, 2]]
+    fake.state = {**fake.state, "tray": [long, slant, [[0, 0], [0, 1]]]}
+    kit = kits.make("block_placement", {"rows": 8, "cols": 8, "tray_size": 3})
+    png = await fake.capture()
+    assert kit.calibrate(png, BOARD, fake.state, [fake.source(0), fake.source(1), fake.source(2)])
+    state, why = kit.read(png)
+    assert why is None and state["tray"] == fake.state["tray"], state["tray"]
+    assert all(abs(a - b) <= 2 for a, b in zip(kit.sources[0], fake.source(0)))
+
+
+async def test_a_piece_whose_drawing_hangs_over_the_next_row_too_lies_right_when_it_fills_where_it_is_to_go():
+    fake = Centred()
+    fake.state = {**fake.state, "tray": [[[0, 0], [0, 1]], None, None]}
+    kit = kits.make("block_placement", {"rows": 8, "cols": 8, "tray_size": 3})
+    png = await fake.capture()
+    assert kit.calibrate(png, BOARD, fake.state, [fake.source(0), None, None])
+    image = Image.open(BytesIO(png)).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    for r, c in [(2, 3), (2, 4), (3, 3), (3, 4)]:        # where it is to go, and the row below it as well
+        x, y = BOARD[0] + c * CELL, BOARD[1] + r * CELL
+        draw.rectangle((x + 2, y + 2, x + CELL - 3, y + CELL - 3), fill=blocks.PIECE)
+    out = BytesIO()
+    image.save(out, format="PNG")
+    seen = kit.hover(out.getvalue(), fake.state["board"], [[2, 3], [2, 4]])
+    assert seen["ok"] and "shift" not in seen, seen
+    # filling only the row below, it lies a cell off
+    off = kit.hover(out.getvalue(), fake.state["board"], [[0, 3], [0, 4]])
+    assert not off["ok"] and off["shift"][0] == 0 and off["shift"][1] > 0, off
+
+
+class Wide(Centred):
+    """A block game whose slots are wider than a third of its board: the pieces wait further apart than a model's
+    first boxes, read off one screen, put them."""
+    APART = 140
+
+    def slot_origin(self, slot):
+        piece = self.state["tray"][slot]
+        rows, cols = blocks.extent(piece) if piece else (1, 1)
+        middle = BOARD[0] + BOARD[2] / 2 + (slot - 1) * self.APART
+        return round(middle - cols * blocks.SMALL / 2), blocks.TRAY[1] + (blocks.TRAY[3] - rows * blocks.SMALL) // 2
+
+
+async def test_slots_are_laid_where_the_pieces_are_seen_to_wait_and_a_long_piece_is_then_read(monkeypatch):
+    monkeypatch.setattr(blocks, "SMALL", 26)       # five blocks: 130 pixels, wider than a third of the board (128)
+    fake = Wide()
+    kit = kits.make("block_placement", {"rows": 8, "cols": 8, "tray_size": 3})
+    fake.state = {**fake.state, "tray": [None, [[0, 0], [0, 1]], None]}
+    png = await fake.capture()
+    # one piece seen: the slots are a third of the board each
+    assert kit.calibrate(png, BOARD, fake.state, [None, fake.source(1), None])
+    assert kit.tray["slots"][1][2] == 128
+    for tray in ([[[0, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0]]], [[[0, 0], [0, 1]], [[0, 0]], [[0, 0], [0, 1], [0, 2]]]):
+        fake.state = {**fake.state, "tray": tray}
+        state, _ = kit.read(await fake.capture())
+        assert state["tray"] == tray
+    # pieces of two widths waited about one middle in each slot: the slots now lie 140 apart
+    assert [abs(box[0] + box[2] / 2 - (BOARD[0] + BOARD[2] / 2 + (slot - 1) * 140)) <= 2 for slot, box in enumerate(kit.tray["slots"])] == [True] * 3
+    long = [[0, c] for c in range(5)]
+    fake.state = {**fake.state, "tray": [long, long, long]}
+    state, _ = kit.read(await fake.capture())
+    assert state["tray"] == [long, long, long], state["tray"]

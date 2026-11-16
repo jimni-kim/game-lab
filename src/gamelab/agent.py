@@ -52,6 +52,8 @@ L0, L2, L3 = "L0", "L2", "L3"
 TRIAL_MOVES = 3
 # moves that must be confirmed by rule values taken anew from a screen before what the game had is let go
 RESIZE_TRIAL = 2
+# a game no family was found for is asked about again from the model's own play at most this many times
+REASK_MOST = 2
 # moves in a row that did not do what the rules predict before the reading (L3) or the screen (L2) is doubted
 MAX_STALLED = 3
 # confirmed moves read by the model after an adapter could not be written, before it is tried once more, and
@@ -210,6 +212,8 @@ class Agent:
         # the game's rule values were taken anew from a screen (a board of another size, a tray grown): what they
         # were and what the reader had learned, until RESIZE_TRIAL moves by the new ones are confirmed (`_resize`);
         # and whether the reading just made was such a one (`_turn` does not hold it to the move before it)
+        # times the game was asked about again from the model's own play (`_play_direct`)
+        self.reasked = 0
         self.resized: dict[str, Any] | None = None
         self.fresh_scene = False
         self.resizes = 0
@@ -661,6 +665,10 @@ class Agent:
         self.moves.append({"action_id": f"a{self.used}", "kind": action.get("kind"), "action": action, "level": before.by,
                            "read_after_by": after.by if after else None, "delivery": "delivered", "effect": effect,
                            **({"carried": self.carried_as} if action is not None and self.carried_as else {}),
+                           # a result the rules did not expect is kept as it was read, with what it was played
+                           # from: why it was none is looked for afterwards
+                           **({"before_state": before.state, "after_state": after.state}
+                              if effect in ("inconsistent", "absent") and after is not None else {}),
                            "round": self.relearned, "at_s": round(time.monotonic() - self.started, 2)})
 
     def _check_stops(self) -> None:
@@ -1323,6 +1331,21 @@ class Agent:
                 if idle >= MAX_IDLE:
                     raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
             self.since_tried += bool(changed)
+            if changed and self.resumable is None and self.named and self.game is None \
+                    and self.reasked < REASK_MOST and self.since_tried >= RESUME_EVERY:
+                # the game was asked about on a screen that showed none yet (a splash, a notice) and so has no
+                # family: asked again now that the model's own moves are taken, it may be one there is play for
+                self.reasked, self.since_tried = self.reasked + 1, 0
+                try:
+                    asked = await self._identify()
+                except _End:
+                    asked = {"families": []}
+                if asked["families"]:
+                    self.resumable = asked["families"][0]
+                    self.found.setdefault("identified", {}).update(candidates=list(asked["families"]), reasked=self.reasked)
+                    if await self._resume():
+                        return
+                    continue
             if changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
 

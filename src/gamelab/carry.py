@@ -96,6 +96,9 @@ HANG_SURE, HANG_SAME, HANG_APART, HANG_KEPT = 2, 0.15, 0.3, 30
 HANG_CLEAR = 4.0
 HANG_SIZE = 0.04
 UNSEEN_MOST = 2
+# a carry with no looks that told how the thing hangs is moved by what the cells show this many times; a thing not
+# let go is taken this many pixels from the foot of the screen first
+AIMS_BLIND, BACK_FOOT = 3, 12
 
 
 def _boxes(before: bytes, after: bytes, ignore: list[list[int]] | None = None) -> list[list[int]]:
@@ -583,14 +586,24 @@ class Carrier:
                     told.update(gain=round(follow.gain, 3), anchor=[round(part) for part in follow.anchor],
                                 offset=[round(part) for part in follow.anchor])
                 end = follow.pointer(start, goal) if follow else goal
-                if check is not None and follow is not None:
+                if check is not None:
+                    # with no looks that told how the thing hangs, the cells tell: the pointer goes where the thing
+                    # is to lie, and is moved by how far off the cells show it, as often as AIMS_BLIND
+                    gain = follow.gain if follow is not None else self.hang.gain or (self._gain() if self.gains else 1.0)
                     size = await surface.size()
                     end = (min(max(end[0], 0.0), size[0] - 1.0), min(max(end[1], 0.0), size[1] - 1.0))
                     await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
-                    end, lies = await self._settle(check, end, follow.gain, told)
+                    end, lies = await self._settle(check, end, gain, told, aims=AIMS if follow is not None else AIMS_BLIND)
+                    if lies and told.get("checked"):
+                        told["picked"] = True
+                        self.picked_any = True
                     if lies and told.get("checked") and source and self._drawn is not None:
                         # borne out by where it lay: this is how the game hangs a thing of this height
                         self.hang.add(source, start, self._drawn[0], _middle(self._drawn[1]), follow.gain)
+                    elif lies and told.get("checked") and source and (self.gains or self.hang.samples):
+                        # no look told where it was drawn, but the cells did: it lay where it was to go with the
+                        # pointer here (a game whose held drawing the looks cannot tell from what else changes)
+                        self.hang.add(source, start, end, goal, gain)
                     self._unseen = 0 if any(seen["seen"] for seen in told["checks"]) else self._unseen + 1
                     if not lies:
                         await self._back(start, told)
@@ -637,15 +650,15 @@ class Carrier:
             await surface.lift()
         return told
 
-    async def _settle(self, check: Any, end: tuple[float, float], gain: float, told: dict[str, Any]
-                      ) -> tuple[tuple[float, float], bool]:
+    async def _settle(self, check: Any, end: tuple[float, float], gain: float, told: dict[str, Any],
+                      aims: int = AIMS) -> tuple[tuple[float, float], bool]:
         """Frames taken with the pointer at rest at `end` until the held thing lies where it is to go (`check`) or
         is seen the same on two in a row; when it lies off, the pointer is moved by that once and it is looked at
         again. Where the pointer ends, and whether the thing may be let go there."""
         size = await self.surface.size()
         checks = told.setdefault("checks", [])
         seen: dict[str, Any] = {"ok": False, "seen": 0}
-        for aimed in range(AIMS + 1):
+        for aimed in range(aims + 1):
             began, previous, shots = time.monotonic(), None, 0
             after = began + LIFT_S
             while True:
@@ -661,7 +674,7 @@ class Carrier:
             if seen.get("ok"):
                 told["checked"] = True
                 return end, True
-            if not seen.get("shift") or aimed >= AIMS:
+            if not seen.get("shift") or aimed >= aims:
                 break
             end = (min(max(end[0] - seen["shift"][0] / gain, 0.0), size[0] - 1.0),
                    min(max(end[1] - seen["shift"][1] / gain, 0.0), size[1] - 1.0))
@@ -674,7 +687,11 @@ class Carrier:
         """The held thing does not lie where it is to go: taken back to where it waited, so that letting go
         puts it nowhere on the board."""
         told["cancelled"] = True
-        await self.surface.move(*start, LEG_MS)
+        # below where it waited, at the foot of the screen: a game that hangs the held thing well above the pointer
+        # still has it over the board's last rows when the pointer is back where it pressed (2026-11-17: let go
+        # there, a piece was put two rows up from the foot of the board)
+        size = await self.surface.size()
+        await self.surface.move(start[0], max(start[1], size[1] - BACK_FOOT), LEG_MS)
         await asyncio.sleep(LIFT_S)
 
     def _plausible(self, follow: Follow, drawn: list[int]) -> bool:

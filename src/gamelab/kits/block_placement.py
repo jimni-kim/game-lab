@@ -43,6 +43,13 @@ DIFFERS, BLOCK_IS, BLOCK_NOT, PIECE_MOST, SLOT_REACH = 16, 0.6, 0.25, 5, 3.1
 # count puts it; the best count's lines must stand this far above its cells' middles (of 255) and that margin be
 # this share larger than the next count's
 GAUGE_FEWEST, GAUGE_MOST, GAUGE_LEAST, GAUGE_REACH, GAUGE_CLEAR, GAUGE_APART = 3, 14, 8, 2, 6.0, 0.2
+# parts of a slot's coarse picture this near each other (a part is a quarter of a block) are one piece
+SEAM = 2
+# a block's four sides: each looked for in a strip this deep (a share of the block) along the side, left out this
+# share at either end, and there when this share of the strip differs from the background
+SIDE_DEEP, SIDE_IN, SIDE_IS = 0.22, 0.15, 0.25
+# how many of the places a slot's pieces were seen to wait at are kept
+MIDDLES_KEPT = 9
 # the strip at each edge of a slot its background is taken from
 EDGE = 4
 # while a piece is held over the board: its cells are looked for this many cells around where it is to go, and it
@@ -66,11 +73,18 @@ def _piece(cells: list[tuple[int, int]]) -> list[list[int]]:
     return [list(cell) for cell in sorted((r - top, c - left) for r, c in cells)]
 
 
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    half = len(ordered) // 2
+    return ordered[half] if len(ordered) % 2 else (ordered[half - 1] + ordered[half]) / 2
+
+
 def _joined(cells: list[tuple[int, int]]) -> bool:
     todo, seen = [cells[0]], {cells[0]}
     while todo:
         r, c = todo.pop()
-        for near in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+        # corner to corner too: a piece may be blocks set on a slant
+        for near in ((r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc):
             if near in cells and near not in seen:
                 seen.add(near)
                 todo.append(near)
@@ -276,20 +290,80 @@ class BlockKit:
                 x0, y0 = min(old[0], new[0]), min(old[1], new[1])
                 grown.append([x0, y0, max(old[0] + old[2], new[0] + new[2]) - x0, max(old[1] + old[3], new[1] + new[3]) - y0])
             boxes = grown
-        self.tray = {"slots": boxes, "mini": round(mini, 2), "board": list(self.board)}
+        middles = self.tray.get("middles", {}) if self.tray is not None and self.tray.get("board") == self.board else {}
+        self.tray = {"slots": boxes, "mini": round(mini, 2), "board": list(self.board), "middles": middles}
+        self._centre_slots(image.size)
+
+    def _waited(self, slot: int, source: list[int]) -> None:
+        """Where a piece read whole waited in its slot: its middle, along the way the slots lie."""
+        level = self._level()
+        seen = [round(source[0] + source[2] / 2, 1), source[2]] if level else [round(source[1] + source[3] / 2, 1), source[3]]
+        kept = self.tray.setdefault("middles", {}).setdefault(str(slot), [])
+        # the same piece still waiting says nothing new
+        if not kept or abs(kept[-1][0] - seen[0]) > 1 or abs(kept[-1][1] - seen[1]) > 1:
+            kept.append(seen)
+            del kept[:-MIDDLES_KEPT]
+
+    def _level(self) -> bool:
+        slots = self.tray["slots"]
+        return len(slots) < 2 or abs(slots[1][0] - slots[0][0]) >= abs(slots[1][1] - slots[0][1])
+
+    def _centre_slots(self, size: tuple[int, int]) -> None:
+        """The slots laid where the pieces were seen to wait. A reading gives the slots from one screen's boxes,
+        a few pixels out, and a game's slots are often wider than a third of its board (2026-11-17: a piece five
+        blocks long reached 6 pixels past the slot it was given and was not read, 7 times in one game). A slot
+        whose pieces of different widths all waited about one middle has its middle there; the slots lie as far
+        apart as those middles do. A game whose pieces do not wait in the middle of their slots shows no such
+        middle, and its slots stay as they were."""
+        middles = self.tray.get("middles") or {}
+        mini, level = self.tray["mini"], self._level()
+        known = {int(slot): _median([middle for middle, _ in kept]) for slot, kept in middles.items()
+                 if len(kept) >= 2 and max(middle for middle, _ in kept) - min(middle for middle, _ in kept) <= mini / 2}
+        if not known:
+            return
+        axis = 0 if level else 1
+        slots = self.tray["slots"]
+        apart = slots[1][axis] - slots[0][axis] if len(slots) > 1 else slots[0][axis + 2]
+        steps = [(known[one] - known[other]) / (one - other) for one in known for other in known if one > other]
+        if steps:
+            apart = _median(steps)
+        first = _median([middle - slot * apart for slot, middle in known.items()])
+        if apart < 2 * mini:
+            return
+        for slot, box in enumerate(slots):
+            start = max(0, round(first + slot * apart - apart / 2))
+            end = min(size[axis], round(first + slot * apart + apart / 2))
+            if end - start >= mini and (abs(start - box[axis]) > 1 or abs(end - start - box[axis + 2]) > 1):
+                box[axis], box[axis + 2] = start, end - start
 
     def _slot(self, image: Any, box: list[int]) -> tuple[Any, list[int] | None]:
         """The piece waiting in one slot and the box around it: None when the slot is empty, [] when what is
-        there does not come out as whole blocks."""
+        there does not come out as whole blocks. The background is what the slot's two side edges show, row by
+        row; a piece that reaches those edges (one as long as the slot is wide: 2026-11-17, a piece five blocks
+        long left 2.5 pixels either side) is read again against what the slot's top and bottom show, column by
+        column."""
+        found = self._piece_in(image, box, upright=False)
+        if found[0] == [] and found[2]:
+            again = self._piece_in(image, box, upright=True)
+            if again[0]:
+                return again[0], again[1]
+        return found[0], found[1]
+
+    def _piece_in(self, image: Any, box: list[int], upright: bool) -> tuple[Any, list[int] | None, bool]:
+        """`_slot` against one background: the piece, its box, and whether it ran out of the slot at the edges the
+        background was taken from."""
         from PIL import Image, ImageChops
 
         mini = self.tray["mini"]
         x, y, w, h = box
         crop = image.crop((x, y, x + w, y + h))
-        edge = min(EDGE, max(1, w // 8))
-        # the background of each row: what the slot's two edges show there
-        one = crop.crop((0, 0, edge, h)).resize((1, h), Image.BOX)
-        other = crop.crop((w - edge, 0, w, h)).resize((1, h), Image.BOX)
+        edge = min(EDGE, max(1, (h if upright else w) // 8))
+        if upright:
+            one = crop.crop((0, 0, w, edge)).resize((w, 1), Image.BOX)
+            other = crop.crop((0, h - edge, w, h)).resize((w, 1), Image.BOX)
+        else:
+            one = crop.crop((0, 0, edge, h)).resize((1, h), Image.BOX)
+            other = crop.crop((w - edge, 0, w, h)).resize((1, h), Image.BOX)
         ground = Image.blend(one, other, 0.5).resize((w, h), Image.NEAREST)
         bands = ImageChops.difference(crop, ground).split()
         mask = ImageChops.lighter(ImageChops.lighter(bands[0], bands[1]), bands[2]).point(lambda value: 255 if value > DIFFERS else 0)
@@ -298,23 +372,25 @@ class BlockKit:
         coarse = mask.resize((max(1, w // part), max(1, h // part)), Image.BOX).point(lambda value: 255 if value >= 128 else 0)
         found = self._nearest(coarse)
         if found is None:
-            return None, None
+            return None, None, False
         # the coarse picture leaves out a part less than half covered: the thing's own edge is looked for one part out
         x0, y0 = max(0, (found[0] - 1) * part), max(0, (found[1] - 1) * part)
         tight = mask.crop((x0, y0, min(w, (found[2] + 1) * part), min(h, (found[3] + 1) * part))).getbbox()
         if tight is None:
-            return None, None
+            return None, None, False
         left, top, right, bottom = x0 + tight[0], y0 + tight[1], x0 + tight[2], y0 + tight[3]
         source = [x + left, y + top, right - left, bottom - top]
         if (right - left) * (bottom - top) < 0.4 * mini * mini:
-            return None, None
-        if left <= edge or top <= 0 or right >= w - edge or bottom >= h:
+            return None, None, False
+        side, ends = (0, edge) if upright else (edge, 0)
+        if left <= side or top <= ends or right >= w - side or bottom >= h - ends:
             if abs((left + right) / 2 - w / 2) > 1.5 * mini or abs((top + bottom) / 2 - h / 2) > 1.5 * mini:
-                return None, None                # it reaches in from outside, far from the slot's middle: no piece
-            return [], source                    # it runs out of the slot: not a piece seen whole
+                return None, None, False         # it reaches in from outside, far from the slot's middle: no piece
+            # it runs out of the slot: not a piece seen whole
+            return [], source, (top > ends and bottom < h - ends) if not upright else (left > side and right < w - side)
         cols, rows = max(1, round((right - left) / mini)), max(1, round((bottom - top) / mini))
         if cols > PIECE_MOST or rows > PIECE_MOST:
-            return [], source
+            return [], source, False
         cw, ch = (right - left) / cols, (bottom - top) / rows
         cells = []
         for r in range(rows):
@@ -324,20 +400,34 @@ class BlockKit:
                 share = inner.resize((1, 1), Image.BOX).getpixel((0, 0)) / 255
                 if share >= BLOCK_IS:
                     cells.append((r, c))
-                elif share > BLOCK_NOT:
-                    return [], source
+                    continue
+                # a block of the background's own colour differs from it only along its four bevelled sides; the
+                # shadow other blocks throw into a place with no block lies along two of them at most (2026-11-17:
+                # a teal piece on a board turned teal was not read, 9 times in one game)
+                sides = 0
+                for x0, y0, x1, y1 in ((SIDE_IN, 0, 1 - SIDE_IN, SIDE_DEEP), (SIDE_IN, 1 - SIDE_DEEP, 1 - SIDE_IN, 1),
+                                       (0, SIDE_IN, SIDE_DEEP, 1 - SIDE_IN), (1 - SIDE_DEEP, SIDE_IN, 1, 1 - SIDE_IN)):
+                    strip = mask.crop((round(left + (c + x0) * cw), round(top + (r + y0) * ch),
+                                       max(round(left + (c + x0) * cw) + 1, round(left + (c + x1) * cw)),
+                                       max(round(top + (r + y0) * ch) + 1, round(top + (r + y1) * ch))))
+                    sides += strip.resize((1, 1), Image.BOX).getpixel((0, 0)) / 255 >= SIDE_IS
+                if sides == 4:
+                    cells.append((r, c))
+                elif sides == 3 or (share > BLOCK_NOT and sides == 0):
+                    return [], source, False
         if not cells or not _joined(cells):
-            return [], source
-        return _piece(cells), source
+            return [], source, False
+        return _piece(cells), source, False
 
     @staticmethod
     def _nearest(coarse: Any) -> tuple[int, int, int, int] | None:
-        """The box of the thing in a slot's coarse picture of what differs: of all that hang together (corner to
-        corner too: a piece's blocks have seams), the one nearest the slot's middle. Something else that reaches
-        into the slot (a notice over its corner) is not the piece."""
+        """The box of the thing in a slot's coarse picture of what differs: of all that hang together, the one
+        nearest the slot's middle, with whatever lies within half a block of it (a piece's blocks have seams
+        between them, and blocks set on a slant meet only at their corners). Something else that reaches into the
+        slot from further off (a notice over its corner) is not the piece."""
         width, height = coarse.size
         marked = [value > 0 for value in coarse.tobytes()]
-        seen, best, least = [False] * len(marked), None, None
+        seen, boxes = [False] * len(marked), []
         for start, on in enumerate(marked):
             if not on or seen[start]:
                 continue
@@ -352,10 +442,21 @@ class BlockKit:
                         if marked[index] and not seen[index]:
                             seen[index] = True
                             todo.append(index)
-            away = abs((left + right + 1) / 2 - width / 2) + abs((top + bottom + 1) / 2 - height / 2)
-            if least is None or away < least:
-                best, least = (left, top, right + 1, bottom + 1), away
-        return best
+            boxes.append([left, top, right + 1, bottom + 1])
+        if not boxes:
+            return None
+        best = min(boxes, key=lambda box: abs((box[0] + box[2]) / 2 - width / 2) + abs((box[1] + box[3]) / 2 - height / 2))
+        rest = [box for box in boxes if box is not best]
+        grown = True
+        while grown:
+            grown = False
+            for box in list(rest):
+                # a part is a quarter of a block: two parts apart or less is one piece
+                if box[0] - best[2] <= SEAM and best[0] - box[2] <= SEAM and box[1] - best[3] <= SEAM and best[1] - box[3] <= SEAM:
+                    best = [min(best[0], box[0]), min(best[1], box[1]), max(best[2], box[2]), max(best[3], box[3])]
+                    rest.remove(box)
+                    grown = True
+        return best[0], best[1], best[2], best[3]
 
     # ── a screen ──────────────────────────────────────────────────────
 
@@ -410,6 +511,8 @@ class BlockKit:
                 tray[slot], source = self._slot(image, box)
                 if tray[slot]:
                     self.sources[slot] = source
+                    self._waited(slot, source)
+            self._centre_slots(image.size)
         if isinstance(left_tray, list) and len(left_tray) == self.slots and not dealt:
             # the pieces that wait are the ones that waited: a slot seen unclearly holds what it held
             tray = [left if seen == [] else seen for seen, left in zip(tray, left_tray)]
@@ -473,10 +576,13 @@ class BlockKit:
             return told
         most = max(count for count, _, _ in fits)
         best = [(down, across) for count, down, across in fits if count == most]
-        if best == [(0, 0)]:
+        if (0, 0) in best:
+            # where it is to go is among the places its shape fills best: what else is filled beside it (the
+            # piece's own drawing hanging over the next row, a glow) does not say it lies elsewhere (2026-11-17:
+            # counted as lying halfway, a piece that lay right was moved half a cell off and not taken)
             told["ok"] = True
             return told
-        # between two places (its shape fills both): it lies halfway
+        # between two places, neither where it is to go: it lies halfway between them
         down = sum(d for d, _ in best) / len(best)
         across = sum(a for _, a in best) / len(best)
         if down or across:
