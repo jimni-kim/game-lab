@@ -37,9 +37,11 @@ REDUCE, CHANGED = 4, 28
 JOIN = 3
 # a held drawing is the same shape as what was picked up: its width and height grew by the same factor, within this
 ASPECT = 0.3
-# the picked-up thing's own colours: looked for among this many, each filling at least this share of its box,
-# matched within this much a channel; the box narrowed to them is used when it keeps this share of the area
-OWN_COLOURS, OWN_SHARE, OWN_NEAR, OWN_KEPT = 6, 0.08, 36, 0.4
+# the picked-up thing's own colours: looked for among this many, each filling at least this share of its box and
+# at least OWN_MAIN of what its commonest colour fills (its body, not its rim or shadow, whose dark shades a
+# tutorial's overlay shares: 2026-11-16), matched within this much a channel; the box narrowed to them is used
+# when it keeps this share of the area
+OWN_COLOURS, OWN_SHARE, OWN_MAIN, OWN_NEAR, OWN_KEPT = 6, 0.08, 0.5, 36, 0.4
 # how far along the way the first look is taken, and the least distance moved before it (pixels): far enough
 # for the game to take the press as a drag, near enough that the held thing is not yet far over the board; when
 # nothing held shows there, the second share is tried
@@ -133,11 +135,20 @@ def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer
             return None
         origin = min(near, key=lambda box: _gap(start, box))
         rest = [box for box in boxes if box is not origin]
-    shaped = [box for box in rest if box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7
-              and abs((box[2] / origin[2]) / (box[3] / origin[3]) - 1) <= ASPECT]
+    # each narrowed to the thing's own colours first: a held drawing joined to what else changed beside it (a
+    # tutorial's overlay gone from where it was) is not in its proportions until it is
+    narrowed = [_own(before, during, origin, box) for box in rest
+                if box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7]
+    shaped = [box for box in narrowed if _shaped(box, origin)]
     if not shaped:
         return None
-    return origin, [_own(before, during, origin, box) for box in sorted(shaped, key=lambda box: _gap(pointer, box))]
+    return origin, sorted(shaped, key=lambda box: _gap(pointer, box))
+
+
+def _shaped(box: list[int], origin: list[int]) -> bool:
+    """Whether a box is as large as what was picked up or larger, and in its proportions."""
+    return box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7 \
+        and abs((box[2] / origin[2]) / (box[3] / origin[3]) - 1) <= ASPECT
 
 
 def gone(before: bytes, during: bytes, start: tuple[float, float], source: list[int] | None = None) -> bool:
@@ -169,9 +180,10 @@ def _own(before: bytes, during: bytes, origin: list[int], held: list[int]) -> li
         under, drawn = one.convert("RGB").crop(corners(held)), other.convert("RGB").crop(corners(held))
     # its colours: those the place it left held before and holds no more
     now = dict((colour, count) for count, colour in left_behind.quantize(OWN_COLOURS * 2).convert("RGB").getcolors() or [])
-    own = [colour for count, colour in sorted(was.quantize(OWN_COLOURS).convert("RGB").getcolors() or [], reverse=True)
+    own = [(count, colour) for count, colour in sorted(was.quantize(OWN_COLOURS).convert("RGB").getcolors() or [], reverse=True)
            if count >= origin[2] * origin[3] * OWN_SHARE and not any(
                max(abs(a - b) for a, b in zip(colour, other)) <= OWN_NEAR for other in now)]
+    own = [colour for count, colour in own if count >= own[0][0] * OWN_MAIN] if own else []
     if not own:
         return held
     mask = None
@@ -184,10 +196,14 @@ def _own(before: bytes, during: bytes, origin: list[int], held: list[int]) -> li
     moved = [band.point(lambda value: 255 if value > CHANGED else 0) for band in ImageChops.difference(under, drawn).split()]
     mask = ImageChops.darker(mask, ImageChops.lighter(ImageChops.lighter(moved[0], moved[1]), moved[2]))
     tight = mask.getbbox()
-    # only when most of what was found is in those colours: a thing drawn held in other colours keeps its box
-    if tight is None or (tight[2] - tight[0]) * (tight[3] - tight[1]) < held[2] * held[3] * OWN_KEPT:
+    if tight is None:
         return held
-    return [held[0] + tight[0], held[1] + tight[1], tight[2] - tight[0], tight[3] - tight[1]]
+    narrowed = [held[0] + tight[0], held[1] + tight[1], tight[2] - tight[0], tight[3] - tight[1]]
+    # only when most of what was found is in those colours, or what is is in the thing's proportions: a thing
+    # drawn held in other colours keeps its box
+    if narrowed[2] * narrowed[3] < held[2] * held[3] * OWN_KEPT and not _shaped(narrowed, origin):
+        return held
+    return narrowed
 
 
 def _middle(box: list[int]) -> tuple[float, float]:
