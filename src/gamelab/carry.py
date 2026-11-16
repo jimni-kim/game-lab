@@ -11,8 +11,9 @@ A surface that cannot hold a pointer between two calls (`HOLD` not among its kin
 movement, shifted by what the last measured carry showed.
 
 Some games pick a thing up only when it was pressed a while before the pointer moves (2026-11-16: a block game
-took a press of 0.25 s and a move for nothing, one of 0.4 s for a pick-up). A carry that found nothing held
-presses longer the next time (HOLDS), and keeps to the longer press. On a screen something keeps moving over
+took a press of 0.25 s and a move for nothing, one of 1 s for a pick-up). A carry that finds nothing held after
+its first leg lets go where it pressed and presses again longer (HOLDS), within the same carry, and keeps to the
+press that picked the thing up. On a screen something keeps moving over
 (a tutorial's hand), the looks are taken under it (`motion.Steady`), so that the hand is not taken for what
 was picked up.
 """
@@ -39,9 +40,9 @@ OWN_COLOURS, OWN_SHARE, OWN_NEAR, OWN_KEPT = 6, 0.08, 36, 0.4
 # for the game to take the press as a drag, near enough that the held thing is not yet over the board
 FIRST_LEG, LEAST_LEG = (0.2, 0.5), 24.0
 LIFT_S, LEG_MS, REST_S = 0.25, 160, 0.08
-# how long the pointer rests where it pressed before it moves: the first, then each next after a carry that
-# found nothing held
-HOLDS = (0.0, 0.4, 0.8)
+# how long the pointer rests where it pressed before it moves: the first, then each next after a press that
+# showed nothing held
+HOLDS = (0.0, 0.4, 0.8, 1.2)
 # once this many carries were measured, one whose thing was enlarged by a factor further than this share from
 # their middle one is not believed
 SCALES_TRUSTED, SCALES_KEPT, SCALE_NEAR = 3, 9, 0.2
@@ -181,33 +182,44 @@ class Carrier:
             return told
         # on a screen something keeps moving over, both looks are taken under it; else each as it is
         look = surface.capture if getattr(surface, "animating", False) else getattr(surface, "snap", surface.capture)
-        before = await look()
-        await surface.press(*start)
-        try:
-            if hold_s:
-                await asyncio.sleep(hold_s)
-            pointer = start
-            for share in FIRST_LEG:
-                along = (goal[0] - start[0], goal[1] - start[1])
-                length = max((along[0] ** 2 + along[1] ** 2) ** 0.5, 1.0)
-                reach = max(share, min(1.0, LEAST_LEG / length))
-                pointer = (start[0] + along[0] * reach, start[1] + along[1] * reach)
-                await surface.move(*pointer, LEG_MS)
-                await asyncio.sleep(LIFT_S)
-                found = find(before, await look(), start, pointer)
-                if found is not None and self._plausible(*found):
-                    origin, held = found
-                    middle = (held[0] + held[2] / 2, held[1] + held[3] / 2)
-                    self.offset = (middle[0] - pointer[0], middle[1] - pointer[1])
-                    told.update(origin=origin, held=held, measured=True, offset=[round(part) for part in self.offset])
-                    break
-            if not told["measured"] and hold_s >= self.hold_s and self.hold_s < HOLDS[-1]:
-                # nothing was seen held: perhaps it was not picked up, and a longer press would have
-                self.hold_s = next(step for step in HOLDS if step > self.hold_s)
-            end = (goal[0] - self.offset[0], goal[1] - self.offset[1]) if self.offset else goal
-            told["end"] = list(end)
-            await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
-            await asyncio.sleep(REST_S)
-        finally:
-            await surface.lift()
+        # pressed again longer only while no carry here has shown a thing held: after one has, a press that
+        # shows nothing is a look that failed, and pressing a piece again and again may do something to it
+        holds = [hold_s, *(step for step in HOLDS if step > hold_s)] if self.offset is None else [hold_s]
+        for tried, hold in enumerate(holds, 1):
+            told["hold_s"], told["tries"] = hold, tried
+            before = await look()
+            await surface.press(*start)
+            try:
+                if hold:
+                    await asyncio.sleep(hold)
+                pointer = start
+                for share in FIRST_LEG:
+                    along = (goal[0] - start[0], goal[1] - start[1])
+                    length = max((along[0] ** 2 + along[1] ** 2) ** 0.5, 1.0)
+                    reach = max(share, min(1.0, LEAST_LEG / length))
+                    pointer = (start[0] + along[0] * reach, start[1] + along[1] * reach)
+                    await surface.move(*pointer, LEG_MS)
+                    await asyncio.sleep(LIFT_S)
+                    found = find(before, await look(), start, pointer)
+                    if found is not None and self._plausible(*found):
+                        origin, held = found
+                        middle = (held[0] + held[2] / 2, held[1] + held[3] / 2)
+                        self.offset = (middle[0] - pointer[0], middle[1] - pointer[1])
+                        told.update(origin=origin, held=held, measured=True, offset=[round(part) for part in self.offset])
+                        break
+                if not told["measured"] and tried < len(holds):
+                    # nothing was seen held: perhaps it was not picked up. Let go where it was pressed, and press
+                    # again longer
+                    await surface.move(*start, LEG_MS)
+                    await asyncio.sleep(REST_S)
+                    continue
+                if told["measured"]:
+                    self.hold_s = max(self.hold_s, hold)
+                end = (goal[0] - self.offset[0], goal[1] - self.offset[1]) if self.offset else goal
+                told["end"] = list(end)
+                await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
+                await asyncio.sleep(REST_S)
+                break
+            finally:
+                await surface.lift()
         return told

@@ -158,14 +158,15 @@ class Stiff(Blocks):
         await super().lift()
 
 
-async def test_a_carry_that_found_nothing_held_presses_longer_the_next_time(monkeypatch):
+async def test_a_carry_that_finds_nothing_held_lets_go_and_presses_longer_at_once(monkeypatch):
     monkeypatch.setattr(carry, "HOLDS", (0.0, 0.08, 0.16))
     fake = Stiff()
     carrier = Carrier(fake)
-    first = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
-    assert not first["measured"] and fake.placed == [] and carrier.hold_s == 0.08
-    second = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
-    assert second["measured"] and second["hold_s"] == 0.08 and fake.placed == [(0, [2, 2])]
+    told = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [2, 2]), 400)
+    assert told["measured"] and (told["hold_s"], told["tries"]) == (0.08, 2) and fake.placed == [(0, [2, 2])]
+    # the press that picked it up is the one from now on
+    second = await carrier.carry(slot_middle(fake, 1), goal_at(fake, 1, [5, 4]), 400)
+    assert (second["hold_s"], second["tries"]) == (0.08, 1) and second["measured"]
 
 
 async def test_a_drag_the_model_marks_carried_is_aimed_by_where_the_held_piece_is_drawn():
@@ -207,17 +208,16 @@ async def test_a_drag_that_missed_says_nothing_of_its_press_when_nothing_showed_
     assert all("drag_hold_ms_at_least" not in asked for asked in model.asked)
 
 
-async def test_a_carried_drag_that_picked_nothing_up_at_a_short_press_and_did_at_a_longer_sets_the_press(monkeypatch):
+async def test_in_the_models_own_play_a_carried_drag_that_picked_nothing_up_is_pressed_longer_without_asking(monkeypatch):
     monkeypatch.setattr(carry, "HOLDS", (0.0, 0.08, 0.16))
     fake = Stiff()
     start = list(slot_middle(fake, 0))
     drag = {"kind": "drag", "path": [start, goal_at(fake, 0, [2, 2])], "ms": 400, "hold_ms": 0, "carry": True}
-    model = Player([drag, drag, {"kind": "done", "end": "won"}])
+    model = Player([drag, {"kind": "done", "end": "won"}])
     played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(10, 1, 60))
     assert fake.placed == [(0, [2, 2])], (played.record, fake.missed)
-    first, second = model.asked[2]["history"][-2:]
-    assert (first["picked_up"], first["held_ms"], second["picked_up"], second["held_ms"]) == (False, 0, True, 80)
-    assert model.asked[2]["drag_hold_ms_at_least"] == 80
+    seen = model.asked[1]["history"][0]
+    assert (seen["picked_up"], seen["held_ms"], seen["screen_changed"]) == (True, 80, True)
 
 
 async def test_a_carried_drag_that_picked_the_piece_up_and_missed_sets_no_press():
