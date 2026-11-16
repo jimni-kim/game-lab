@@ -191,6 +191,9 @@ class Agent:
         self.started = time.monotonic()
         # drags are carried: what a held thing is drawn like is measured on the way (`carry`)
         self.carrier = Carrier(self.seen)
+        # a carry that goes straight to where the piece is to lie looks at the screen once, with the piece held
+        # over the board: whoever watches the game is shown that frame too
+        self.carrier.on_frame = watch.seen if watch is not None else None
         self.carried_as: dict[str, Any] | None = None
         # what was found of the game nobody named, and the families still to try for it
         self.found: dict[str, Any] = {}

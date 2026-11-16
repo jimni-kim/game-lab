@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>게임 에이전트 데모</title>
+<style>
+  :root { --bg: #f6f6f4; --panel: #fff; --ink: #1d1d1f; --muted: #6b6b70; --line: #deded9; --accent: #2a62d6; --stop: #c4392f; --ok: #2c8a4b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151517; --panel: #1f1f22; --ink: #ececef; --muted: #9a9aa2; --line: #34343a; --accent: #6d9bff; --stop: #ff6b5f; --ok: #5fcb84; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 360px; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { font-size: 18px; margin: 0; }
+  #state { font-size: 13px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  #state.playing { color: var(--ok); border-color: var(--ok); }
+  form { grid-column: 1 / -1; display: flex; gap: 8px; }
+  textarea { flex: 1; min-width: 0; resize: vertical; min-height: 44px; padding: 10px 12px; font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  button { font: inherit; padding: 0 18px; border-radius: 10px; border: 0; color: #fff; background: var(--accent); cursor: pointer; }
+  button#stop { background: var(--stop); }
+  button:disabled { opacity: .4; cursor: default; }
+  .screen { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-height: 240px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .screen img { display: block; max-width: 100%; max-height: 78vh; }
+  .screen p { color: var(--muted); }
+  ol { list-style: none; margin: 0; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; max-height: 78vh; overflow: auto; font-size: 13px; }
+  li { padding: 4px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  li:last-child { border-bottom: 0; }
+  li time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
+  li.end { font-weight: 600; }
+  li.bad { color: var(--stop); }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; }
+    form { flex-wrap: wrap; }
+    textarea { flex-basis: 100%; }
+    button { flex: 1; height: 44px; }
+    ol { max-height: 40vh; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>게임 에이전트 데모</h1><span id="state">연결 중</span></header>
+  <form id="ask">
+    <textarea id="words" maxlength="2000" rows="2" placeholder="예: https://… 에서 이 퍼즐을 끝까지 풀어줘 / 퍼즐 앱에서 Fifteen 끝까지"></textarea>
+    <button id="send" type="submit">보내기</button>
+    <button id="stop" type="button" disabled>중지</button>
+  </form>
+  <div class="screen"><img id="screen" alt="게임 화면" hidden><p id="empty">아직 화면이 없습니다</p></div>
+  <ol id="log"></ol>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const log = $("log"), state = $("state"), screen = $("screen");
+  let shown = null, playing = false;
+
+  const say = (text, kind, at) => {
+    const item = document.createElement("li");
+    if (kind) item.className = kind;
+    const time = document.createElement("time");
+    time.textContent = new Date((at || Date.now() / 1000) * 1000).toLocaleTimeString();
+    item.append(time, text);
+    log.append(item);
+    log.scrollTop = log.scrollHeight;
+    return item;
+  };
+  const goal = (g) => g.objective === "reach_value" ? `${g.target_value}까지` : g.objective === "actions" ? `${g.target_value}수` : "끝까지";
+  const reasons = { busy: "다른 판이 도는 중", day_limit: "오늘 판 수 한도", words: "요청이 비었거나 너무 김",
+                    no_game: "주소나 설치된 앱을 찾지 못함", web_only: "지금은 웹 주소가 있는 요청만 받음", not_public: "공개 주소가 아님", in_use: "다른 실행이 기기를 쓰는 중", idle: "도는 판이 없음" };
+
+  const setState = (event) => {
+    playing = event.state === "playing";
+    state.textContent = playing ? "도는 중" : `대기 · 오늘 ${event.left_today}판 남음`;
+    state.className = playing ? "playing" : "";
+    $("send").disabled = playing;
+    $("stop").disabled = !playing;
+  };
+
+  const told = (event) => {
+    switch (event.kind) {
+      case "status": setState(event); break;
+      case "asked": log.replaceChildren(); say(`요청: ${event.words}`, "", event.at); break;
+      case "understood": say(event.url ? `웹: ${event.url} · ${goal(event.goal)}` : `앱: ${event.app} · ${goal(event.goal)}`
+                              + (event.hint ? ` · ${event.hint}` : ""), "", event.at); break;
+      case "opening": say(event.where === "emulator" ? "에뮬레이터를 켜는 중" : event.where === "web" ? "페이지를 여는 중" : `앱을 여는 중 (${event.app})`, "", event.at); break;
+      case "seen": break;
+      case "sending": say(`수 ${event.number}: ${event.input} ${JSON.stringify(event.where)}`, "", event.at); break;
+      case "sent": break;
+      case "stopping": say("중지하는 중", "", event.at); break;
+      case "result": {
+        const tokens = event.tokens ? ` · 입력 토큰 ${event.tokens.input}` : "";
+        say(`끝: ${event.outcome} (${event.reason}) · ${event.actions ?? "?"}수 · ${event.seconds ?? "?"}초${tokens}`
+            + (event.family ? ` · ${event.family}` : "") + (event.generations != null ? ` · 어댑터 ${event.generations}번` : ""), "end", event.at);
+        break;
+      }
+      case "refused": say(`받지 않음: ${reasons[event.reason] || event.reason}`, "bad", event.at); break;
+      case "error": say(`오류: ${event.detail}`, "bad", event.at); break;
+    }
+  };
+
+  const frame = (blob) => {
+    const url = URL.createObjectURL(blob);
+    screen.onload = () => { if (shown) URL.revokeObjectURL(shown); shown = url; };
+    screen.src = url;
+    screen.hidden = false;
+    $("empty").hidden = true;
+  };
+
+  const connect = () => {
+    const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+    socket.binaryType = "blob";
+    socket.onmessage = (message) => typeof message.data === "string" ? told(JSON.parse(message.data)) : frame(message.data);
+    socket.onclose = () => { state.textContent = "연결 끊김, 다시 연결 중"; state.className = ""; setTimeout(connect, 2000); };
+  };
+
+  const post = async (path, body) => {
+    const answer = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    if (answer.status === 401) { say("접근 토큰이 없습니다: 서버가 출력한 주소로 다시 여세요", "bad"); return; }
+    const said = await answer.json().catch(() => ({}));
+    if (said.refused) say(`받지 않음: ${reasons[said.refused] || said.refused}`, "bad");
+  };
+
+  $("ask").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const words = $("words").value.trim();
+    if (words && !playing) post("/ask", { words });
+  });
+  $("words").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("ask").requestSubmit(); }
+  });
+  $("stop").addEventListener("click", () => post("/stop"));
+  connect();
+})();
+</script>
+</body>
+</html>

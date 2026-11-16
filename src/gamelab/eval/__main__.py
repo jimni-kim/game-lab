@@ -1,4 +1,5 @@
-"""Measure the harness: `python -m gamelab.eval policies | web | android | offline | checks ...`; `models` lists what the model API serves."""
+"""Measure the harness: `python -m gamelab.eval policies | web | android | offline | checks ...`; `serve` plays a
+request in words on a demo page; `models` lists what the model API serves."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +9,7 @@ import os
 from pathlib import Path
 
 from .. import model
-from . import android, checks, measure, offline, policies, web
+from . import android, checks, measure, offline, policies, serve, web
 
 
 def load_env(path: Path) -> None:
@@ -34,7 +35,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m gamelab.eval", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name, module in (("policies", policies), ("web", web), ("android", android), ("offline", offline),
-                         ("checks", checks)):
+                         ("checks", checks), ("serve", serve)):
         command = commands.add_parser(name, description=module.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
         module.configure(command)
         command.set_defaults(run=module.main)

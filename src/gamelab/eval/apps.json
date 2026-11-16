@@ -1,0 +1,21 @@
+{
+  "_comment": "Apps named by hand for requests in words (eval android --ask, eval serve): by package, the name a person calls it (label, in place of the one its APK gives) and whether each game starts from no data (clear: pm clear, which also forgets progress and sign-ins).",
+  "com.mocacorp.block": {
+    "label": "Block Game"
+  },
+  "com.tripledot.blockbash": {
+    "label": "Woodoku Blast"
+  },
+  "com.gramgames.tenten": {
+    "label": "1010!"
+  },
+  "com.nebula.blockbloom": {
+    "label": "Block Bloom"
+  },
+  "com.wood.block.sudoku.puzzle.bm": {
+    "label": "Block Crush!"
+  },
+  "com.puzzlegames.puzzlebrickslegend": {
+    "label": "Color Block: Combo Blast"
+  }
+}

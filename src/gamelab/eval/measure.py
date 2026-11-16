@@ -1,10 +1,13 @@
 """What every screen evaluation shares: the run's arguments, the watcher that records each input, the
-figures made of a game, and the files written."""
+figures made of a game, the files written, and the lock that keeps two runs off one device."""
 from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import contextmanager
+import fcntl
 import json
+import re
 import statistics
 import subprocess
 import time
@@ -16,6 +19,8 @@ from ..contracts import Budget, GoalSpec
 from ..run import Run
 
 ROOT = Path(__file__).resolve().parents[3]
+# one file a browser or device, held by the run that moves it (`lock`)
+LOCKS = ROOT / "out" / ".lock"
 # a progress line every this many inputs, so a long game can be followed while it runs
 PROGRESS_EVERY = 25
 
@@ -188,3 +193,26 @@ def write_summary(out: Path, args: argparse.Namespace, results: list[dict[str, A
 
 def cancel_soon(cancel: asyncio.Event) -> None:
     asyncio.get_running_loop().call_soon(cancel.set)
+
+
+class Busy(Exception):
+    """Another run holds the device."""
+
+
+@contextmanager
+def lock(name: str):
+    """Hold `name` (`android-SERIAL`) while a run moves it, or raise Busy at once when another run
+    (`eval android`, `eval serve`) holds it. The lock is the system's on an open file, so a run
+    that dies lets go of it."""
+    LOCKS.mkdir(parents=True, exist_ok=True)
+    handle = open(LOCKS / re.sub(r"[^\w.-]", "_", name), "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise Busy(name) from None
+    try:
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
