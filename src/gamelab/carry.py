@@ -99,6 +99,9 @@ UNSEEN_MOST = 2
 # a carry with no looks that told how the thing hangs is moved by what the cells show this many times; a thing not
 # let go is taken this many pixels from the foot of the screen first
 AIMS_BLIND, BACK_FOOT = 3, 12
+# after more than this many carries on which the cells showed a held thing but its shape nowhere, such a carry is let
+# go by the game's way of hanging held things alone
+UNFIT_MOST = 2
 
 
 def _boxes(before: bytes, after: bytes, ignore: list[list[int]] | None = None) -> list[list[int]]:
@@ -284,7 +287,8 @@ def trusted(told: dict[str, Any] | None) -> bool:
     """Whether a carry is known to have put the thing where it was meant to go: it picked it up, and it either
     measured how the drawing follows or, sure of that from the carries before, saw the drawing on the way (`quick`).
     A move whose carry is not trusted and did nothing says nothing against how the screen was read."""
-    return bool(told and told.get("picked") and (told.get("measured") or told.get("quick") or told.get("checked")))
+    return bool(told and told.get("picked") and (told.get("measured") or told.get("quick") or told.get("checked")
+                                                 or told.get("by_rule")))
 
 
 def followed(one: tuple[list[int], tuple[float, float]], other: tuple[list[int], tuple[float, float]]) -> bool:
@@ -433,6 +437,8 @@ class Carrier:
         # asked: it cannot see this game's held things, and a carry is aimed by its looks alone as before)
         self._drawn: tuple[tuple[float, float], list[int]] | None = None
         self._unseen = 0
+        # carries on which the cells showed something held but its shape nowhere (`_by_rule`)
+        self._unfit = 0
 
     @property
     def offset(self) -> tuple[float, float] | None:
@@ -605,7 +611,9 @@ class Carrier:
                         # pointer here (a game whose held drawing the looks cannot tell from what else changes)
                         self.hang.add(source, start, end, goal, gain)
                     self._unseen = 0 if any(seen["seen"] for seen in told["checks"]) else self._unseen + 1
-                    if not lies:
+                    if not lies and follow is not None and told.get("measured") and self._by_rule(told):
+                        told["by_rule"] = True
+                    elif not lies:
                         await self._back(start, told)
                 else:
                     end = await self._aim(before, start, goal, end, follow, source, duration_ms, told)
@@ -641,7 +649,13 @@ class Carrier:
                 # nothing was seen held, and nothing ever was here: pressed longer next time
                 self.hold_s = next((step for step in HOLDS if step > self.hold_s), self.hold_s)
             self._unseen = 0 if told["picked"] else self._unseen + 1
-            if not lies:
+            if lies:
+                self._by_rule(told)
+            if not lies and self._by_rule(told):
+                # the cells do not show this game's held things as they lie (`_by_rule`): let go where the game's
+                # way of hanging them puts it
+                told["by_rule"] = True
+            elif not lies:
                 self.hang.shaken = True
                 await self._back(start, told)
             told["end"] = [round(part, 1) for part in end]
@@ -682,6 +696,20 @@ class Carrier:
             await self.surface.move(*end, LEG_MS)
         # over the cells it is to cover, though something beside them shows too (a glow): let go there
         return end, bool(seen.get("covered"))
+
+    def _by_rule(self, told: dict[str, Any]) -> bool:
+        """Whether a held thing the cells did not show lying right is let go all the same, by how the game hangs
+        held things. The check by cells takes it that a held thing is drawn the size of the board's cells, or
+        that the game shows where it would land; a game that draws it smaller and shows nothing (2026-11-17: its
+        blocks 84 pixels on cells of 98) fills the cells under it only in part, and its shape is found nowhere.
+        A carry on which the cells showed something held but its shape nowhere counts toward that; one on which
+        they showed it lying right counts against. From UNFIT_MOST on, such carries are not taken back."""
+        last = told["checks"][-1] if told.get("checks") else {}
+        if any(seen.get("ok") for seen in told.get("checks", [])):
+            self._unfit = max(0, self._unfit - 1)
+        elif last.get("seen") and not last.get("shift") and not last.get("covered"):
+            self._unfit += 1
+        return self._unfit > UNFIT_MOST
 
     async def _back(self, start: tuple[float, float], told: dict[str, Any]) -> None:
         """The held thing does not lie where it is to go: taken back to where it waited, so that letting go

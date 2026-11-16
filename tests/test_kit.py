@@ -417,3 +417,34 @@ async def test_slots_are_laid_where_the_pieces_are_seen_to_wait_and_a_long_piece
     fake.state = {**fake.state, "tray": [long, long, long]}
     state, _ = kit.read(await fake.capture())
     assert state["tray"] == [long, long, long], state["tray"]
+
+
+async def test_a_game_whose_held_pieces_the_cells_do_not_show_is_played_by_how_it_hangs_them():
+    """The cells show something held but its shape nowhere, carry after carry: the piece is then let go where the
+    game's way of hanging held pieces puts it, not taken back."""
+    fake = Centred()
+    carrier = carry.Carrier(fake)
+    # the fake hangs a piece from where it is pressed: its foot 1.7 cells and 0.35 of its height above the pointer
+    def source_and_ends(slot, anchor):
+        piece, source = fake.state["tray"][slot], fake.source(slot)
+        rows, cols = blocks.extent(piece)
+        start = (source[0] + 12, source[1] + 12)
+        goal = (BOARD[0] + (anchor[1] + cols / 2) * CELL, BOARD[1] + (anchor[0] + rows / 2) * CELL)
+        return source, start, goal
+    unfit = lambda png: {"ok": False, "seen": 2, "covered": False}
+    for slot in range(3):
+        piece, source = fake.state["tray"][slot], fake.source(slot)
+        rows, cols = blocks.extent(piece)
+        start = (source[0] + 12, source[1] + 12)
+        pointer = (start[0] + 30, start[1] - 100)
+        middle = (pointer[0], pointer[1] - 1.7 * CELL - 0.35 * rows * CELL)
+        carrier.hang.add(source, start, pointer, middle, 1.0)
+    told = []
+    for number, anchor in enumerate([[0, 0], [3, 3], [6, 0]]):
+        slot = next(index for index, piece in enumerate(fake.state["tray"]) if piece)
+        source, start, goal = source_and_ends(slot, anchor)
+        told.append(await carrier.carry(start, goal, 300, source=source, check=unfit))
+        carrier.hang.shaken = False
+    # the first carries are taken back: nothing is placed by them
+    assert [bool(entry.get("cancelled")) for entry in told] == [True, True, False], told
+    assert told[2]["by_rule"] and carry.trusted(told[2]) and len(fake.placed) == 1 and fake.placed[0][1] == [6, 0], (told, fake.placed)

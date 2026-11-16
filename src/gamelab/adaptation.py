@@ -397,6 +397,10 @@ class Adaptation:
             state = family.estimate(Observation("label", 0, "explore", 0, 0.0, "explore", public_facts={"state": read}))
             if isinstance(state, NeedObservation) or state.unknown_fields:
                 problem = "state_refused"
+                if not patient:
+                    # asked again of the same screen, the model says the same (2026-11-17: 16 readings of one
+                    # screen between levels, each refused): the caller has another way past it
+                    break
                 continue
             if accept is not None and not resized and not accept(state.payload):
                 problem, self.refused = "transition_refused", state.payload
