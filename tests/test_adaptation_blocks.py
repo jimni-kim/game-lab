@@ -9,7 +9,7 @@ import json
 from PIL import Image, ImageDraw
 import pytest
 
-from gamelab import adaptation, agent, carry, catalog, recovery
+from gamelab import adaptation, agent, carry, catalog, kits, recovery
 from gamelab.adaptation import Store, adopt
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
@@ -242,7 +242,13 @@ def test_a_held_piece_is_found_by_what_changed_on_the_screen():
     assert carry.find(before, before, start, pointer) is None
 
 
-async def test_a_drag_game_is_explored_adapted_and_played_with_every_piece_where_the_solver_put_it(tmp_path):
+@pytest.fixture
+def written(monkeypatch):
+    """The family read by code a model writes, as a drag game with no reader of its own is (`kits`)."""
+    monkeypatch.setattr(kits, "KITS", {})
+
+
+async def test_a_drag_game_is_explored_adapted_and_played_with_every_piece_where_the_solver_put_it(tmp_path, written):
     fake = Blocks()
     dealer = Dealer(fake, [source()])
     played, made = await agent.play(fake, dealer, "block_placement", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120),
@@ -252,7 +258,10 @@ async def test_a_drag_game_is_explored_adapted_and_played_with_every_piece_where
     assert {move["effect"] for move in played.moves} == {"confirmed"} and len(fake.placed) == 20 and not fake.missed
     # each placement is the one the solver chose, although the piece hung 1.7 cells above the pointer
     assert [(move["action"]["slot"], move["action"]["anchor"]) for move in played.moves] == fake.placed
-    assert all(move["carried"]["measured"] for move in played.moves)
+    # every piece was seen picked up; how its drawing follows was measured until it was sure, then looked at once
+    carried = [move["carried"] for move in played.moves]
+    assert all(entry["picked"] and (entry["measured"] or entry.get("quick")) for entry in carried), carried
+    assert carried[0]["measured"] and any(entry.get("quick") for entry in carried)
     # the model was told which state field lists what is dragged, and the writer where each thing waited
     assert dealer.asked[0][1]["sources"] == "tray"
     write = next(context for kind, context in dealer.asked if kind == "write")
@@ -261,7 +270,7 @@ async def test_a_drag_game_is_explored_adapted_and_played_with_every_piece_where
     assert kept[0] == source().strip() and kept[2].looks[0].sources is not None
 
 
-async def test_an_adapter_whose_drag_ends_a_cell_away_is_not_adopted():
+async def test_an_adapter_whose_drag_ends_a_cell_away_is_not_adopted(written):
     fake = Blocks()
     played, made = await agent.play(fake, Dealer(fake, [source(shift=1)] * adaptation.MAX_GENERATIONS), "block_placement",
                                     goal=GoalSpec("actions", 8), budget=Budget(40, 200, 120))

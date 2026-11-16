@@ -46,8 +46,9 @@ async def test_a_key_game_on_a_grid_is_read_by_the_plain_adapter_and_new_values_
                                     store=Store(tmp_path))
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
     assert made["generations"] == 0 and played.record["levels"]["L3"] > played.record["levels"]["L2"]
-    # a tile value not seen before sent the screen to the model, whose reading added its sample
-    assert made["relearned"] >= 1 and max(map(max, fake.board["grid"])) >= 16
+    # a tile value not seen before, made by two tiles joining, was told by the rules: its sample was kept
+    # without sending the screen to the model (PLAN §17, F5)
+    assert made["told_by_rules"] >= 1 and made["relearned"] == 0 and max(map(max, fake.board["grid"])) >= 16
 
 
 def test_only_a_game_whose_state_is_one_grid_has_a_plain_adapter():

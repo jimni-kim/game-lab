@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import logging
-from . import catalog, resources, samples
+from . import catalog, frames, resources, samples
 from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check_layout
 from .contracts import NeedObservation, Observation
 from .surface import Surface
@@ -73,6 +73,9 @@ RUN_TOLERANCE = 6
 MAX_RUNS = 120
 # a board the model places further than this share of a cell from where it was is taken to have moved
 BOARD_MOVED = 0.5
+# a board read at another size than the game had is believed when its cells are this near square (width over
+# height, either way)
+SQUARE = 1.25
 # the part of a cell the plain adapter leaves to the samples: this share of the cell is left out on every side
 # (its edges, where a neighbour's border, a gutter or a highlight shows), the first of these that passes on the
 # game's screens; none left out last, for a game whose cells differ only at their edges
@@ -251,6 +254,14 @@ class Adaptation:
         self.sources: list[list[int] | None] | None = None
         # the last reading refused as no result of the move just played (`accept`): what the screen was read as
         self.refused: dict[str, Any] | None = None
+        # set by who plays a family that has a reader of its own (`kits`). `arrange`: the things a reading lists
+        # that may be dragged, each with its box, put into the places the reader knows them to wait in (a model
+        # that lists only what is left says nothing of which place is empty). `gauge`: the rows and columns of the
+        # board in a box of a screen, counted from the picture alone (None when it cannot tell): a screen whose
+        # count is another than the game's is read with no grid drawn on it, and a reading of another size is
+        # believed only when the count agrees with it
+        self.arrange: Any = None
+        self.gauge: Any = None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -312,15 +323,15 @@ class Adaptation:
         """FRAMES more captures of the screen just read, those that still look like it."""
         from .recovery import _distance, signature
 
-        seen, frames = signature(png), []
-        # captures as they are: what they are held to is how the screen differs from moment to moment
-        snap = getattr(surface, "snap", surface.capture)
+        seen, kept = signature(png), []
+        # frames as they are: what they are held to is how the screen differs from moment to moment
+        source, after = frames.source_of(surface), time.monotonic() + FRAME_GAP_S
         for _ in range(FRAMES):
-            await asyncio.sleep(FRAME_GAP_S)
-            frame = await snap()
-            if frame != png and _distance(seen, signature(frame)) <= FRAME_DISTANCE:
-                frames.append(frame)
-        return frames
+            frame = await source.frame(after)
+            after = frame.at + FRAME_GAP_S
+            if frame.png != png and _distance(seen, signature(frame.png)) <= FRAME_DISTANCE:
+                kept.append(frame.png)
+        return kept
 
     async def probe(self, surface: Surface) -> bool:
         """Whether the screen as it is shows a board of this family: read once by the model, with nothing done
@@ -351,20 +362,25 @@ class Adaptation:
             if board and rules is not None:
                 family = catalog.family(self.family_id).bind({"rules": rules})
                 shape = _shape(family, family.unread_state(self.descriptor["scenes"][0]["id"]))
-            answer = await self.label(png, board, shape)
+            # a screen whose board counts out to another size than the game had is shown with no grid drawn on
+            # it: the board may be another now
+            counted = self.gauge(png, board) if rules is not None and board and self.gauge is not None else None
+            loose = counted is not None and "rows" in rules and counted != (rules["rows"], rules["cols"])
+            answer = await self.label(png, None if loose else board, None if loose else shape)
             if answer is None:
                 problem = "no_board"
                 if not patient:
                     break
                 await asyncio.sleep(SETTLE_S)
                 continue
-            found = answer.get("board") if board is None else board
-            if board is not None and shape and _moved(board, answer.get("board"), shape, size):
+            found = answer.get("board") if board is None or loose else board
+            if not loose and board is not None and shape and _moved(board, answer.get("board"), shape, size):
                 # the game is elsewhere on the screen than it was (the page was laid out anew): the grid drawn
                 # for the model lay beside the cells, so the screen is read once more with nothing drawn on it
                 again = await self.label(png, None, None)
                 if again is not None and check_layout({"board": again.get("board")}, size) is not None:
-                    answer, found = again, again["board"]
+                    # read with nothing drawn on it, where the board is now: it may be of another size too
+                    answer, found, loose = again, again["board"], True
             if check_layout({"board": found}, size) is None:
                 problem = "board_off_screen"
                 continue
@@ -372,6 +388,8 @@ class Adaptation:
             if chosen is None:
                 problem = "rules_refused"
                 continue
+            self._arranged(answer, chosen)
+            resized = rules is not None and (chosen := self._resized(rules, answer, found, loose, png)) != rules
             family = catalog.family(self.family_id).bind({"rules": chosen})
             # the board is what is learned here: a score read off the page (in the site's own counting) would
             # only make a right board look like a wrong move
@@ -379,8 +397,12 @@ class Adaptation:
             state = family.estimate(Observation("label", 0, "explore", 0, 0.0, "explore", public_facts={"state": read}))
             if isinstance(state, NeedObservation) or state.unknown_fields:
                 problem = "state_refused"
+                if not patient:
+                    # asked again of the same screen, the model says the same (2026-11-17: 16 readings of one
+                    # screen between levels, each refused): the caller has another way past it
+                    break
                 continue
-            if accept is not None and not accept(state.payload):
+            if accept is not None and not resized and not accept(state.payload):
                 problem, self.refused = "transition_refused", state.payload
                 await asyncio.sleep(SETTLE_S)
                 continue
@@ -408,6 +430,50 @@ class Adaptation:
             return None
         boxes = [box if entry else None for box, entry in zip(seen, listed)]
         return boxes if all(_box(box, size) for box, entry in zip(boxes, listed) if entry) else None
+
+    def _arranged(self, answer: dict[str, Any], rules: dict[str, Any]) -> None:
+        """A reading that lists fewer dragged things than the game has places for them (only the pieces left, not
+        the emptied places between them) is laid out by where each thing is: `arrange` knows the places."""
+        controls = self.controls
+        count = rules.get(controls.get("count", "")) if "source" in controls else None
+        listed, boxes = answer["state"].get(controls.get("source", "")), answer.get("sources")
+        if self.arrange is None or type(count) is not int or not isinstance(listed, list) or not isinstance(boxes, list) \
+                or len(listed) != len(boxes) or len(listed) >= count:
+            return
+        placed = self.arrange([(thing, box) for thing, box in zip(listed, boxes) if thing])
+        if placed is not None and len(placed[0]) == count:
+            answer["state"] = {**answer["state"], controls["source"]: placed[0]}
+            answer["sources"] = placed[1]
+
+    def _resized(self, rules: dict[str, Any], answer: dict[str, Any], box: list[int], loose: bool,
+                 png: bytes | None = None) -> dict[str, Any]:
+        """The game's rule values as this reading shows them, when it shows a board of another size or more places
+        for dragged things than the game had: `rules` themselves when it shows neither or may not be believed.
+        A board of another size is believed only on a screen read with no grid drawn on it (`loose`), when its
+        cells then come out about square (a miscounted row makes them oblong) and when the picture itself counts
+        out to that size (`gauge`); places for dragged things only
+        grow, each new one with a thing in it (a tutorial's single piece, then a tray of three)."""
+        new, state, controls = dict(rules), answer["state"], self.controls
+        grid = state.get("board")
+        if loose and "rows" in rules and "cols" in rules and isinstance(grid, list) and grid \
+                and all(isinstance(row, list) and len(row) == len(grid[0]) for row in grid) and grid[0] \
+                and (len(grid), len(grid[0])) != (rules["rows"], rules["cols"]):
+            across, down = box[2] / len(grid[0]), box[3] / len(grid)
+            counted = self.gauge(png, box) if self.gauge is not None and png is not None else None
+            if 1 / SQUARE <= across / down <= SQUARE and counted == (len(grid), len(grid[0])):
+                new["rows"], new["cols"] = len(grid), len(grid[0])
+        count, listed, boxes = controls.get("count"), state.get(controls.get("source", "")), answer.get("sources")
+        if count in rules and type(rules[count]) is int and isinstance(listed, list) and isinstance(boxes, list) \
+                and len(listed) == len(boxes) > rules[count] and all(thing and isinstance(box, list) for thing, box in zip(listed, boxes)):
+            new[count] = len(listed)
+        if new == rules or resources.validate({name: value for name, value in new.items() if value is not None},
+                                              catalog.rules_schema(self.descriptor)):
+            return rules
+        allowed = self.descriptor.get("discovery", {}).get("rules", {})
+        if resources.validate({name: new[name] for name in allowed if new.get(name) is not None},
+                              {"type": "object", "properties": allowed}):
+            return rules
+        return new
 
     def _places(self, seen: Any, size: list[int]) -> dict[str, Any] | None:
         """The boxes the model gave for the places the family names, when every one is there and lies on the
@@ -1001,6 +1067,19 @@ class Store:
             for number, frame in enumerate(look.frames):
                 (path / f"look-{index}-frame-{number}.png").write_bytes(frame)
         return path
+
+    def profile(self, site: str, family_id: str) -> dict[str, Any] | None:
+        """What a family's own reader learned of a site (`kits`): numbers, no code."""
+        path = self._path(site, family_id) / "profile.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+
+    def save_profile(self, site: str, family_id: str, profile: dict[str, Any]) -> None:
+        path = self._path(site, family_id)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "profile.json").write_text(json.dumps(profile) + "\n", encoding="utf-8")
 
     def recoveries(self, site: str, family_id: str) -> list[dict[str, Any]]:
         """The inputs that got past this site's screens before (`Recovery.known`)."""

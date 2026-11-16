@@ -27,10 +27,11 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, catalog, direct, made
+from . import adaptation, carry, catalog, direct, kits, made, samples
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
+from .adapters.kit import KitAdapter
 from .carry import Carrier
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
@@ -49,6 +50,10 @@ L0, L2, L3 = "L0", "L2", "L3"
 # the first moves read by an adapter (made now, or kept from another game) that must each do what the rules
 # predict: one that does not sends the screen to the model
 TRIAL_MOVES = 3
+# moves that must be confirmed by rule values taken anew from a screen before what the game had is let go
+RESIZE_TRIAL = 2
+# a game no family was found for is asked about again from the model's own play at most this many times
+REASK_MOST = 2
 # moves in a row that did not do what the rules predict before the reading (L3) or the screen (L2) is doubted
 MAX_STALLED = 3
 # confirmed moves read by the model after an adapter could not be written, before it is tried once more, and
@@ -74,6 +79,13 @@ MAX_IDLE, MAX_SILENT = 6, 3
 # a game the model plays itself after a family's play broke off is tried by that family again when a move of its
 # changes this share of the screen (a tutorial gives way to the game), at most RESUMES_MOST times a game
 RESUME_SHARE, RESUMES_MOST = 0.3, 3
+# and when this many of its moves were confirmed since it was last tried: a scene that changes a little at a time
+# (a tutorial's last step giving way to the game's board) shows no such change
+RESUME_EVERY = 4
+# moves in a row the game did not take, with none taken between them, after which play by the family's rules is
+# left to the model's own inputs: the rules allow what the game does not (a tutorial that takes one move only, a
+# game taken for another), and leaving out each refused move alone never ends where many moves are allowed
+FRUITLESS_MOST = 6
 # the question of which game this is, asked again when the model could not be reached
 IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 # a state reached this many times by confirmed moves ends the game as going nowhere
@@ -162,6 +174,9 @@ class Agent:
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
         # the screen as a model is shown it: what keeps moving over it (a tutorial's hand) left out (`motion`)
         self.seen = Steady(surface)
+        # the frames every wait on the screen takes, each with the time it was taken (`frames`): captured one at a
+        # time from the surface, unless it gives frames of its own as they are drawn
+        self.frames = self.seen.frame_source
         # the model that writes adapters, when it is another: its questions count in the game's as the reader's do
         self.writer = self.model.also(writer) if writer is not None else None
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
@@ -189,7 +204,20 @@ class Agent:
         # the looks the model read (what an adapter is written from), the adapter and how it was made
         self.trace: Trace | None = None
         self.made: Made | None = None
-        self.adapter: GeneratedAdapter | None = None
+        self.adapter: GeneratedAdapter | KitAdapter | None = None
+        # a family's own reader (`kits`): how often it was adopted from a look, how many screens it read, and
+        # whether it began from what was kept of the site
+        self.kit_adopted = self.kit_reads = 0
+        self.kit_demoted = False
+        # the game's rule values were taken anew from a screen (a board of another size, a tray grown): what they
+        # were and what the reader had learned, until RESIZE_TRIAL moves by the new ones are confirmed (`_resize`);
+        # and whether the reading just made was such a one (`_turn` does not hold it to the move before it)
+        # times the game was asked about again from the model's own play (`_play_direct`)
+        self.reasked = 0
+        self.resized: dict[str, Any] | None = None
+        self.fresh_scene = False
+        self.resizes = 0
+        self.kit_restored = False
         self.settling = Settling()
         # where the model was told the board is, and the rules it is read by
         self.board: list[int] | None = None
@@ -221,6 +249,10 @@ class Agent:
         # screens the model read for an adapter that could not (`relearned`), and how often the adapter then had to
         # be written again: only that is bounded, since a screen that only adds samples costs one question
         self.relearned = self.rewrites = self.generations = self.attempts = 0
+        # values the adapter's code left unread that the rules told instead of a model (`_learn_unread`)
+        self.told_by_rules = 0
+        # each screen the model read while there was an adapter, and why (`_reread`)
+        self.rereads: list[dict[str, Any]] = []
         self.need = adaptation.EXPLORE_MOVES
         self.failures: list[dict[str, Any]] = []
         self.model_seconds = 0.0
@@ -230,6 +262,10 @@ class Agent:
         self.resumable: str | None = None
         self.resumes = 0
         self.resumed = False
+        # the model's own moves confirmed since the family was last tried
+        self.since_tried = 0
+        # moves in a row the game did not take (`FRUITLESS_MOST`)
+        self.fruitless = 0
         # the model's own play, kept when play goes back to a family and comes back to it
         self.player: direct.Direct | None = None
 
@@ -264,15 +300,36 @@ class Agent:
 
     def summary(self) -> dict[str, Any]:
         return {"reused": self.made.reused if self.made else None, "generations": self.generations,
-                "relearned": self.relearned, "looks": len(self.trace.looks) if self.trace else 0,
+                "relearned": self.relearned, "told_by_rules": self.told_by_rules,
+                "quick_looks": self.seen.quick, "looks": len(self.trace.looks) if self.trace else 0,
+                "frames": self.frames.summary() if hasattr(self.frames, "summary") else None,
+                "rereads": self._rereads(),
                 "questions": self.model.questions, "seconds": round(self.model_seconds, 1),
                 "tokens": {"input": self.model.input, "output": self.model.output},
                 "recovery": self.recovery.summary() if self.recovery else None,
                 "digest": self.adapter.digest if self.adapter else None,
                 "calls": self.adapter.calls if self.adapter else None,
+                "kit": self._kit_summary(),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
+    def _kit_summary(self) -> dict[str, Any] | None:
+        if not kits.has(self.family_id) and not self.kit_reads:
+            return None
+        kit = self.adapter.kit if isinstance(self.adapter, KitAdapter) else None
+        return {"adopted": self.kit_adopted, "relearned_alone": kit.relearned if kit else None,
+                "empties": len(kit.empties) if kit else None, "reads": self.kit_reads,
+                "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
+
+    def _keep_profile(self) -> None:
+        """What the family's reader learned of this site and how the game hangs held things, for its next game."""
+        if self.store is None or not isinstance(self.adapter, KitAdapter) or self.adapter.layout is None or not self.site:
+            return
+        self.store.save_profile(self.site, self.family_id, {
+            "family": self.family_id, "rules": self.trace.rules if self.trace else {},
+            "kit": self.adapter.record(), "hang": self.carrier.hang.to_json(), "hold_s": self.carrier.hold_s})
+
     def close(self) -> None:
+        self._keep_profile()
         if self.adapter is not None:
             self.adapter.close()
             self.adapter = None
@@ -288,7 +345,8 @@ class Agent:
         self.candidates = [self.family_id] if self.family_id else []
         if self.family_id is None:
             kept = [] if self.store is None or self.fresh else \
-                [name for name in explorable() if self.store.load(self.site, name) is not None]
+                [name for name in explorable() if (self.store.profile(self.site, name) if kits.has(name)
+                                                   else self.store.load(self.site, name)) is not None]
             if kept:
                 self.candidates, self.found["identified"] = kept[:1], {"family": kept[0], "source": "kept", "questions": 0}
             else:
@@ -331,13 +389,21 @@ class Agent:
                                      known=self.store.recoveries(self.site, family_id) if self.store else None)
             self.adaptation = Adaptation(self.model, family_id, policy=self.policy, compute=self.budget.compute,
                                          writer=self.writer)
+            if kits.has(family_id):
+                # the reader's own knowledge, lent to the reading of a screen by a model
+                self.adaptation.arrange = lambda things: self.adapter.arrange(things) \
+                    if isinstance(self.adapter, KitAdapter) else None
+                self.adaptation.gauge = lambda png, box: kits.count(self.family_id, png, box)
         except AdaptationFailed as error:
             raise _End(Outcome.UNSUPPORTED, error.reason, error.detail) from None
         except ValueError as error:
             raise _End(Outcome.UNSUPPORTED, str(error)) from None
         self.family_id = family_id
-        kept = None if self.store is None or self.fresh else self.store.load(self.site, family_id)
-        if kept is not None:
+        kept = None if self.store is None or self.fresh or kits.has(family_id) else self.store.load(self.site, family_id)
+        profile = self.store.profile(self.site, family_id) if kits.has(family_id) and self.store and not self.fresh else None
+        if profile is not None and self._restore(family_id, profile):
+            pass
+        elif kept is not None:
             source, meta, self.trace = kept
             self.made, self.generations = Made(source, meta["generations"], True, meta["report"]), meta["generations"]
             self.board = self.trace.looks[0].board
@@ -357,6 +423,79 @@ class Agent:
             self.found["identified"]["family"] = family_id
         return True
 
+    def _restore(self, family_id: str, profile: dict[str, Any]) -> bool:
+        """The family's reader as it was kept for this site: the game is read by it from the first screen, and
+        its drags go by how the game hung held things before."""
+        try:
+            adapter = KitAdapter(family_id, rules=profile.get("rules") or {}, site=self.site)
+            if not adapter.restore(profile.get("kit") or {}):
+                return False
+        except (ValueError, KeyError, TypeError):
+            return False
+        self.trace = Trace(family_id, dict(profile.get("rules") or {}), self.site)
+        self.made = Made("", 0, True, {})
+        self.adapter, self.board = adapter, list(adapter.layout["board"])
+        self.settling = Settling(**adapter.played.get("settling", {}))
+        self.distrusted, self.blind, self.trial, self.rested, self.carried = False, False, TRIAL_MOVES, [], None
+        self.carrier.hang = carry.Hang.from_json(profile.get("hang"))
+        self.carrier.hold_s = float(profile.get("hold_s") or 0.0)
+        self.kit_restored = True
+        return True
+
+    def _resize(self, rules: dict[str, Any]) -> None:
+        """The screen shows a board of another size (or more places for pieces) than the game had: the game goes
+        on by the rule values read from it, and the reader learns the screen anew. What was is kept until
+        RESIZE_TRIAL moves are confirmed, and comes back when one is not (the model miscounted)."""
+        log.info("the game's rule values change: %s -> %s", self.trace.rules, rules)
+        kept = self.adapter.record() if isinstance(self.adapter, KitAdapter) and self.adapter.layout else None
+        self.resized = {"rules": dict(self.trace.rules), "kit": kept, "board": self.board, "left": RESIZE_TRIAL}
+        self.resizes += 1
+        self._rebind(rules, None)
+        self.fresh_scene = True
+
+    def _rebind(self, rules: dict[str, Any], kit: dict[str, Any] | None) -> None:
+        self.trace.rules = dict(rules)
+        self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+        if self.adapter is not None:
+            self.adapter.close()
+        self.adapter = None
+        if kit is not None:
+            adapter = KitAdapter(self.family_id, rules=self.trace.rules, site=self.site)
+            if adapter.restore(kit):
+                self.adapter = adapter
+                self.settling = Settling(**adapter.played.get("settling", {}))
+        self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
+        self.carried = self.unread_move = self.ineffective = self.state = self.unproven = None
+        self.visits = {}
+
+    def _unresize(self) -> None:
+        """A move by the rule values just taken was not confirmed: the game goes on by the ones it had."""
+        was, self.resized = self.resized, None
+        log.info("the game's rule values are taken back: %s", was["rules"])
+        self._rebind(was["rules"], was["kit"])
+        self.board = was["board"] or self.board
+        self.failures.append({"reason": "resize_taken_back", "detail": json.dumps(was["rules"])})
+
+    def _adopt_kit(self) -> bool:
+        """The family's own reader, taught this screen by the looks the model read: it reads from here on. No
+        code is written for the game."""
+        adapter = self.adapter if isinstance(self.adapter, KitAdapter) else \
+            KitAdapter(self.family_id, rules=self.trace.rules, site=self.site)
+        if not adapter.keep(self.trace.looks):
+            if self.adapter is not adapter:
+                adapter.close()
+            return False
+        if self.adapter is not adapter:
+            if self.adapter is not None:
+                self.adapter.close()
+            self.adapter = adapter
+            self.settling = Settling(**adapter.played.get("settling", {}))
+            self.rested = []
+        self.made = self.made or Made("", 0, False, {})
+        self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
+        self.kit_adopted += 1
+        return True
+
     # ── one move ──────────────────────────────────────────────────────
 
     async def _turn(self) -> None:
@@ -371,6 +510,8 @@ class Agent:
                 self.unread_move = held
                 await self._unstick(self.why)
                 return
+            if self.fresh_scene:
+                self.fresh_scene, held = False, None
             if held is not None and self._effect(held[0].state, held[1], before.state) == "absent":
                 self._spent(held[0].id, held[1])
         self.state = before.state
@@ -399,6 +540,12 @@ class Agent:
         except _End:
             self._remember(before, action, "unknown", None)
             raise
+        if self.fresh_scene and after is not None:
+            # the screen was read as another board altogether: it says nothing of the move, and play goes on from it
+            self.fresh_scene = False
+            self._remember(before, action, "unknown", after)
+            self.carried, self.state = after, after.state
+            return
         effect = "unknown" if after is None else self._effect(before.state, action, after.state)
         self._remember(before, action, effect, after)
         if self.over:
@@ -410,11 +557,25 @@ class Agent:
                 # it, the same screen is read once more as that move's result
                 return
         if effect == "confirmed":
+            if self.resized is not None:
+                self.resized["left"] -= 1
+                if self.resized["left"] <= 0:
+                    self.resized = None
             await self._confirmed(before, action, sent, after, sent_at)
             return
+        if self.resized is not None and effect in ("absent", "inconsistent") and carry.trusted(self.carried_as):
+            self._unresize()
+            return
         self.stalled += 1
+        if self.carried_as and self.carried_as.get("picked") and effect in ("absent", "inconsistent"):
+            # a piece picked up and let go that did not do what it should: how it follows is measured again
+            self.carrier.doubt()
         if effect == "absent":
             self._spent(before.id, action)
+            self.fruitless += 1
+            if self.fruitless >= FRUITLESS_MOST and self.direct:
+                await self._leave("fruitless")
+                return
         if before.look is not None and before.look is self.unproven:
             self._drop_unproven()
         if after is None and self.why == "label_failed":
@@ -423,7 +584,11 @@ class Agent:
             return
         # the adapter is doubted for a move it read either side of: a board it read wrongly is as often the
         # one after the move (a place it takes for empty) as the one before
-        if L3 in (before.by, after.by if after else None) and (self.trial > 0 or self.stalled >= MAX_STALLED):
+        # not for a move whose carry is not known to have put the piece where it was meant to go (it picked
+        # nothing up, or could not tell where the piece hung): that is the carry's, until moves keep failing
+        carried_unsure = self.carried_as is not None and not carry.trusted(self.carried_as)
+        if L3 in (before.by, after.by if after else None) and (
+                self.stalled >= MAX_STALLED or (self.trial > 0 and not carried_unsure)):
             self._doubt()
 
     def _spent(self, state: str, action: dict[str, Any]) -> None:
@@ -431,10 +596,20 @@ class Agent:
         kept = self.ineffective if self.ineffective and self.ineffective["state"] == state else {"state": state, "actions": []}
         self.ineffective = {**kept, "actions": [*kept["actions"], action]}
 
+    async def _leave(self, reason: str) -> None:
+        """Play by the family's rules gets nowhere: the game goes on by the model's own inputs, and comes back to
+        the family once some of those are confirmed (`_resume`)."""
+        log.info("the family is left: %s", reason)
+        self.failures.append({"reason": "family_left", "detail": reason})
+        self.fruitless = self.since_tried = 0
+        if self.resumable is None and (self.game is None or self.family_id != self.game.id):
+            self.resumable = self.family_id
+        await self._play_direct(self._situation())
+
     async def _confirmed(self, before: Reading, action: dict[str, Any], sent: dict[str, Any], after: Reading,
                          sent_at: float) -> None:
         self.confirmed += 1
-        self.stalled = self.tries = 0
+        self.stalled = self.tries = self.fruitless = 0
         if self._made_plays():
             self.transitions = [*self.transitions, {"state": before.state, "action": action, "after": after.state}][-made.EXAMPLES_KEPT:]
         self.shrugged, self.ineffective, self.carried, self.state = False, None, after, after.state
@@ -490,6 +665,10 @@ class Agent:
         self.moves.append({"action_id": f"a{self.used}", "kind": action.get("kind"), "action": action, "level": before.by,
                            "read_after_by": after.by if after else None, "delivery": "delivered", "effect": effect,
                            **({"carried": self.carried_as} if action is not None and self.carried_as else {}),
+                           # a result the rules did not expect is kept as it was read, with what it was played
+                           # from: why it was none is looked for afterwards
+                           **({"before_state": before.state, "after_state": after.state}
+                              if effect in ("inconsistent", "absent") and after is not None else {}),
                            "round": self.relearned, "at_s": round(time.monotonic() - self.started, 2)})
 
     def _check_stops(self) -> None:
@@ -545,7 +724,9 @@ class Agent:
                 # nothing vouches for what the model will read here until a move from it is confirmed
                 self.distrusted = self.blind = True
             else:
+                why = self.why
                 reading = await self._read_model(expect, self.unread)
+                self._reread(why)
                 if reading is not None:
                     self.relearned += 1
                     await self._recheck()
@@ -554,7 +735,21 @@ class Agent:
                     # adapter is doubted, and the screen read without it
                     self.distrusted = True
                 return reading
-        return await self._read_model(expect, None)
+        reading = await self._read_model(expect, None)
+        if self.adapter is not None:
+            self._reread("distrusted")
+        return reading
+
+    def _rereads(self) -> dict[str, Any]:
+        by: dict[str, int] = {}
+        for entry in self.rereads:
+            by[entry["why"]] = by.get(entry["why"], 0) + 1
+        return {"by_why": by, "moving": sum(entry["moving"] for entry in self.rereads), "each": self.rereads[-60:]}
+
+    def _reread(self, why: str) -> None:
+        """A screen the adapter was there for and the model read: why, and whether what kept moving on it was
+        left out of the picture the model was shown (`motion`)."""
+        self.rereads.append({"at_action": self.used, "why": why, "moving": bool(self.seen.moving)})
 
     def _observe(self, png: bytes) -> tuple[Any, str | None]:
         """One capture read by the adapter: its state, or why there is none."""
@@ -580,23 +775,32 @@ class Agent:
         """The adapter's reading once the screen has come to rest: a state seen unchanged for the settling's
         stable time, or sooner the predicted result of the move just played."""
         policy, clock = self.settling, time.monotonic
-        if expect is not None and policy.animation_s:
-            await asyncio.sleep(policy.animation_s)
-        deadline = clock() + policy.timeout_s
+        # the first frame looked at: one taken once the move's animation is over
+        after = clock() + policy.animation_s if expect is not None and policy.animation_s else None
+        deadline = (after or clock()) + policy.timeout_s
         previous = pictured = read = unread = None
         stable_since = rested = read_since = unread_since = clock()
+        if isinstance(self.adapter, KitAdapter):
+            # what the rules say the move left: it fills what the screen leaves unclear
+            self.adapter.expecting(self._prior(expect) if expect is not None else None,
+                                   expect[0].state if expect is not None else None)
         while True:
             self._check_time()
-            looked = clock()
             # a screen something kept moving over is read as it is under that, for as long as it keeps moving
-            png = await (self.seen.capture() if self.seen.animating else self.surface.capture())
+            frame = await (self.seen.steady(after) if self.seen.animating else self.frames.frame(after))
+            png, looked = frame.png, frame.at
             self.shots += 1
             self.last_png = png
             if self.watch is not None:
                 await self.watch.seen(png)
             state, why = self._observe(png)
+            if state is None and why == adaptation.CELLS_UNREAD and expect is not None and self._learn_unread(png, expect):
+                # the rules told what the code could not read: it reads it now
+                state, why = self._observe(png)
             usable = state is not None
             if not usable:
+                # a screen read through small moving things that could not be read is drawn through next time
+                self.seen.forget()
                 self.why = why
                 self.unread = self.adapter.partial if why == adaptation.CELLS_UNREAD else None
                 seen = (why, self.unread)
@@ -619,6 +823,7 @@ class Agent:
             previous, pictured = key, image
             self.rested_at = read_since if restless else rested
             if usable:
+                self.kit_reads += isinstance(self.adapter, KitAdapter)
                 reading = Reading(png, state.payload, looked, L3)
                 if expect is not None and (settled or restless) \
                         and self._effect(expect[0].state, expect[1], state.payload) == "confirmed":
@@ -629,7 +834,43 @@ class Agent:
                 if clock() >= deadline:
                     self.why, self.unread = "surface_unsettled", None
                     return None
-            await asyncio.sleep(max(0.0, min(policy.interval_s, deadline - clock())))
+            # the next frame: one taken this long after this one, and no later than the deadline
+            after = min(looked + policy.interval_s, deadline)
+
+    def _learn_unread(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
+        """What the adapter's code left unread on the result of a move (a look of a value it has no sample of
+        yet), told by the rules instead of a model, when every result the move can have that agrees with what
+        was read has the same there (two tiles joined into one of a value not seen before). Its samples are kept,
+        so that the code reads it from now on (PLAN §17, F5). False when the rules leave it open."""
+        outcomes = getattr(self.family.model, "outcomes", None)
+        partial = self.adapter.partial if self.adapter is not None else None
+        if outcomes is None or partial is None:
+            return False
+        try:
+            possible = [state for _, state in outcomes(expect[0].state, expect[1], self.family.rules)]
+        except (ValueError, KeyError, TypeError):
+            return False
+        agreeing = [state for state in possible if _agrees(_board(partial), _board(state))]
+        if not agreeing or any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
+            return False
+        raw = self.adapter.raw(png)
+        if not isinstance(raw, dict):
+            return False
+        image, kept = samples._open(png), []
+        try:
+            for path, box in samples.marks(raw):
+                if samples._at(partial, path) is not None:
+                    continue            # read already: only what was left unread is told
+                value, sample = samples._at(agreeing[0], path), samples.cut(image, box)
+                if value is None or sample is None:
+                    return False
+                kept.append((value, sample))
+        except (KeyError, IndexError, TypeError):
+            return False
+        for value, sample in kept:
+            self.adapter.bank.add(value, sample)
+        self.told_by_rules += len(kept)
+        return bool(kept)
 
     async def _read_model(self, expect: tuple[Reading, dict[str, Any]] | None, partial: dict[str, Any] | None) -> Reading | None:
         """The screen read by the model into a state the rule model accepts, and kept as a look. With `expect`
@@ -674,12 +915,17 @@ class Agent:
         if first:
             self.trace = Trace(self.family_id, rules, self.site)
             self.family = catalog.family(self.family_id).bind({"rules": rules})
+        elif rules != self.trace.rules:
+            self._resize(rules)
         # where the board is now: the first screen's box, or another when the game has moved on the screen
         self.board = board
         look = Look(png, state, self.board, frames=tool.frames, sources=tool.sources)
         self.trace.looks.append(look)
         if expect is None and partial is None:
             self.unproven = look
+        if self.adapter is None and kits.has(self.family_id) and not self.kit_demoted:
+            # a family with a reader of its own is read by it from the first look on
+            self._adopt_kit()
         return Reading(png, state, started, L2, look)
 
     async def _rest(self) -> None:
@@ -696,16 +942,16 @@ class Agent:
                                for box in look.sources if box)]
         left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
         right, bottom = max(box[0] + box[2] for box in boxes), max(box[1] + box[3] for box in boxes)
-        previous, deadline = None, time.monotonic() + STILL_TIMEOUT_S
+        previous, after, deadline = None, None, time.monotonic() + STILL_TIMEOUT_S
         while True:
-            with Image.open(BytesIO(await self.surface.capture())) as image:
+            frame = await self.frames.frame(after)
+            with Image.open(BytesIO(frame.png)) as image:
                 seen = list(image.convert("L").crop((left, top, right, bottom)).resize((STILL_SIDE, STILL_SIDE)).tobytes())
             if previous is not None and sum(abs(a - b) for a, b in zip(seen, previous)) / len(seen) <= STILL_DISTANCE:
                 return
             if time.monotonic() >= deadline:
                 return
-            previous = seen
-            await asyncio.sleep(STILL_GAP_S)
+            previous, after = seen, frame.at + STILL_GAP_S
 
     def _prior(self, expect: tuple[Reading, dict[str, Any]] | None) -> dict[str, Any] | None:
         """What is known of the screen about to be read: what the rules say the move just played leaves (where
@@ -741,6 +987,7 @@ class Agent:
         log.info("the game goes on read by the model: %s", reason)
         if self.adapter is not None:
             self.adapter.close()
+        self.kit_demoted = self.kit_demoted or isinstance(self.adapter, KitAdapter)
         self.adapter, self.distrusted, self.blind = None, False, False
         if self.carried is not None and self.carried.by == L3:
             self.carried = None
@@ -749,6 +996,18 @@ class Agent:
     async def _recheck(self) -> None:
         """The adapter against every look so far, the one just read included: kept when it reads them all,
         else written again from them."""
+        if isinstance(self.adapter, KitAdapter):
+            # the family's reader learns the screen again from what the model just read: nothing is written
+            if self._adopt_kit() and self.adapter.agrees(self.trace.looks[-1]):
+                if self.store is not None:
+                    self._keep_profile()
+                return
+            self.distrusted = True
+            self.rewrites += 1
+            if self.rewrites >= MAX_RELEARNS:
+                self.kit_demoted = True
+                self._demote("relearn_limit")
+            return
         report = adopt(self.made.source, self.trace)
         if report["passed"]:
             # the look just read gave its samples: what the code leaves to the host is now known there too
@@ -773,6 +1032,8 @@ class Agent:
         """An adapter written from the looks so far and adopted when it passes on all of them. When none
         passes the game goes on read by the model, and one is tried again after RETRY_LOOKS more moves."""
         tool, trace = self.adaptation, self.trace
+        if kits.has(self.family_id):
+            return not self.kit_demoted and self._adopt_kit()
         if not any(look.held for look in trace.looks):
             for look in trace.looks[-HELD_BACK:]:
                 look.held = True
@@ -864,7 +1125,23 @@ class Agent:
         elif "source" not in self.adaptation.controls:
             await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])      # between two cells: nothing is carried
         else:
-            self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"])
+            check = self.adapter.hover(before.state, action) if isinstance(self.adapter, KitAdapter) else None
+            self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"],
+                                                       before=before.png, source=self._source(before, action), check=check)
+
+    def _source(self, before: Reading, action: dict[str, Any]) -> list[int] | None:
+        """Where the screen a move is played from was read to show the thing the move drags, when it was."""
+        index = action.get(self.adaptation.controls.get("index", "")) if self.adaptation else None
+        if isinstance(self.adapter, KitAdapter) and type(index) is int:
+            # where the family's reader sees the thing on that screen: the same box whoever read the screen, so
+            # that what carries learn of one piece holds for the next
+            if (seen := self.adapter.source_on(before.png, index)) is not None:
+                return seen
+        sources = before.look.sources if before.look is not None else None
+        if isinstance(sources, list) and type(index) is int and 0 <= index < len(sources) \
+                and isinstance(sources[index], list) and len(sources[index]) == 4:
+            return [round(part) for part in sources[index]]
+        return None
 
     async def _then(self, sent: dict[str, Any], before: Reading, action: dict[str, Any]) -> None:
         """What completes a move whose first tap only picks something (the controls' `then`): the same tap
@@ -1033,25 +1310,48 @@ class Agent:
                 raise _End(Outcome.GAVE_UP, "model_gave_up", player.situation)
             if self.watch is not None:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
-            carried = await direct.send(self.seen, action, self.carrier)
+            carried = await direct.send(self.seen, action, self.carrier, before)
             self.used += 1
             if self.watch is not None:
                 await self.watch.sent()
             after = await direct.settled(self.seen)
             moving = motion.joined(moving + self.seen.moving)
             changed = player.saw(answer, before, after, moving, carried)
+            if carried and carried.get("picked") and not changed:
+                self.carrier.doubt()
             self.levels[L0] += 1
             self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": answer["told"], "level": L0,
                                "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
-                               "expected": answer["expect"], "at_s": round(time.monotonic() - self.started, 2)})
+                               "expected": answer["expect"], "at_s": round(time.monotonic() - self.started, 2),
+                               **({"carried": carried} if carried else {})})
             if changed or action["kind"] == direct.WAIT:
                 self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT), 0
             else:
                 idle += 1
                 if idle >= MAX_IDLE:
                     raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
-            if changed and self._new_scene(before, after, moving) and await self._resume():
+            self.since_tried += bool(changed)
+            if changed and self.resumable is None and self.named and self.game is None \
+                    and self.reasked < REASK_MOST and self.since_tried >= RESUME_EVERY:
+                # the game was asked about on a screen that showed none yet (a splash, a notice) and so has no
+                # family: asked again now that the model's own moves are taken, it may be one there is play for
+                self.reasked, self.since_tried = self.reasked + 1, 0
+                try:
+                    asked = await self._identify()
+                except _End:
+                    asked = {"families": []}
+                if asked["families"]:
+                    self.resumable = asked["families"][0]
+                    self.found.setdefault("identified", {}).update(candidates=list(asked["families"]), reasked=self.reasked)
+                    if await self._resume():
+                        return
+                    continue
+            if changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
+
+    def _due(self) -> bool:
+        """Whether enough of the model's moves were confirmed since the family was last tried to try it again."""
+        return self.resumable is not None and self.resumes < RESUMES_MOST and self.since_tried >= RESUME_EVERY
 
     def _new_scene(self, before: bytes, after: bytes, moving: list[list[int]]) -> bool:
         """Whether a move of the model's changed so much of the screen (left out what kept moving) that a family
@@ -1068,7 +1368,7 @@ class Agent:
 
     async def _resume(self) -> bool:
         """The family whose play broke off, tried again on the screen as it is now: taken when its board reads."""
-        family_id, self.resumes = self.resumable, self.resumes + 1
+        family_id, self.resumes, self.since_tried = self.resumable, self.resumes + 1, 0
         tried = {"family": family_id, "at_action": self.used, "taken": False}
         self.found.setdefault("resumes", []).append(tried)
         try:
@@ -1085,7 +1385,7 @@ class Agent:
             self.adapter, self.family_id, self.policy = None, None, "model"
             return False
         tried["taken"] = self.resumed = True
-        self.tries = self.stalled = 0
+        self.tries = self.stalled = self.fruitless = 0
         self.shrugged = False
         self.carried = self.unread_move = self.ineffective = self.state = None
         return True

@@ -172,6 +172,30 @@ async def setup(surface: AndroidSurface, steps: list[dict[str, Any]]) -> None:
             await asyncio.sleep(step["wait_ms"] / 1000)
 
 
+def stoppable() -> asyncio.Event:
+    """An event set by the first interrupt (Ctrl-C) or termination: the game then ends at its next move, as
+    `cancelled`, and is written down like any other. A second one stops at once, writing nothing."""
+    import signal
+
+    cancel, loop = asyncio.Event(), asyncio.get_running_loop()
+
+    def stop(number: int) -> None:
+        if cancel.is_set():
+            # the second: as if no handler had been set
+            loop.remove_signal_handler(number)
+            os.kill(os.getpid(), number)
+            return
+        print(json.dumps({"stopping": "the game ends at its next move and is written down; again to stop at once"}),
+              flush=True)
+        cancel.set()
+    for number in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(number, stop, number)
+        except (NotImplementedError, RuntimeError):
+            pass
+    return cancel
+
+
 async def check(surface: AndroidSurface, out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
     png = await surface.capture()
@@ -240,10 +264,13 @@ async def main(args: argparse.Namespace) -> int:
     writer_client, writer = measure.writer_model(args, model)
     base = args.package or args.family or "app"
     results = []
+    cancel = stoppable()
     try:
         with measure.lock(f"android-{await device(surface, args.serial)}"):
             for number in range(1, args.games + 1):
-                result = await play_one(args, number, surface, base, model, writer,
+                if cancel.is_set():
+                    break
+                result = await play_one(args, number, surface, base, model, writer, cancel=cancel,
                                         steps=steps if number == 1 or args.setup or args.asked else [])
                 results.append(result)
                 print(json.dumps(result, ensure_ascii=False), flush=True)

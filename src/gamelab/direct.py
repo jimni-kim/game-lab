@@ -11,8 +11,9 @@ What keeps moving on the screen whatever is done (a tutorial's hand, a pulsing b
 pictures the model is shown and of what is said to have changed (`motion`); the model is told where it was. A
 drag the model marks `carry` is aimed by where the thing it picked up is drawn while held, which the code
 measures on the way (`carry.Carrier`), not by where the finger is: a game draws a held piece above the finger,
-larger. A drag that did nothing at one press and something at a longer one sets the shortest press for the rest
-of the game.
+larger. Such a drag also tells whether the thing was picked up at all: one that was not at one press and was at
+a longer one sets the shortest press for the rest of the game. A drag that missed with the thing picked up
+missed its place, not its press, and the model is told so.
 
 The game ends when the model says its own end screen stands there, when it sees nothing more to do, when its
 inputs keep changing nothing, or at a budget.
@@ -25,7 +26,7 @@ import json
 import time
 from typing import Any
 
-from . import carry, motion, recovery, resources
+from . import carry, frames, motion, recovery, resources
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
@@ -148,8 +149,10 @@ def scaled(action: dict[str, Any], scale: float) -> dict[str, Any]:
     return out
 
 
-async def send(surface: Any, action: dict[str, Any], carrier: Any = None) -> dict[str, Any] | None:
-    """Send an action; a carried drag gives what was measured of it."""
+async def send(surface: Any, action: dict[str, Any], carrier: Any = None, before: bytes | None = None
+               ) -> dict[str, Any] | None:
+    """Send an action; a carried drag gives what was measured of it. `before`: the screen the action was chosen
+    on, when nothing was done since (a carried drag finds what it picked up against it)."""
     kind = action["kind"]
     if kind == TAP:
         await surface.tap(*action["at"], TAP_MS)
@@ -170,7 +173,7 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None) -> dic
         await surface.drag(*action["from"], *action["to"], SWIPE_MS)
     elif kind == DRAG and action.get("carry") and carrier is not None and "hold" in surface.kinds:
         (start, goal) = action["path"]
-        return await carrier.carry(tuple(start), tuple(goal), action["ms"], action["hold_ms"] / 1000)
+        return await carrier.carry(tuple(start), tuple(goal), action["ms"], action["hold_ms"] / 1000, before=before)
     elif kind == DRAG:
         await surface.stroke(action["path"], action["ms"], action["hold_ms"])
     elif kind == SCROLL:
@@ -183,37 +186,43 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None) -> dic
         for index, part in enumerate(action["inputs"]):
             if index:
                 await asyncio.sleep(SEQUENCE_GAP_S)
-            await send(surface, part, carrier)
+            await send(surface, part, carrier, before if index == 0 else None)
     elif kind == WAIT and action.get("until_change"):
-        before = await surface.capture()
+        look = _looker(surface)
+        before = previous = await look(None)
         moving = list(getattr(surface, "moving", []))
         deadline = time.monotonic() + action["ms"] / 1000
         while time.monotonic() < deadline:
-            await asyncio.sleep(CHANGE_LOOK_S)
-            seen = await surface.capture()
+            previous = await look(previous.at + CHANGE_LOOK_S)
             moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-            if motion.outside(carry._boxes(before, seen), moving):
+            if motion.outside(carry._boxes(before.png, previous.png), moving):
                 return None
     elif kind == WAIT:
         await asyncio.sleep(action["ms"] / 1000)
     return None
 
 
+def _looker(surface: Any) -> Any:
+    """How the screen is looked at no earlier than a time: drawn through what keeps moving on it when the surface
+    can (`motion.Steady`), else a frame as it is."""
+    steady = getattr(surface, "steady", None)
+    return steady if callable(steady) else frames.source_of(surface).frame
+
+
 async def settled(surface: Any) -> bytes:
     """The screen once an input's effect is over: the same twice in a row, or as it is at the time limit.
     What keeps moving all the while (`motion.Steady`) is no effect still going on."""
-    await asyncio.sleep(SETTLE_S)
-    previous = await surface.capture()
+    look = _looker(surface)
+    previous = await look(time.monotonic() + SETTLE_S)
     moving = list(getattr(surface, "moving", []))
     deadline = time.monotonic() + STILL_TIMEOUT_S
     while time.monotonic() < deadline:
-        await asyncio.sleep(STILL_GAP_S)
-        seen = await surface.capture()
+        seen = await look(previous.at + STILL_GAP_S)
         moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-        if not motion.outside(carry._boxes(previous, seen), moving):
-            return seen
+        if not motion.outside(carry._boxes(previous.png, seen.png), moving):
+            return seen.png
         previous = seen
-    return previous
+    return previous.png
 
 
 class Direct:
@@ -290,15 +299,17 @@ class Direct:
                         key=lambda box: -box[2] * box[3])[:PLACES_TOLD]
         entry = {"action": answer["told"], "expected": answer["expect"], "screen_changed": bool(places),
                  "changed_at": [[round(part * scale) for part in box] for box in places]}
-        if carried and carried.get("measured"):
-            entry["held_drawn_from_finger"] = [round(part * scale) for part in carried["offset"]]
+        if carried:
+            # whether the thing was seen held on the way, the press it was given, and how far its drawing's middle
+            # was from where it was to land when the finger let go (when it was seen then)
+            entry["picked_up"], entry["held_ms"] = bool(carried.get("picked")), round(carried.get("hold_s", 0) * 1000)
+            if carried.get("off") is not None:
+                entry["landed_off_by"] = [round(part * scale) for part in carried["off"]]
         self.history.append(entry)
-        action = answer["told"]
-        if action["kind"] == DRAG and places and any(
-                old["action"].get("kind") == DRAG and not old["screen_changed"]
-                and old["action"].get("hold_ms", 0) < action["hold_ms"] for old in self.history[:-1]):
-            # a drag that did nothing at a shorter press and something at this one: this game wants the press
-            self.hold_ms = max(self.hold_ms, action["hold_ms"])
+        if entry.get("picked_up") and any(old.get("picked_up") is False and old["held_ms"] < entry["held_ms"]
+                                          for old in self.history[:-1]):
+            # nothing was picked up at a shorter press and something was at this one: this game wants the press
+            self.hold_ms = max(self.hold_ms, entry["held_ms"])
         return bool(places)
 
     def summary(self) -> dict[str, Any]:
