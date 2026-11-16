@@ -20,9 +20,13 @@ from typing import Any
 from .carry import _boxes
 
 # the second look, this long after the first; when the two differ, this many captures in all, this far apart
-GAP_S, FRAMES, FRAME_GAP_S = 0.25, 7, 0.3
+GAP_S, FRAMES, FRAME_GAP_S = 0.25, 5, 0.2
 # what moves over more than this share of the screen is a change of scene, not an animation over a still one
 MOVING_MOST = 0.5
+# where things kept moving is remembered this long; while every such place is no larger than this share of the
+# screen (a glint on a tile, a pulsing badge: nothing that hides what is under it), a capture whose changes all
+# lie there is given as it is, with those places, and not drawn through again (PLAN §17, F1)
+REMEMBER_S, SMALL_SHARE = 30.0, 0.01
 
 
 def middle(pngs: list[bytes]) -> bytes:
@@ -89,21 +93,33 @@ def _area(png: bytes) -> int:
         return image.width * image.height
 
 
-async def still(surface: Any) -> tuple[bytes, list[list[int]]]:
-    """The screen as it is under whatever keeps moving on it, and where that was."""
-    first = await surface.capture()
+async def _still(surface: Any, known: list[list[int]] | None = None, first: bytes | None = None
+                 ) -> tuple[bytes, list[list[int]], bytes]:
+    if first is None:
+        first = await surface.capture()
     await asyncio.sleep(GAP_S)
     frames = [first, await surface.capture()]
-    if not _boxes(frames[0], frames[1]):
-        return frames[1], []
+    changed = _boxes(frames[0], frames[1])
+    if not changed:
+        return frames[1], [], frames[1]
+    if known and not outside(changed, known):
+        return frames[1], known, frames[1]
     while len(frames) < FRAMES:
         await asyncio.sleep(FRAME_GAP_S)
         frames.append(await surface.capture())
     drawn = middle(frames)
     moving = joined([box for frame in frames for box in _boxes(frame, drawn)])
     if sum(box[2] * box[3] for box in moving) > MOVING_MOST * _area(drawn):
-        return frames[-1], []
-    return drawn, moving
+        return frames[-1], [], frames[-1]
+    return drawn, moving, frames[-1]
+
+
+async def still(surface: Any, known: list[list[int]] | None = None) -> tuple[bytes, list[list[int]]]:
+    """The screen as it is under whatever keeps moving on it, and where that was. `known`: small places things
+    were last seen to keep moving at; when the two first captures differ only there, the second is given as it
+    is, with them."""
+    png, moving, _ = await _still(surface, known)
+    return png, moving
 
 
 class Steady:
@@ -113,6 +129,22 @@ class Steady:
         self.surface = surface
         # where something kept moving at the last capture: nothing when the screen held still
         self.moving: list[list[int]] = []
+        # when the places things keep moving at were last found by drawing through captures, and the last
+        # capture as it was
+        self.known_at: float | None = None
+        self.last: bytes | None = None
+        # captures given as they were because what changed lay where small things keep moving (F1)
+        self.quick = 0
+
+    def forget(self) -> None:
+        """What was seen of the moving things is not to be trusted (a reading of the screen failed): the next
+        capture draws through them again."""
+        self.known_at = None
+
+    def _small(self, area: int) -> bool:
+        return bool(self.moving) and self.known_at is not None \
+            and asyncio.get_running_loop().time() - self.known_at < REMEMBER_S \
+            and all(box[2] * box[3] <= SMALL_SHARE * area for box in self.moving)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.surface, name)
@@ -128,5 +160,21 @@ class Steady:
     async def capture(self, region: list[int] | None = None) -> bytes:
         if region is not None:
             return await self.surface.capture(region)
-        png, self.moving = await still(self.surface)
+        small = self.last is not None and self._small(_area(self.last))
+        first = None
+        if small:
+            first = await self.surface.capture()
+            # nothing changed but where the small things keep moving: the screen is as it was
+            if not outside(_boxes(self.last, first), self.moving):
+                self.last, self.quick = first, self.quick + 1
+                return first
+        png, moving, self.last = await _still(self.surface, self.moving if small else None, first)
+        if moving and moving is not self.moving:
+            # drawn through again: where things keep moving is known afresh
+            self.known_at = asyncio.get_running_loop().time()
+        elif not moving:
+            self.known_at = None
+        else:
+            self.quick += 1
+        self.moving = moving
         return png

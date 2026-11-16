@@ -27,7 +27,7 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, catalog, direct, made
+from . import adaptation, catalog, direct, made, samples
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
@@ -228,6 +228,8 @@ class Agent:
         # screens the model read for an adapter that could not (`relearned`), and how often the adapter then had to
         # be written again: only that is bounded, since a screen that only adds samples costs one question
         self.relearned = self.rewrites = self.generations = self.attempts = 0
+        # values the adapter's code left unread that the rules told instead of a model (`_learn_unread`)
+        self.told_by_rules = 0
         # each screen the model read while there was an adapter, and why (`_reread`)
         self.rereads: list[dict[str, Any]] = []
         self.need = adaptation.EXPLORE_MOVES
@@ -277,7 +279,8 @@ class Agent:
 
     def summary(self) -> dict[str, Any]:
         return {"reused": self.made.reused if self.made else None, "generations": self.generations,
-                "relearned": self.relearned, "looks": len(self.trace.looks) if self.trace else 0,
+                "relearned": self.relearned, "told_by_rules": self.told_by_rules,
+                "quick_looks": self.seen.quick, "looks": len(self.trace.looks) if self.trace else 0,
                 "rereads": self._rereads(),
                 "questions": self.model.questions, "seconds": round(self.model_seconds, 1),
                 "tokens": {"input": self.model.input, "output": self.model.output},
@@ -427,6 +430,9 @@ class Agent:
             await self._confirmed(before, action, sent, after, sent_at)
             return
         self.stalled += 1
+        if self.carried_as and self.carried_as.get("picked") and effect in ("absent", "inconsistent"):
+            # a piece picked up and let go that did not do what it should: how it follows is measured again
+            self.carrier.doubt()
         if effect == "absent":
             self._spent(before.id, action)
             self.fruitless += 1
@@ -639,8 +645,13 @@ class Agent:
             if self.watch is not None:
                 await self.watch.seen(png)
             state, why = self._observe(png)
+            if state is None and why == adaptation.CELLS_UNREAD and expect is not None and self._learn_unread(png, expect):
+                # the rules told what the code could not read: it reads it now
+                state, why = self._observe(png)
             usable = state is not None
             if not usable:
+                # a screen read through small moving things that could not be read is drawn through next time
+                self.seen.forget()
                 self.why = why
                 self.unread = self.adapter.partial if why == adaptation.CELLS_UNREAD else None
                 seen = (why, self.unread)
@@ -674,6 +685,41 @@ class Agent:
                     self.why, self.unread = "surface_unsettled", None
                     return None
             await asyncio.sleep(max(0.0, min(policy.interval_s, deadline - clock())))
+
+    def _learn_unread(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
+        """What the adapter's code left unread on the result of a move (a look of a value it has no sample of
+        yet), told by the rules instead of a model, when every result the move can have that agrees with what
+        was read has the same there (two tiles joined into one of a value not seen before). Its samples are kept,
+        so that the code reads it from now on (PLAN §17, F5). False when the rules leave it open."""
+        outcomes = getattr(self.family.model, "outcomes", None)
+        partial = self.adapter.partial if self.adapter is not None else None
+        if outcomes is None or partial is None:
+            return False
+        try:
+            possible = [state for _, state in outcomes(expect[0].state, expect[1], self.family.rules)]
+        except (ValueError, KeyError, TypeError):
+            return False
+        agreeing = [state for state in possible if _agrees(_board(partial), _board(state))]
+        if not agreeing or any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
+            return False
+        raw = self.adapter.raw(png)
+        if not isinstance(raw, dict):
+            return False
+        image, kept = samples._open(png), []
+        try:
+            for path, box in samples.marks(raw):
+                if samples._at(partial, path) is not None:
+                    continue            # read already: only what was left unread is told
+                value, sample = samples._at(agreeing[0], path), samples.cut(image, box)
+                if value is None or sample is None:
+                    return False
+                kept.append((value, sample))
+        except (KeyError, IndexError, TypeError):
+            return False
+        for value, sample in kept:
+            self.adapter.bank.add(value, sample)
+        self.told_by_rules += len(kept)
+        return bool(kept)
 
     async def _read_model(self, expect: tuple[Reading, dict[str, Any]] | None, partial: dict[str, Any] | None) -> Reading | None:
         """The screen read by the model into a state the rule model accepts, and kept as a look. With `expect`
@@ -1094,6 +1140,8 @@ class Agent:
             after = await direct.settled(self.seen)
             moving = motion.joined(moving + self.seen.moving)
             changed = player.saw(answer, before, after, moving, carried)
+            if carried and carried.get("picked") and not changed:
+                self.carrier.doubt()
             self.levels[L0] += 1
             self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": answer["told"], "level": L0,
                                "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",

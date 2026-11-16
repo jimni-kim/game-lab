@@ -67,6 +67,12 @@ HOLDS = (0.0, 0.4, 0.8, 1.2)
 # how many of the ways the drawings followed the pointer are kept, the middle one standing in for a carry whose
 # looks could not tell it
 FOLLOWS_KEPT = 9
+# once this many carries measured how the drawing follows the pointer, all within this share of each other, a
+# carry looks once only on the way: where the thing is drawn there tells where it hangs from, the gain is the one
+# measured (PLAN §17, F2). The look before letting go stays: a drawing that catches up late is let go only once
+# it rests where it was meant to. A carry whose move the game did not take sends the next back to measuring
+# (`doubt`)
+SURE_AFTER, SURE_SPREAD = 2, 0.06
 
 
 def _boxes(before: bytes, after: bytes) -> list[list[int]]:
@@ -288,6 +294,13 @@ class Carrier:
     def _gain(self) -> float:
         return sorted(self.gains)[len(self.gains) // 2] if self.gains else 1.0
 
+    def _sure(self) -> bool:
+        return len(self.gains) >= SURE_AFTER and max(self.gains) <= min(self.gains) * (1 + SURE_SPREAD)
+
+    def doubt(self) -> None:
+        """A carry's move did not do what it should: the next carries measure how the drawing follows again."""
+        self.gains = []
+
     async def _look(self, look: Any, before: bytes, start: tuple[float, float], pointer: tuple[float, float],
                     source: list[int] | None, near: tuple[float, float] | None = None) -> dict[str, Any]:
         """What the screen shows while the pointer holds still at `pointer`, once the held drawing has come to
@@ -379,7 +392,13 @@ class Carrier:
                 if picked:
                     self.picked_any = True
                     self.hold_s = max(self.hold_s, hold)
-                follow = await self._measure(look, before, start, way, length, first, source, told) if first else None
+                quick = first is not None and self._sure()
+                if quick:
+                    # how it follows is known: where it is drawn now tells where it hangs from
+                    told["quick"] = True
+                    follow = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())
+                else:
+                    follow = await self._measure(look, before, start, way, length, first, source, told) if first else None
                 if follow is None and first is not None and first[0]["still"]:
                     # seen once only: it follows as the carries before showed, through the place it was seen at
                     follow = Follow.through(start, first[1], _middle(first[0]["still"][0]), self._gain())

@@ -81,10 +81,10 @@ async def test_a_hand_that_keeps_circling_over_a_still_board_is_left_out_and_whe
     png = await seen.capture()
     assert same(png, clean)
     assert seen.animating and fake.circling.captures == motion.FRAMES
-    # what moved is where the hand went, all of it
+    # what moved is where the hand went, all of it (a step a capture)
     left = min(box[0] for box in seen.moving)
     right = max(box[0] + box[2] for box in seen.moving)
-    assert left <= BLOCKS_BOARD[0] + 10 and right >= BLOCKS_BOARD[0] + 10 + 52 * 6 + 40
+    assert left <= BLOCKS_BOARD[0] + 10 and right >= BLOCKS_BOARD[0] + 10 + 52 * (motion.FRAMES - 1) + 40
 
 
 async def test_a_still_screen_is_looked_at_twice_and_given_as_it_is():
@@ -112,7 +112,7 @@ async def test_a_screen_that_changes_almost_everywhere_is_a_new_scene_and_given_
     seen = Steady(Fading())
     png = await seen.capture()
     with Image.open(BytesIO(png)) as image:
-        assert image.getpixel((5, 5)) == (240, 0, 0)
+        assert image.getpixel((5, 5)) == (40 * (motion.FRAMES - 1), 0, 0)
     assert not seen.animating
 
 
@@ -450,3 +450,63 @@ async def test_a_carry_that_could_not_tell_how_the_drawing_follows_aims_it_by_th
     finally:
         carry.STEP_PX, carry.STEP_LEAST = carry_step, 32.0
     assert second["picked"] and not second["measured"] and fake.placed[-1] == (1, [5, 4]), (second, fake.placed)
+
+
+class Glinting:
+    """A still screen with a glint that blinks in one small place at every capture, and a change elsewhere
+    when told to."""
+
+    def __init__(self):
+        self.captures, self.shown, self.changed = 0, 0, False
+
+    async def capture(self, region=None):
+        self.captures += 1
+        self.shown += 1
+        image = Image.new("RGB", (400, 600), (30, 30, 60))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((100, 100, 300, 300), fill=(200, 120, 40))
+        if self.shown % 2:
+            draw.ellipse((150, 150, 170, 170), fill=(255, 255, 255))
+        if self.changed:
+            draw.rectangle((100, 400, 300, 450), fill=(40, 200, 120))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_a_small_glint_found_once_is_not_drawn_through_again_until_something_else_changes_or_a_read_fails():
+    fake = Glinting()
+    seen = Steady(fake)
+    await seen.capture()
+    assert seen.animating and fake.captures == motion.FRAMES
+    # nothing changed but the glint: one capture, given as it is with where the glint is
+    before = fake.captures
+    await seen.capture()
+    assert fake.captures == before + 1 and seen.animating and seen.quick == 1
+    # something changed elsewhere and then held still: two captures tell it, no drawing through
+    fake.changed = True
+    before = fake.captures
+    png = await seen.capture()
+    with Image.open(BytesIO(png)) as image:
+        assert image.getpixel((200, 420)) == (40, 200, 120)
+    assert fake.captures == before + 2 and seen.animating
+    # a reading that failed: the next capture draws through again
+    seen.forget()
+    before = fake.captures
+    await seen.capture()
+    assert fake.captures == before + motion.FRAMES
+
+
+async def test_once_carries_agree_on_how_the_drawing_follows_a_carry_looks_once_and_a_miss_sends_it_back_to_measuring():
+    fake = Following(gain=1.45, catch=0.5)
+    carrier = Carrier(fake)
+    goals = [(0, [2, 2]), (1, [5, 4]), (2, [0, 0])]
+    told = []
+    for slot, anchor in goals:
+        told.append(await carrier.carry(slot_middle(fake, slot), goal_at(fake, slot, anchor), 400))
+    assert fake.placed == goals and not fake.missed, (told, fake.placed)
+    assert told[0]["measured"] and told[1]["measured"] and told[2].get("quick") and len(told[2]["looks"]) == 2
+    carrier.doubt()
+    fake.state = fake.family.initial_state(3)
+    again = await carrier.carry(slot_middle(fake, 0), goal_at(fake, 0, [3, 3]), 400)
+    assert again["measured"] and not again.get("quick")

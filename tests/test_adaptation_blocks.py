@@ -252,7 +252,10 @@ async def test_a_drag_game_is_explored_adapted_and_played_with_every_piece_where
     assert {move["effect"] for move in played.moves} == {"confirmed"} and len(fake.placed) == 20 and not fake.missed
     # each placement is the one the solver chose, although the piece hung 1.7 cells above the pointer
     assert [(move["action"]["slot"], move["action"]["anchor"]) for move in played.moves] == fake.placed
-    assert all(move["carried"]["measured"] for move in played.moves)
+    # every piece was seen picked up; how its drawing follows was measured until it was sure, then looked at once
+    carried = [move["carried"] for move in played.moves]
+    assert all(entry["picked"] and (entry["measured"] or entry.get("quick")) for entry in carried), carried
+    assert carried[0]["measured"] and any(entry.get("quick") for entry in carried)
     # the model was told which state field lists what is dragged, and the writer where each thing waited
     assert dealer.asked[0][1]["sources"] == "tray"
     write = next(context for kind, context in dealer.asked if kind == "write")
