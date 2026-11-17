@@ -237,11 +237,13 @@ def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer
     # tutorial's overlay gone from where it was) is not in its proportions until it is
     narrowed = [_own(before, during, origin, box) for box in rest
                 if box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7]
+    # a piece's blocks drawn apart, each a thing of its own, lying as the piece's blocks lie: that is the piece,
+    # before anything in its proportions is looked for (one block of a square piece is square too: 2026-11-17,
+    # taken for the whole piece, it hung the piece half a block off)
+    together = arranged(rest, cells) if cells else None
+    if together is not None:
+        return origin, [together]
     shaped = [box for box in narrowed if _shaped(box, origin) and (scale is None or _scaled(box, origin, scale))]
-    if not shaped and cells:
-        # nothing in the piece's proportions: its blocks may be drawn apart, each a thing of its own
-        together = arranged(rest, cells)
-        shaped = [together] if together is not None else []
     if not shaped:
         return None
     return origin, sorted(shaped, key=lambda box: _gap(pointer, box))
@@ -714,7 +716,8 @@ class Carrier:
             length = max(((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5, 1.0)
             reach = max(FIRST_LEG[0], min(1.0, LEAST_LEG / length))
             await surface.move(start[0] + (end[0] - start[0]) * reach, start[1] + (end[1] - start[1]) * reach, LEG_MS)
-            await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
+            # the rest of the way in few steps where the surface can (each step of a held pointer costs its own time)
+            await getattr(surface, "sweep", surface.move)(*end, max(LEG_MS, duration_ms - LEG_MS))
             if self._passed >= UNCHECKED_AFTER:
                 # the cells bore the game's way of hanging held things out carry after carry: this one is let go
                 # where that puts it, with no look first. The screen read after the move says whether it lay

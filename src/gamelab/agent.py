@@ -52,6 +52,8 @@ L0, L2, L3 = "L0", "L2", "L3"
 TRIAL_MOVES = 3
 # moves that must be confirmed by rule values taken anew from a screen before what the game had is let go
 RESIZE_TRIAL = 2
+# a family's own reader is first shown the screen this long after a move was sent
+KIT_FIRST_S = 0.15
 # a game no family was found for is asked about again from the model's own play at most this many times
 REASK_MOST = 2
 # moves in a row that did not do what the rules predict before the reading (L3) or the screen (L2) is doubted
@@ -217,6 +219,10 @@ class Agent:
         # and whether the reading just made was such a one (`_turn` does not hold it to the move before it)
         # times the game was asked about again from the model's own play (`_play_direct`)
         self.reasked = 0
+        # where the last move's time went (`_remember`), and what its result's reading by code took (`_read_code`)
+        self.timing: dict[str, Any] | None = None
+        self.timing_from = 0.0
+        self.read_told: dict[str, Any] | None = None
         self.resized: dict[str, Any] | None = None
         self.fresh_scene = False
         self.resizes = 0
@@ -533,11 +539,15 @@ class Agent:
             self._afford()               # the move's result is the model's to read: none is sent that it cannot be asked about
         if self.watch is not None:
             await self.watch.sending(self.used + 1, action, before.state, sent, before.at)
+        sending_at = time.monotonic()
         await self._send(sent, before, action)
         self.used += 1
         if self.watch is not None:
             await self.watch.sent()
         sent_at = time.monotonic()
+        self.timing = {"send_s": round(sent_at - sending_at, 2)}
+        self.timing_from = sent_at - self.started
+        self.read_told = None
         try:
             after = await self._read((before, action))
         except _End:
@@ -672,6 +682,10 @@ class Agent:
                            # from: why it was none is looked for afterwards
                            **({"before_state": before.state, "after_state": after.state}
                               if effect in ("inconsistent", "absent") and after is not None else {}),
+                           # where the move's time went: sending it, and reading its result (frames taken, how many
+                           # reads drew through frames for what keeps moving, seconds)
+                           **({"timing": {**self.timing, "read_s": round(time.monotonic() - self.started - self.timing_from, 2),
+                                          **({"read": self.read_told} if self.read_told else {})}} if self.timing else {}),
                            "round": self.relearned, "at_s": round(time.monotonic() - self.started, 2)})
 
     def _check_stops(self) -> None:
@@ -779,18 +793,34 @@ class Agent:
         stable time, or sooner the predicted result of the move just played."""
         policy, clock = self.settling, time.monotonic
         # the first frame looked at: one taken once the move's animation is over
-        after = clock() + policy.animation_s if expect is not None and policy.animation_s else None
+        kit = isinstance(self.adapter, KitAdapter)
+        # a family's own reader knows what the move leaves and is asked as soon as the screen may show it: no time
+        # measured on other moves is waited out first (a move that clears nothing is done at once)
+        wait = KIT_FIRST_S if kit else policy.animation_s
+        after = clock() + wait if expect is not None and wait else None
         deadline = (after or clock()) + policy.timeout_s
         previous = pictured = read = unread = None
         stable_since = rested = read_since = unread_since = clock()
-        if isinstance(self.adapter, KitAdapter):
+        self.read_told = told = {"frames": 0, "drawn_through": 0, "by": "kit" if kit else "adapter"}
+        began = clock()
+        dealt = False
+        if kit:
             # what the rules say the move left: it fills what the screen leaves unclear
-            self.adapter.expecting(self._prior(expect) if expect is not None else None,
-                                   expect[0].state if expect is not None else None)
+            prior = self._prior(expect) if expect is not None else None
+            self.adapter.expecting(prior, expect[0].state if expect is not None else None)
+            # a tray dealt anew is not the rules' to say: it is taken once two frames in a row read it the same
+            # (pieces still flying in read as others)
+            listed = prior.get(self.adaptation.controls.get("source", "")) if isinstance(prior, dict) else None
+            dealt = isinstance(listed, list) and bool(listed) and all(entry is None for entry in listed)
         while True:
             self._check_time()
             # a screen something kept moving over is read as it is under that, for as long as it keeps moving
-            frame = await (self.seen.steady(after) if self.seen.animating else self.frames.frame(after))
+            through = self.seen.animating and not (kit and self._moving_beside())
+            taken = self.frames.taken if hasattr(self.frames, "taken") else 0
+            frame = await (self.seen.steady(after) if through else self.frames.frame(after))
+            told["frames"] += (self.frames.taken - taken) if hasattr(self.frames, "taken") else 1
+            told["drawn_through"] += through
+            told["s"] = round(clock() - began, 2)
             png, looked = frame.png, frame.at
             self.shots += 1
             self.last_png = png
@@ -820,7 +850,7 @@ class Agent:
                 read_since = looked
             read = key[:-1] if key is not None else None
             restless = policy.still and usable and clock() - read_since >= RESTLESS_S
-            settled = not policy.still or image == pictured
+            settled = (not dealt or key == previous) if kit else (not policy.still or image == pictured)
             if image is None or image != pictured:
                 rested = looked
             previous, pictured = key, image
@@ -839,6 +869,16 @@ class Agent:
                     return None
             # the next frame: one taken this long after this one, and no later than the deadline
             after = min(looked + policy.interval_s, deadline)
+
+    def _moving_beside(self) -> bool:
+        """Whether everything that keeps moving on the screen lies beside what the family's reader reads (the
+        board and where the pieces wait): a pulsing score or a banner is then no reason to draw through frames."""
+        regions = self.adapter.regions()
+        for left, top, width, height in self.seen.moving:
+            for x0, y0, x1, y1 in regions:
+                if left < x1 and x0 < left + width and top < y1 and y0 < top + height:
+                    return False
+        return True
 
     def _learn_unread(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
         """What the adapter's code left unread on the result of a move (a look of a value it has no sample of

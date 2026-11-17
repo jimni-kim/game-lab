@@ -31,6 +31,9 @@ LONG_PRESS_MS = 200
 # one `input motionevent` takes about this long itself (measured 40 to 80 ms on the emulator, 2026-11-15), so
 # only the rest of a step's time is slept
 STEP_PX, STEPS_MOST, MOTION_MS = 48, 24, 50
+# a held pointer swept straight to a place (`sweep`) moves in this many steps at most: each MOVE costs MOTION_MS
+# whatever time the move was given, so a sweep across the screen in STEPS_MOST steps took about 1.3 s
+SWEEP_STEPS = 6
 # an app started again draws its first screen: wait this long
 RELAUNCH_WAIT_S = 3.0
 KEYCODES = {"ArrowUp": "KEYCODE_DPAD_UP", "ArrowDown": "KEYCODE_DPAD_DOWN", "ArrowLeft": "KEYCODE_DPAD_LEFT",
@@ -45,10 +48,12 @@ def _sleep(ms: float) -> list[str]:
     return [f"sleep {ms / 1000:.3f}"] if ms > 0 else []
 
 
-def _moves(start: tuple[float, float] | list[float], end: tuple[float, float] | list[float], duration_ms: int) -> list[str]:
-    """The MOVE events from one point to another over `duration_ms`, no further than STEP_PX apart."""
+def _moves(start: tuple[float, float] | list[float], end: tuple[float, float] | list[float], duration_ms: int,
+           most: int = STEPS_MOST) -> list[str]:
+    """The MOVE events from one point to another over `duration_ms`, no further than STEP_PX apart (in `most`
+    steps at most)."""
     length = ((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5
-    steps = max(1, min(STEPS_MOST, -(-int(length) // STEP_PX)))
+    steps = max(1, min(most, -(-int(length) // STEP_PX)))
     lines = []
     for step in range(1, steps + 1):
         ratio = step / steps
@@ -172,6 +177,11 @@ class AndroidSurface:
     async def move(self, x: float, y: float, duration_ms: int) -> None:
         """The held pointer moved to a point over `duration_ms`, in steps a game follows as a hand's."""
         await self.shell(_moves(self._held or (x, y), (x, y), duration_ms))
+        self._held = (x, y)
+
+    async def sweep(self, x: float, y: float, duration_ms: int) -> None:
+        """The held pointer taken straight to a point in few steps: for a move whose way there does not matter."""
+        await self.shell(_moves(self._held or (x, y), (x, y), duration_ms, SWEEP_STEPS))
         self._held = (x, y)
 
     async def lift(self) -> None:
