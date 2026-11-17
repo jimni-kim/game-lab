@@ -586,6 +586,7 @@ class Agent:
         if "goals" not in self.family.rules or not isinstance(self.adapter, KitAdapter):
             return
         goals = self.adapter.goals(self.trace.looks)
+        goals = _same_level(self.trace.rules.get("goals"), goals)
         if goals is None or goals == self.trace.rules.get("goals"):
             return
         log.info("the level's goals: %s", goals)
@@ -1708,6 +1709,17 @@ class Agent:
         if not await self._next_family() and not await self._make_family():
             await self._play_direct(self._situation())
         return True
+
+
+def _same_level(was: Any, now: Any) -> Any:
+    """A level's goals as read again: a reading of the same level (as many goals, of the same kinds, none needing
+    more than it did) tells how many are left, not what they are about, which was told already (2026-11-17, a
+    reading taken as a goal's picture played its collecting took a pink button for a yellow lamp)."""
+    if not isinstance(was, list) or not isinstance(now, list) or len(was) != len(now) or any(
+            old.get("kind") != new.get("kind") or (type(old.get("count")) is int and type(new.get("count")) is int
+                                                   and new["count"] > old["count"]) for old, new in zip(was, now)):
+        return now
+    return [{**new, "target": old["target"]} if old.get("target") is not None else new for old, new in zip(was, now)]
 
 
 async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,

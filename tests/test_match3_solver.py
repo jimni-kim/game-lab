@@ -106,3 +106,14 @@ def test_a_move_with_a_power_whose_colour_is_not_known_teaches_nothing_of_how_po
     # one whose colour is known does teach it
     grid[0][1] = line + R
     assert rules.learned(state, action, "confirmed", unknown)["swap_power"] is True
+
+
+def test_a_levels_goals_read_again_keep_what_they_are_about_and_take_how_many_are_left():
+    from gamelab.agent import _same_level
+
+    was = [{"kind": "collect", "target": 7, "count": 24}, {"kind": "collect", "target": None, "count": 9}]
+    now = [{"kind": "collect", "target": 3, "count": 14}, {"kind": "collect", "target": 4, "count": 5}]
+    assert _same_level(was, now) == [{"kind": "collect", "target": 7, "count": 14}, {"kind": "collect", "target": 4, "count": 5}]
+    # another level: more of one needed than was left, or other goals
+    assert _same_level(was, [{**now[0], "count": 30}, now[1]]) == [{**now[0], "count": 30}, now[1]]
+    assert _same_level(was, now[:1]) == now[:1] and _same_level(None, now) == now
