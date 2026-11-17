@@ -49,6 +49,8 @@ async def test_an_emulator_is_captured_by_its_console_and_by_screencap_once_that
     adb, shots = Adb(Image.new("RGBA", (108, 240), (40, 50, 60, 255))), []
 
     async def console(args):
+        if args[1:4] == ["dumpsys", "window", "displays"]:
+            return b"  mCurrentRotation=ROTATION_0 mLastOrientation=1\n"
         if args[:3] == ["emu", "screenrecord", "screenshot"]:
             shots.append(args[3])
             if len(shots) > 1:
@@ -67,6 +69,26 @@ async def test_an_emulator_is_captured_by_its_console_and_by_screencap_once_that
     import os
     assert not any(os.path.exists(path) for path in shots)
     assert not AndroidSurface(adb, serial="R58M123").console
+
+
+async def test_an_emulators_console_capture_is_turned_the_way_its_display_is():
+    """The console takes the screen as it is in memory: a game held sideways comes portrait, and is turned to be
+    what the display shows (a tap is then where the model saw the thing)."""
+    picture = Image.new("RGBA", (108, 240), (0, 0, 0, 255))
+    picture.putpixel((0, 0), (255, 0, 0, 255))           # the top left of the screen as it is in memory
+
+    async def turned(args):
+        if args[1:4] == ["dumpsys", "window", "displays"]:
+            return b"  mCurrentRotation=ROTATION_90\n"
+        if args[:3] == ["emu", "screenrecord", "screenshot"]:
+            picture.save(args[3], format="PNG")
+            return b"OK"
+        raise AssertionError(args)
+    surface = AndroidSurface(turned, serial="emulator-5556")
+    with pixels.decode(await surface.capture(), [240, 108]) as image:
+        # turned a quarter the other way round: what was the top left is now the bottom left
+        assert image.getpixel((0, 107)) == (255, 0, 0) and image.getpixel((0, 0)) == (0, 0, 0)
+    assert await surface.size() == [240, 108]
 
 
 async def test_a_capture_that_is_no_picture_is_an_unread_look_not_a_crash():

@@ -42,6 +42,10 @@ RELAUNCH_WAIT_S = 3.0
 KEYCODES = {"ArrowUp": "KEYCODE_DPAD_UP", "ArrowDown": "KEYCODE_DPAD_DOWN", "ArrowLeft": "KEYCODE_DPAD_LEFT",
             "ArrowRight": "KEYCODE_DPAD_RIGHT", "Enter": "KEYCODE_ENTER", "Escape": "KEYCODE_BACK", " ": "KEYCODE_SPACE"}
 _FOCUS = re.compile(r"mCurrentFocus=Window\{\S+ \S+ ([\w.]+)/")
+# how the display is turned from its natural way: the emulator's console takes the screen as it is in memory, not
+# as it is shown, and is turned by this to be what `screencap` gives (2026-11-17, a game held sideways: its
+# captures came portrait, and the model's taps on them landed elsewhere)
+_ROTATION = re.compile(r"mCurrentRotation=ROTATION_(\d+)")
 _SIZE = re.compile(r"(Override|Physical) size: (\d+)x(\d+)")
 
 Run = Callable[[list[str]], Awaitable[bytes]]
@@ -120,7 +124,8 @@ class AndroidSurface:
     async def capture(self, region: list[int] | None = None) -> bytes:
         from PIL import Image
 
-        raw = await self._console_capture() if self.console else None
+        taken = await self._console_capture() if self.console else None
+        raw, way = taken if taken is not None else (None, None)
         if raw is None:
             self.console = False
             try:
@@ -131,8 +136,10 @@ class AndroidSurface:
             raise ValueError("capture_failed")
         # a device's capture carries an alpha channel the readers refuse: the picture as plain RGB
         with Image.open(BytesIO(raw)) as image:
-            self._size = list(image.size)
             picture = image.convert("RGB")
+            if way is not None:
+                picture = picture.transpose(way)
+            self._size = list(picture.size)
             if region is not None:
                 picture = picture.crop(tuple(region))
             for level in (3, 9):
@@ -142,18 +149,26 @@ class AndroidSurface:
                     break
         return out.getvalue()
 
-    async def _console_capture(self) -> bytes | None:
-        """The emulator's screen as its console takes it, written to a file here; None when it could not."""
+    async def _console_capture(self) -> tuple[bytes, Any] | None:
+        """The emulator's screen as its console takes it, written to a file here and turned the way the display is
+        turned; None when it could not be, or the display's turn could not be read."""
+        from PIL import Image
+
         handle, path = tempfile.mkstemp(suffix=".png")
         os.close(handle)
         try:
+            turned = _ROTATION.search((await self.run(["shell", "dumpsys", "window", "displays"])).decode(errors="replace"))
             said = await self.run(["emu", "screenrecord", "screenshot", path])
             raw = Path(path).read_bytes()
         except (RuntimeError, OSError):
             return None
         finally:
             Path(path).unlink(missing_ok=True)
-        return raw if b"OK" in said and raw.startswith(PNG_SIGNATURE) else None
+        way = {0: None, 90: Image.Transpose.ROTATE_90, 180: Image.Transpose.ROTATE_180,
+               270: Image.Transpose.ROTATE_270}.get(int(turned[1]), "unknown") if turned else "unknown"
+        if way == "unknown" or b"OK" not in said or not raw.startswith(PNG_SIGNATURE):
+            return None
+        return raw, way
 
     async def elements(self, queries: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
