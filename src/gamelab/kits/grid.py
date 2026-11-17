@@ -120,11 +120,13 @@ def pitch(png: bytes, box: list[int]) -> tuple[int, int] | None:
     return (rows, cols) if rows and cols else None
 
 
-def _fit_side(profile: list[int], first: float, last: float, lines: int, start: int, *, inner: bool = False
-              ) -> tuple[float, float] | None:
+def _fit_side(profile: list[int], first: float, last: float, lines: int, start: int, *, inner: bool = False,
+              gaps: bool = False) -> tuple[float, float] | None:
     """Where the first and the last of `lines` evenly spaced lines lie along a profile of edges that begins at
     `start`: the pair, each within FIT_REACH of a cell of where it was said to be, on whose lines the profile is
-    strongest (`inner`: on those of its lines that lie between two cells). None when no pair stands out."""
+    strongest (`inner`: on those of its lines that lie between two cells), or, with `gaps`, weakest: a board with
+    no lines drawn between its cells shows its pieces' edges inside the cells and nothing between them. None when
+    no pair stands out."""
     cell = (last - first) / (lines - 1)
     reach, spread = max(1, round(FIT_REACH * cell)), max(1, round(FIT_SPREAD * cell))
     # each place's edges with those within `spread` of it, the nearer counting for more (by the square of how far):
@@ -149,8 +151,13 @@ def _fit_side(profile: list[int], first: float, last: float, lines: int, start: 
         for other in range(-reach, reach + 1):
             step = (last + other - first - one) / (lines - 1)
             scores[one, other] = sum(near(first + one + index * step) for index in counted)
-    best = max(scores, key=lambda pair: (scores[pair], -abs(pair[0]) - abs(pair[1])))
     mean = sum(scores.values()) / len(scores)
+    if gaps:
+        if mean <= 0:
+            return None
+        # turned over: the emptiest place stands as far above the average as the average is above it
+        scores = {pair: 2 * mean - score for pair, score in scores.items()}
+    best = max(scores, key=lambda pair: (scores[pair], -abs(pair[0]) - abs(pair[1])))
     if scores[best] <= 0 or scores[best] < FIT_CLEAR * mean:
         return None
     # of places as good (a flat top), the middle one
@@ -181,7 +188,9 @@ def fit(image: Any, box: list[int], rows: int, cols: int) -> list[int]:
         # and pull the fit their way: a board with enough lines between its cells is fitted by those alone. One
         # with few is fitted by all its lines: those between its cells are too few to stand out, and moved by
         # them the box came out differently from screen to screen of one game (2026-11-17, kept screens)
-        return _fit_side(profile, first, last, lines, start, inner=lines > FIT_INNER + 2)
+        found = _fit_side(profile, first, last, lines, start, inner=lines > FIT_INNER + 2)
+        # no lines to go by: the gaps between the pieces, where the picture has no edges
+        return found if found is not None else _fit_side(profile, first, last, lines, start, gaps=True)
     sides = side(across, left, left + width, cols + 1, x0)
     ends = side(down, top, top + height, rows + 1, y0)
     wide, high = (sides[1] - sides[0]) / width if sides else 1.0, (ends[1] - ends[0]) / height if ends else 1.0

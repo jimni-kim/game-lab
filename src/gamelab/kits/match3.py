@@ -22,7 +22,11 @@ ALIKE = 0.9
 class Match3Kit(Valued):
     family_id = "match3"
     # a piece's middle: what shows between pieces (the cell behind them, a neighbour's glow) is left out
-    inset = 0.2
+    inset, side = 0.3, 8
+    # pieces of one kind are drawn a little differently from cell to cell (a gloss, a board fitted by the gaps
+    # between pieces and so a few pixels out), and kinds differ by their whole colour: looser than a numeral needs
+    # (2026-11-17, a game with no lines between its cells: at 6 its four kinds of candy came out as twelve)
+    near, apart = 10.0, 5.0
     # what comes in from above is the game's: a screen is taken when it has come to rest, not as soon as it shows
     # what the rules foresee
     foresees = False
