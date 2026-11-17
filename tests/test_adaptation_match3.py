@@ -42,7 +42,9 @@ class Gems:
         # `powers`: whether the game leaves a piece with a power where four or more lined up (drawn with a white
         # mark, larger for each kind); a game without them removes such a line whole. `rules`: the ways of
         # moving this game takes (the family's rule values)
-        self.family = catalog.family("match3").bind({"rules": rules or {"square": False, "swap_power": False, "pair_power": False, "tap_power": False}})
+        # a game takes four in a square unless told otherwise (each game here takes the move its solver
+        # values; whether a game takes squares at all is tried in test_kit_values.py)
+        self.family = catalog.family("match3").bind({"rules": rules or {"square": True, "swap_power": False, "pair_power": False, "tap_power": False}})
         self.draw, self.powers = draw, powers
         self.state = self.family.initial_state(draw)
         self.swaps, self.refused, self.pops = [], 0, []

@@ -339,7 +339,12 @@ class Adaptation:
             if isinstance(answer.get("sources"), list):
                 answer["sources"] = [whole(box) for box in answer["sources"]]
             if isinstance(answer.get("panel"), dict):
-                answer["panel"] = {name: whole(value) for name, value in answer["panel"].items()}
+                def scaled(value: Any) -> Any:
+                    # a box, or a list of things each with its box
+                    if isinstance(value, list) and value and all(isinstance(thing, dict) for thing in value):
+                        return [{**thing, "box": whole(thing.get("box"))} for thing in value]
+                    return whole(value)
+                answer["panel"] = {name: scaled(value) for name, value in answer["panel"].items()}
         return answer
 
     async def _read(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
@@ -583,14 +588,22 @@ class Adaptation:
 
     def _panel(self, seen: Any, size: list[int]) -> dict[str, Any] | None:
         """What the model gave of what the family asks to be shown beside the board: each name it asks for that
-        came as a box on the screen (a name given otherwise is left out). None when the family asks nothing."""
+        came as a box on the screen, or as a list of things each with its box (`box`): those whose box is not on
+        the screen are left out, and a name given otherwise is. None when the family asks nothing."""
         from .adapters.generated import _box
 
         asked = self.descriptor.get("discovery", {}).get("panel")
         if not asked:
             return None
         seen = seen if isinstance(seen, dict) else {}
-        return {name: seen[name] for name in asked if _box(seen.get(name), size)}
+        found: dict[str, Any] = {}
+        for name in asked:
+            value = seen.get(name)
+            if _box(value, size):
+                found[name] = value
+            elif isinstance(value, list):
+                found[name] = [thing for thing in value if isinstance(thing, dict) and _box(thing.get("box"), size)]
+        return found
 
     def _unknowable(self) -> list[str]:
         """The rule values a game may be played without knowing: those the family lets be null."""

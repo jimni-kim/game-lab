@@ -50,7 +50,10 @@ RUN = 3
 PLAYING, OVER, WON = "playing", "over", "won"
 # the ways of using a power, each unknown (None) until the game showed whether it takes it
 WAYS = ("square", "swap_power", "pair_power", "tap_power")
-DEFAULT_RULES = {"rows": 8, "cols": 8, "colours": 6, "square": None, "swap_power": None, "pair_power": None, "tap_power": None}
+# whether something fixed (BLOCK) is broken by a line cleared beside it, unknown (None) until the screen showed it
+# (PLAN §23, Y3): each is hit once by each wave of lines that clears a cell above, below or beside it
+DEFAULT_RULES = {"rows": 8, "cols": 8, "colours": 6, "square": None, "swap_power": None, "pair_power": None, "tap_power": None,
+                 "goals": None, "beside": None}
 # what comes in at the top is drawn by the game: it can be sampled, not listed
 CAPABILITIES = ("chance_sampled", "hidden")
 STEPS = ((0, 1), (1, 0))
@@ -317,7 +320,9 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
     """What a move leaves as far as the pieces on the board decide it: the lines removed (a piece with a power
     left where a line earned one), what was above fallen, the cells new pieces fill left unread, and so on
     until nothing known lines up. Where a power goes off, what it reaches is left unread from there up. `cleared`
-    counts the pieces removed, those a power is taken to reach among them; `made` is the power the move earns."""
+    counts the pieces removed, those a power is taken to reach among them; `made` is the power the move earns;
+    `taken` what was taken off by what a goal may be about (a piece by its colour), each thing fixed hit beside a
+    line counted as BLOCK; `hit` the things fixed the move's own lines hit."""
     grid = state["grid"]
     _require_known(grid)
     made_by = way(state, rules, action)
@@ -326,7 +331,7 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
     moved = [tuple(action["cell"])] if action["kind"] == "pop" else [tuple(action["cell"]), tuple(action["to"])]
     if action["kind"] != "pop":
         grid = _swapped(grid, action["cell"], action["to"])
-    cleared, made, blown = 0, 0, set()
+    cleared, made, blown, taken, hit = 0, 0, set(), {}, []
     if made_by in ("power", "pair", "tap"):
         for cell in moved:
             if power_of(grid[cell[0]][cell[1]]):
@@ -349,6 +354,18 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
         gone = (removed | (blown if first else set())) - set(kept)
         gone = {(r, c) for r, c in gone if grid[r][c] is not None and grid[r][c] not in (EMPTY, BLOCK)}
         cleared += len(gone)
+        if rules.get("beside") is not False:
+            # each thing fixed beside a line cleared is hit once by this wave (it stays where it is: whether it
+            # broke is the screen's to show)
+            struck = {(r + dr, c + dc) for r, c in removed for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                      if 0 <= r + dr < len(grid) and 0 <= c + dc < len(grid[0]) and grid[r + dr][c + dc] == BLOCK}
+            taken[BLOCK] = taken.get(BLOCK, 0) + len(struck)
+            if first:
+                hit = sorted([list(cell) for cell in struck])
+        for r, c in gone | (removed & set(kept)):
+            # what was taken off the board, by what a goal may be about: a piece by its colour, else its value
+            what = colour_of(grid[r][c]) or grid[r][c]
+            taken[what] = taken.get(what, 0) + 1
         grid = [list(row) for row in grid]
         for (r, c), earned in kept.items():
             grid[r][c] = earned
@@ -360,7 +377,25 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
             for r in range(max(r for r, x in blown if x == c) + 1):
                 if not _rests(grid[r][c]):
                     grid[r][c] = None
-    return {"state": {**state, "grid": grid}, "cleared": cleared, "made": made}
+    if not taken.get(BLOCK):
+        taken.pop(BLOCK, None)
+    return {"state": {**state, "grid": grid}, "cleared": cleared, "made": made, "taken": taken, "hit": hit}
+
+
+def progress(goals, taken: dict) -> int:
+    """How far a move's `taken` (`apply`) goes towards a level's goals: the things a goal to collect is about
+    that it takes, each goal's counted no further than what it still needs (a goal met gains nothing more)."""
+    return sum(min(taken.get(goal["target"], 0), goal["count"] if goal.get("count") is not None else len(COLOURS) ** 2)
+               for goal in goals or () if goal.get("kind") == "collect" and goal.get("target") is not None)
+
+
+def advance(goals, taken: dict):
+    """A level's goals after a move that took `taken`: each goal to collect needs that many fewer, down to none."""
+    if not goals:
+        return goals
+    return [{**goal, "count": max(0, goal["count"] - taken.get(goal["target"], 0))}
+            if goal.get("kind") == "collect" and goal.get("target") is not None and goal.get("count") is not None else goal
+            for goal in goals]
 
 
 def evaluate(state: dict, rules: dict) -> int:

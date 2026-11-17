@@ -265,6 +265,10 @@ class Grid:
         while the box is where it was."""
         if not (isinstance(box, list) and len(box) == 4):
             return
+        if self.counts and any(abs(one - other) > max(4, box[3] // 4) for one, other in zip(box, self.counter)):
+            # one seen to change with the moves is not let go for a box one reading gives elsewhere (2026-11-17: a
+            # reading at a level's end gave a box a fifth the size, away from the number)
+            return
         if self.counter is None or any(abs(one - other) > max(4, box[3] // 4) for one, other in zip(box, self.counter)):
             self.ticks = {"seen": 0, "missed": 0}
         self.counter = [round(part) for part in box]

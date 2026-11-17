@@ -70,6 +70,9 @@ RESTLESS_S = 1.0
 # result reads as the board it was played from is one the game did not take once the count of moves left the game
 # shows has not changed this long after it was sent; when no such count is known, once this longer time is over
 SAME_READS, REFUSED_S, ABSENT_S = 3, 1.5, 3.0
+# moves whose lines hit things fixed, none of which looked otherwise after, before such things are taken not to
+# break beside a line
+BESIDE_UNMOVED = 3
 # after its trial moves a still game waits the longest of them plus this margin, then looks once
 ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
@@ -233,6 +236,9 @@ class Agent:
         # a family's own reader (`kits`): how often it was adopted from a look, how many screens it read, and
         # whether it began from what was kept of the site
         self.kit_adopted = self.kit_reads = 0
+        # how often a screen the model read gave the level's goals anew (`_take_goals`), and the moves in a row
+        # whose lines hit things fixed that did not change (`_learn_beside`)
+        self.goals_read = self.unbroken = 0
         self.kit_demoted = False
         # the game's rule values were taken anew from a screen (a board of another size, a tray grown): what they
         # were and what the reader had learned, until RESIZE_TRIAL moves by the new ones are confirmed (`_resize`);
@@ -347,14 +353,18 @@ class Agent:
         told = self.adapter.summary() if isinstance(self.adapter, KitAdapter) else {}
         return {"adopted": self.kit_adopted, **told, "reads": self.kit_reads, **({"ways": self.ways} if self.ways else {}),
                 **({"light": {**self.light_told, **self.light.spent.summary()}} if self.light is not None else {}),
+                **({"goals": self.family.rules.get("goals"), "goals_read": self.goals_read}
+                   if self.family is not None and self.family.rules.get("goals") else {}),
                 "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
 
     def _keep_profile(self) -> None:
         """What the family's reader learned of this site and how the game hangs held things, for its next game."""
         if self.store is None or not isinstance(self.adapter, KitAdapter) or self.adapter.layout is None or not self.site:
             return
+        # a level's goals are that level's: the next game reads its own
+        rules = {name: value for name, value in (self.trace.rules if self.trace else {}).items() if name != "goals"}
         self.store.save_profile(self.site, self.family_id, {
-            "family": self.family_id, "rules": self.trace.rules if self.trace else {},
+            "family": self.family_id, "rules": rules,
             "kit": self.adapter.record(), "hang": self.carrier.hang.to_json(), "hold_s": self.carrier.hold_s})
 
     def close(self) -> None:
@@ -524,7 +534,57 @@ class Agent:
         self.made = self.made or Made("", 0, False, {})
         self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
         self.kit_adopted += 1
+        self._take_goals()
         return True
+
+    def _learn_beside(self, before: Reading, action: dict[str, Any], after: Reading) -> None:
+        """Whether things fixed break when a line is cleared beside them (`beside`), as the game showed it: they
+        do once one the move's lines hit looks otherwise after it, and do not once BESIDE_UNMOVED moves hit some
+        and none ever changed. Each new layer one shows is learned as the same thing (`KitAdapter.struck`)."""
+        if "beside" not in self.family.rules or not isinstance(self.adapter, KitAdapter) or after.by != L3:
+            return
+        try:
+            hit = self.family.model.apply(before.state, {**self.family.rules, "beside": True}, action).get("hit")
+        except (ValueError, KeyError, IndexError, TypeError):
+            return
+        changed = self.adapter.struck(before.png, after.png, hit or [])
+        if changed is None or self.family.rules.get("beside") is not None:
+            return
+        self.unbroken = 0 if changed else self.unbroken + 1
+        if changed or self.unbroken >= BESIDE_UNMOVED:
+            log.info("things fixed break beside a line: %s", changed)
+            self.trace.rules = {**self.trace.rules, "beside": bool(changed)}
+            self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+            self.ways = {**self.ways, "beside": bool(changed)}
+
+    def _advance_goals(self, before: Reading, action: dict[str, Any]) -> None:
+        """A move the game took counts towards the level's goals by what the rules say it took off the board:
+        only what the known pieces decide (what new pieces set off is not counted until a screen read shows it)."""
+        goals, model = self.family.rules.get("goals"), self.family.model
+        if not goals or not hasattr(model, "advance"):
+            return
+        try:
+            taken = model.apply(before.state, self.family.rules, action).get("taken", {})
+        except (ValueError, KeyError, IndexError, TypeError):
+            return
+        advanced = model.advance(goals, taken)
+        if advanced != goals:
+            self.trace.rules = {**self.trace.rules, "goals": advanced}
+            self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+
+    def _take_goals(self) -> None:
+        """The level's goals as the screen the model just read shows them (PLAN §23, Y2), for the moves to be
+        chosen by: what each is about is the value of the cells its picture looks like, and how many are left is
+        what the screen showed. A game whose rules have no goals is left as it is."""
+        if "goals" not in self.family.rules or not isinstance(self.adapter, KitAdapter):
+            return
+        goals = self.adapter.goals(self.trace.looks)
+        if goals is None or goals == self.trace.rules.get("goals"):
+            return
+        log.info("the level's goals: %s", goals)
+        self.trace.rules = {**self.trace.rules, "goals": goals}
+        self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+        self.goals_read += 1
 
     # ── one move ──────────────────────────────────────────────────────
 
@@ -584,6 +644,9 @@ class Agent:
         if isinstance(self.adapter, KitAdapter) and effect == "confirmed" and after.by == L3:
             # a move the game took: whether the count of moves left it shows changed with it
             self.adapter.tally(self.adapter.ticked(before.png, after.png))
+        if effect == "confirmed":
+            self._advance_goals(before, action)
+            self._learn_beside(before, action, after)
         self._learn_ways(before, action, effect)
         if after is not None and after.by == L3 and effect == "confirmed":
             await self._settle(after, (before, action))

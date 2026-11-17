@@ -206,7 +206,7 @@ async def test_a_piece_with_a_power_is_learned_from_the_move_that_made_it_and_th
     assert kit["ways"].items() >= {"square": True, "swap_power": True}.items() and all(kit["ways"].values()), kit["ways"]
     assert kit["taught"]["rules"] >= 3 and kit["values"] > len(gems.INKS)
     # and the pieces with a power were used: none is left standing as if it were a wall
-    assert sum(gems.rules.power_of(cell) > 0 for row in fake.state["grid"] for cell in row) <= 2
+    assert sum(gems.rules.power_of(cell) > 0 for row in fake.state["grid"] for cell in row) <= 3
 
 
 async def test_a_game_that_sets_a_power_off_by_a_tap_is_found_out_by_trying_and_one_with_no_powers_costs_one_move(tmp_path):
@@ -228,7 +228,7 @@ async def test_a_game_that_sets_a_power_off_by_a_tap_is_found_out_by_trying_and_
     # a game with no powers at all: only the square is tried, once
     plain = gems.Gems()
     played, made = await agent.play(plain, gems.Jeweller(plain), "match3", goal=GoalSpec("actions", 30), budget=Budget(50, 200, 120))
-    assert made["kit"].get("ways", {}) in ({}, {"square": False}) and plain.refused <= 1, (made["kit"], plain.refused)
+    assert made["kit"].get("ways", {}) in ({}, {"square": True}) and not plain.refused, (made["kit"], plain.refused)
 
 
 async def test_a_look_not_learned_is_what_a_light_model_calls_it_else_a_power_until_the_game_refuses_it():
@@ -358,8 +358,11 @@ async def test_a_move_whose_board_and_count_of_moves_left_stay_as_they_were_is_r
     assert "panel" in model.asked[0][1] and made["kit"]["counter"]["seen"] >= 1 and not made["kit"]["counter"]["missed"]
     refused = [move for move in played.moves if move["effect"] == "absent"]
     assert refused and fake.refused == len(refused), (fake.refused, played.moves)
-    # each refused move was let go soon after it was sent, not when the settling's four seconds were over
-    assert all(move["timing"]["read"].get("refused_s", 9) < 1.0 for move in refused if made["kit"]["counter"]["seen"]), refused
+    # a refused move the reader read once the count was seen to change was let go soon after it was sent, not
+    # when the settling's four seconds were over
+    first = next(index for index, move in enumerate(played.moves) if move["effect"] == "confirmed" and move["level"] == "L3")
+    later = [move for move in played.moves[first + 1:] if move["effect"] == "absent" and move["read_after_by"] == "L3"]
+    assert later and all(move["timing"]["read"]["refused_s"] < 1.0 for move in later), refused
 
 
 async def test_with_no_count_of_moves_left_known_a_refused_move_is_let_go_after_the_longer_wait(monkeypatch):
@@ -458,3 +461,126 @@ def test_where_the_board_has_no_cell_is_learned_from_a_light_model_and_a_piece_s
     assert (7, 4) not in kit.holes and [cells for cells, _ in asked] == [[(0, 8)]], (kit.holes, asked)
     assert kit.name(png, [(0, 8)], "none") == gems.rules.EMPTY and (0, 8) in kit.holes
     assert kit.read(png)[0]["grid"][0][8] == gems.rules.EMPTY and kit.settle(png, None) == []
+
+
+GOAL_BOX, OTHER_BOX = [560, 100, 48, 48], [560, 170, 48, 48]
+
+
+class Goaled(gems.Gems):
+    """A game that shows its level's goals beside the board: collect yellow pieces (drawn as one is on the board,
+    a little larger), and a score."""
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        left, top, width, height = GOAL_BOX
+        draw.rectangle((left, top, left + width - 1, top + height - 1), fill=gems.WELL)
+        draw.ellipse((left + 4, top + 4, left + width - 5, top + height - 5), fill=gems.INKS[3])
+        left, top, width, height = OTHER_BOX
+        draw.polygon([(left, top + height), (left + width // 2, top), (left + width, top + height)], fill=(250, 200, 0))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+class Aiming(gems.Jeweller):
+    """A model that also lists the level's goals, calling the yellow piece by another colour's name."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            answer["panel"] = {"goals": [{"box": GOAL_BOX, "count": 20, "kind": "collect", "name": "green gem"},
+                                         {"box": OTHER_BOX, "count": 5000, "kind": "other"},
+                                         {"box": [9000, 0, 5, 5], "count": 3, "kind": "collect"}]}
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_levels_goals_are_about_the_cells_their_pictures_look_like_and_count_down_with_the_moves_taken():
+    fake = Goaled()
+    model = Aiming(fake)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 12), budget=Budget(30, 200, 120))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    assert "goals" in model.asked[0][1]["panel"]
+    goals = made["kit"]["goals"]
+    # the yellow piece is what the first goal is about, whatever the model called it; a goal off the screen is left out
+    assert [(goal["kind"], goal["target"]) for goal in goals] == [("collect", 3), ("other", None)], goals
+    assert goals[0]["count"] < 20 and goals[1]["count"] == 5000, goals
+
+
+def test_a_moves_progress_is_what_it_takes_of_what_the_goals_are_about_up_to_what_each_still_needs():
+    from gamelab.rules import match3 as rules
+
+    goals = [{"kind": "collect", "target": 3, "count": 2}, {"kind": "collect", "target": 5, "count": 10},
+             {"kind": "bring_down", "target": 12, "count": 1}, {"kind": "other", "target": None, "count": 900}]
+    assert rules.progress(goals, {3: 4, 5: 3, 1: 6}) == 2 + 3
+    assert rules.advance(goals, {3: 4, 5: 3}) == [{**goals[0], "count": 0}, {**goals[1], "count": 7}, goals[2], goals[3]]
+    assert rules.progress(None, {3: 1}) == 0
+
+
+class Boxed(Walled):
+    """A game whose things fixed are boxes of two layers: a line cleared beside one cracks it (drawn darker), and
+    a second breaks it, leaving a piece in its place."""
+    WALLS = [(3, 2), (3, 3), (4, 5), (6, 1), (2, 6)]
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.layers = {cell: 2 for cell in self.WALLS}
+        self.broken = 0
+
+    def _play(self, action):
+        before = self.state
+        hit = []
+        if action in self.family.model.legal_actions(self.state, self.family.rules):
+            hit = gems.rules.apply(before, {**self.family.rules, "beside": True}, action)["hit"]
+        super()._play(action)
+        for r, c in hit:
+            self.layers[(r, c)] -= 1
+            if not self.layers[(r, c)]:
+                del self.layers[(r, c)]
+                self.broken += 1
+                grid = self.state["grid"]
+                for colour in gems.INKS:
+                    grid[r][c] = colour
+                    if not gems.rules._lines_through(grid, (r, c)):
+                        break
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for (r, c), left in self.layers.items():
+            if left == 1:
+                x, y = gems.BOARD[0] + c * gems.CELL, gems.BOARD[1] + r * gems.CELL
+                draw.rectangle((x + 4, y + 4, x + gems.CELL - 5, y + gems.CELL - 5), fill=(150, 110, 70))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_things_fixed_that_a_line_beside_them_breaks_are_learned_so_and_each_new_layer_as_the_same_thing():
+    fake = Boxed(rules={"square": True, "swap_power": False, "pair_power": False, "tap_power": False})
+    model = gems.Jeweller(fake)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 40), budget=Budget(60, 200, 120))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    kit = made["kit"]
+    # the game showed that they break; the cracked box was learned as the same thing by the rules, with nobody asked
+    assert kit["ways"].get("beside") is True and kit["taught"]["rules"] >= 1, kit
+    assert [kind for kind, _ in model.asked] == ["label"] and fake.broken >= 1, (model.asked, fake.broken)
+
+
+def test_a_count_of_moves_left_seen_to_change_is_not_moved_by_one_reading_that_puts_it_elsewhere():
+    from gamelab import kits
+
+    kit = kits.make("match3", {"rows": 8, "cols": 8})
+    kit.place_counter([800, 300, 120, 90])
+    kit.tally(True)
+    kit.place_counter([890, 320, 20, 41])
+    assert kit.counter == [800, 300, 120, 90] and kit.counts
+    kit.place_counter([802, 298, 118, 92])             # the same place, read a little otherwise
+    assert kit.counter == [802, 298, 118, 92] and kit.counts

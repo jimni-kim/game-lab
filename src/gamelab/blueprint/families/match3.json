@@ -119,6 +119,54 @@
           "null"
         ]
       }
+    },
+    "goals": {
+      "description": "the level's goals as the screen showed them: each its kind (collect, bring_down, other), the value of the cells it is about (null when nothing on the board looks like its picture) and how many are still to go; null until a screen showed them",
+      "values": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "type": "object",
+          "required": [
+            "kind",
+            "target",
+            "count"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "collect",
+                "bring_down",
+                "other"
+              ]
+            },
+            "target": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "beside": {
+      "description": "whether something fixed that is no piece (an obstacle, a box) is broken, a layer at a time, by a line cleared beside it; null until the game showed it",
+      "values": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
     }
   },
   "discovery": {
@@ -148,7 +196,8 @@
     },
     "tolerance": 4,
     "panel": {
-      "moves": "the tight box [left, top, width, height] in whole-screen image pixels around the number of moves (or the time) left in this level, the digits alone"
+      "moves": "the tight box [left, top, width, height] in whole-screen image pixels around the number of moves (or the time) left in this level, the digits alone",
+      "goals": "a list with one entry per goal of the level the screen shows (beside or above the board): {\"box\": the tight box [left, top, width, height] in whole-screen image pixels around the goal's picture alone, \"count\": the number shown with it, how many are still to go (0 when it shows a tick), \"kind\": \"collect\" (clear or collect that many of the thing pictured), \"bring_down\" (bring the thing pictured to the bottom of the board) or \"other\" (a score to reach, or anything else)}"
     }
   },
   "policies": [

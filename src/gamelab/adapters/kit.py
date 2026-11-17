@@ -96,6 +96,20 @@ class KitAdapter:
                 return True
         return False
 
+    def struck(self, before: bytes, after: bytes, cells: list[list[int]]) -> bool | None:
+        """Whether things the rules say a move hit look otherwise after it (`kits.match3`); None when nothing tells."""
+        struck = getattr(self.kit, "struck", None)
+        return struck(before, after, cells) if struck is not None else None
+
+    def goals(self, looks: list[Any]) -> list[dict[str, Any]] | None:
+        """The level's goals as the last look a model read listed them, each with the value of the cells its
+        picture looks like; None when that look lists none or the family's reader has no goals."""
+        goals = getattr(self.kit, "goals", None)
+        for look in reversed(looks[-1:]):
+            if goals is not None and isinstance(look.panel, dict) and isinstance(look.panel.get("goals"), list):
+                return goals(look.png, look.panel["goals"])
+        return None
+
     def ticked(self, before: bytes, png: bytes) -> bool | None:
         """Whether the number of moves left the game shows changed from one screen to the other (`Grid.ticked`);
         None when nothing tells."""

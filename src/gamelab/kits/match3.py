@@ -25,12 +25,17 @@ from __future__ import annotations
 from typing import Any
 
 from ..rules.match3 import AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, power_of
-from .grid import CHANGED_SHARE, Looks, Valued, fit, groups, open_picture
+from .grid import CHANGED_SHARE, Looks, Valued, distance, fit, groups, look, open_picture
 
 # a reading agrees with a model's when this share of the cells both call pieces are gathered alike by both
 ALIKE = 0.9
 # moves refused that needed a kind swapped which no move ever moved, after which the kind is no piece
 DOUBTS = 2
+# a goal's picture is the value of the cells it looks like (PLAN §23, Y2): it is compared cut this share in from
+# each side (a picture drawn larger or smaller than a cell), and is that value when it is within this many times
+# `near` of its looks and no other value's are within `apart` further
+GOAL_INSETS, GOAL_NEAR = (0.2, 0.3, 0.4), 1.8
+GOAL_KINDS = ("collect", "bring_down", "other")
 # a piece with a power of a kind nobody knows: what a look not learned yet reads as
 UNKNOWN = POWERED * POWER
 # what a light model may call a cell it is shown, and the value each is
@@ -210,6 +215,62 @@ class Match3Kit(Valued):
                 self.doubted.pop(value, None)
                 learned = True
         return learned
+
+    def struck(self, before: bytes, after: bytes, cells: list[list[int]]) -> bool | None:
+        """Whether things fixed the rules say a move's lines hit beside them look otherwise once the board is at
+        rest (PLAN §23, Y3): one hit and broken a layer shows its next layer, or what took its place. A look not
+        known that one now shows is that thing's next layer, learned so. None when nothing tells."""
+        one, other = self._shown(before), self._shown(after)
+        if one is None or other is None or not cells:
+            return None
+        boxes = {(r, c): box for r, c, box in self._cells()}
+        changed = False
+        for cell in cells:
+            box = boxes.get(tuple(cell))
+            if box is None or tuple(cell) in self.holes:
+                continue
+            was, now = self._look(one, box), self._look(other, box)
+            if distance(was, now) <= self.near:
+                continue
+            changed = True
+            if self.looks.name(now)[0] is None:
+                self.looks.add(BLOCK, now)
+                self.taught["rules"] += 1
+        return changed
+
+    # ── a level's goals ───────────────────────────────────────────────
+
+    def goals(self, png: bytes, listed: Any) -> list[dict[str, Any]] | None:
+        """A level's goals as a model listed them beside the board (each its kind, its count and the box of its
+        picture), each with the value of the cells its picture looks like (`target`), or None when it looks like
+        none clearly: what a goal is about is told by the looks the board was learned by, not by what a model
+        calls it. None when the list is no list of goals."""
+        image = self._shown(png)
+        if image is None or not isinstance(listed, list):
+            return None
+        found = []
+        for thing in listed:
+            if not isinstance(thing, dict) or thing.get("kind") not in GOAL_KINDS:
+                continue
+            count = thing.get("count")
+            count = count if type(count) is int and count >= 0 else None
+            target = self._pictured(image, thing["box"]) if thing["kind"] != "other" else None
+            found.append({"kind": thing["kind"], "target": target, "count": count})
+        return found
+
+    def _pictured(self, image: Any, box: list[int]) -> int | None:
+        """The value whose looks a picture beside the board has, at whichever cut of it is nearest."""
+        far: dict[Any, float] = {}
+        for inset in GOAL_INSETS:
+            seen = look(image, box, inset, self.side)
+            for value in self.looks.kept:
+                far[value] = min(far.get(value, 255.0), self.looks.far(seen, value))
+        ranked = sorted((distance_, value) for value, distance_ in far.items() if value != EMPTY)
+        if not ranked or ranked[0][0] > GOAL_NEAR * self.near:
+            return None
+        if len(ranked) > 1 and ranked[1][0] - ranked[0][0] < self.apart:
+            return None
+        return ranked[0][1]
 
     def to_json(self) -> dict[str, Any]:
         return {**super().to_json(), "holes": sorted(self.holes), "proven": sorted(self.proven)}
