@@ -15,6 +15,9 @@ from test_adaptation import Author
 import test_adaptation_match3 as gems
 import test_adaptation_mines as mines
 
+# the reader as it is made, before a test gives it the settling it plays by
+KIT_INIT = KitAdapter.__init__
+
 
 @pytest.fixture(autouse=True)
 def quick(monkeypatch):
@@ -297,3 +300,161 @@ async def test_a_thing_a_model_calls_a_piece_that_the_game_never_lets_be_swapped
     # (the model read the first screen only), and the game went on with the thing read as something fixed
     assert fake.refused <= 3 and [kind for kind, _ in fooled.asked] == ["label"], (fake.refused, fooled.asked)
     assert made["kit"]["values"] == len(gems.INKS) + 1
+
+
+COUNTER = [20, 20, 90, 40]
+
+
+def settle_slowly(monkeypatch):
+    """A settling whose time is over long after a refused move is let go."""
+    settling = {"timeout_s": 4.0, "interval_s": 0.02, "stable_s": 0.05}
+    monkeypatch.setattr(KitAdapter, "__init__", lambda self, *a, **k: KIT_INIT(self, *a, **{**k, "settling": settling}))
+
+
+class Counted(gems.Gems):
+    """A game that shows beside its board how many moves are left: a number drawn as a shade of its own."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.left = 40
+
+    def _play(self, action):
+        taken = len(self.swaps) + len(self.pops)
+        super()._play(action)
+        self.left -= len(self.swaps) + len(self.pops) - taken
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        left, top, width, height = COUNTER
+        shade = 60 + self.left * 97 % 190
+        ImageDraw.Draw(image).rectangle((left, top, left + width, top + height), fill=(shade, shade, shade))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+class Counting(gems.Jeweller):
+    """A model that also says where the game shows the moves left."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            answer["panel"] = {"moves": COUNTER}
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_move_whose_board_and_count_of_moves_left_stay_as_they_were_is_refused_without_waiting_out_the_settling(monkeypatch):
+    settle_slowly(monkeypatch)
+    monkeypatch.setattr(agent, "REFUSED_S", 0.2)
+    fake = Counted(powers=True, rules=WAYS["tap"])
+    model = Counting(fake)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 30), budget=Budget(50, 200, 120))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    # the model was asked where the count is, and it was seen to change with the moves the game took
+    assert "panel" in model.asked[0][1] and made["kit"]["counter"]["seen"] >= 1 and not made["kit"]["counter"]["missed"]
+    refused = [move for move in played.moves if move["effect"] == "absent"]
+    assert refused and fake.refused == len(refused), (fake.refused, played.moves)
+    # each refused move was let go soon after it was sent, not when the settling's four seconds were over
+    assert all(move["timing"]["read"].get("refused_s", 9) < 1.0 for move in refused if made["kit"]["counter"]["seen"]), refused
+
+
+async def test_with_no_count_of_moves_left_known_a_refused_move_is_let_go_after_the_longer_wait(monkeypatch):
+    settle_slowly(monkeypatch)
+    monkeypatch.setattr(agent, "ABSENT_S", 0.5)
+    fake = gems.Gems(powers=True, rules=WAYS["tap"])
+    played, made = await agent.play(fake, gems.Jeweller(fake), "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120))
+    refused = [move for move in played.moves if move["effect"] == "absent"]
+    assert played.record["outcome"] == "goal_reached" and refused and "counter" not in made["kit"], (played.record, made)
+    assert all(0.5 <= move["timing"]["read"]["refused_s"] < 1.5 for move in refused), refused
+
+
+class Wide(gems.Gems):
+    """A board nine cells wide with no cell at the ends of its two top rows, and no lines between its cells: what
+    shows where it has no cell is the page."""
+    HOLES = [(0, 0), (1, 0), (0, 8), (1, 8)]
+
+    def __init__(self, **options):
+        super().__init__(rules={"square": False, "swap_power": False, "pair_power": False, "tap_power": False, "rows": 8, "cols": 9}, **options)
+        for r, c in self.HOLES:
+            self.state["grid"][r][c] = gems.rules.EMPTY
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for r, c in self.HOLES:
+            x, y = gems.BOARD[0] + c * gems.CELL, gems.BOARD[1] + r * gems.CELL
+            draw.rectangle((x, y, x + gems.CELL - 1, y + gems.CELL - 1), fill=gems.PAGE)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+class Narrow(gems.Jeweller):
+    """A model that reads the wide board as its seven middle columns, box and all, unless shown a grid to read by."""
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        self.asked.append(("label", context))
+        grid = self.fake.state["grid"]
+        left, top, width, height = gems.BOARD[0], gems.BOARD[1], 9 * gems.CELL, 8 * gems.CELL
+        if "board" not in context:
+            grid = [row[1:8] for row in grid]
+            left, width = left + gems.CELL, 7 * gems.CELL
+        return gems.TurnResult(text=json.dumps({
+            "screen": "board", "board": [left + 2, top - 1, width - 3, height + 2], "rules": {"rows": len(grid), "cols": len(grid[0])},
+            "state": {"grid": grid, "score": None, "scene": "playing"}}))
+
+
+async def test_a_board_read_narrower_than_it_is_is_counted_by_the_looks_of_its_pieces_and_read_again_by_that_grid():
+    fake = Wide()
+    model = Narrow(fake)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    # asked twice: once with no grid (it read seven columns), once with the nine the pieces lay out drawn
+    assert [kind for kind, _ in model.asked] == ["label", "label"] and "board" in model.asked[1][1], model.asked
+    # the only move refused tried four in a square, which this game does not take
+    assert fake.refused <= 1 and made["kit"].get("ways", {}) in ({}, {"square": False}), (fake.refused, made["kit"])
+    assert [move["effect"] for move in played.moves].count("confirmed") >= 19
+
+
+def test_a_reader_counts_a_board_by_the_looks_it_knows_and_grows_it_by_the_lines_beside_that_hold_them():
+    import asyncio
+    from gamelab import kits
+
+    fake = Wide()
+    png = asyncio.run(fake.capture())
+    narrow = {"grid": [row[1:8] for row in fake.state["grid"]], "score": None, "scene": "playing"}
+    left, top = gems.BOARD[:2]
+    box, rows, cols = kits.survey("match3", {}, png, [left + gems.CELL, top, 7 * gems.CELL, 8 * gems.CELL], narrow)
+    assert (rows, cols) == (8, 9) and all(abs(one - other) <= gems.CELL // 4 for one, other in zip(box, [left, top, 9 * gems.CELL, 8 * gems.CELL])), box
+    # a reading of the right count is left as it is
+    whole = {"grid": fake.state["grid"], "score": None, "scene": "playing"}
+    assert kits.survey("match3", {}, png, [left, top, 9 * gems.CELL, 8 * gems.CELL], whole)[1:] == (8, 9)
+    assert kits.survey("slide_merge", {}, png, [left, top, 9 * gems.CELL, 8 * gems.CELL], whole) is None
+
+
+def test_where_the_board_has_no_cell_is_learned_from_a_light_model_and_a_piece_shown_there_makes_it_a_cell():
+    import asyncio
+    from gamelab import kits
+
+    fake = Wide()
+    png = asyncio.run(fake.capture())
+    kit = kits.make("match3", {"rows": 8, "cols": 9})
+    said = [list(row) for row in fake.state["grid"]]
+    said[7][4] = gems.rules.EMPTY                # a reading that called a cell at the bottom none
+    left, top = gems.BOARD[:2]
+    assert kit.calibrate(png, [left, top, 9 * gems.CELL, 8 * gems.CELL], {"grid": said, "score": None, "scene": "playing"})
+    assert kit.holes == {*Wide.HOLES, (7, 4)}
+    kit.holes.discard((0, 8))                    # and one that left a place with no cell out
+    asked = kit.settle(png, None)
+    # the piece at the bottom is a cell after all, and the place at the end of the top row is asked about
+    assert (7, 4) not in kit.holes and [cells for cells, _ in asked] == [[(0, 8)]], (kit.holes, asked)
+    assert kit.name(png, [(0, 8)], "none") == gems.rules.EMPTY and (0, 8) in kit.holes
+    assert kit.read(png)[0]["grid"][0][8] == gems.rules.EMPTY and kit.settle(png, None) == []

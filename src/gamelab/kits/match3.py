@@ -4,7 +4,9 @@ The rules ask only which cells hold the same kind of piece, so a piece's value i
 no name is needed: on the first screen a model read, the cells it called pieces are gathered by what they look
 like, and each kind takes the number the model gave most of its cells (so that what the model read and what is
 read here go together), or a free one. A model that calls two kinds one colour, or one kind two, is thereby set
-right by the screen itself. Where the board has no cell (a board that is no rectangle) is where the first reading said so.
+right by the screen itself. Where the board has no cell (a board that is no rectangle) is where the first reading said so,
+or a light model shown the place; one that shows a piece on a board at rest is a cell after all. A reading whose
+pieces lay out a board of another count than it read is read again by that count (`grid.Valued.survey`).
 
 What the rules ask of a cell is what it does (`rules.match3`): whether it is swapped, falls, lines up, has a
 power. A look not learned yet is learned for what it does, in this order (`settle`):
@@ -39,7 +41,8 @@ ASKED = {"line": ("a piece with a power that clears a row or a column: a striped
          "power": ("a piece with some other power", UNKNOWN),
          "fixed": ("something that is no piece and stays where it is: an obstacle, a box, a covered or locked cell", BLOCK),
          "loose": ("something that is no piece but falls like one", LOOSE),
-         "piece": ("an ordinary piece like the others on the board, with no power", None)}
+         "piece": ("an ordinary piece like the others on the board, with no power", None),
+         "none": ("no cell of the board: the background or the page around the board shows there", EMPTY)}
 
 
 class Match3Kit(Valued):
@@ -53,6 +56,8 @@ class Match3Kit(Valued):
     # what comes in from above is the game's: a screen is taken when it has come to rest, not as soon as it shows
     # what the rules foresee
     foresees = False
+    # a board with no lines between its cells is counted by the looks of its pieces (`survey`)
+    surveys = True
 
     def __init__(self, rules: dict[str, Any]) -> None:
         super().__init__(rules["rows"], rules["cols"])
@@ -125,6 +130,11 @@ class Match3Kit(Valued):
         image = self._shown(png)
         if image is None:
             return []
+        # a place taken for one where the board has no cell that shows a piece on a board at rest is a cell (a
+        # reading that called a cell at the board's edge none)
+        for r, c, box in self._cells():
+            if (r, c) in self.holes and self._plain(self.looks.name(self._look(image, box))[0]):
+                self.holes.discard((r, c))
         told = prior.get(self.field) if isinstance(prior, dict) else None
         if self._shaped(told):
             for r, c, box in self._cells():
@@ -146,6 +156,11 @@ class Match3Kit(Valued):
         if image is None:
             return None
         value = ASKED[key][1] if key in ASKED else UNKNOWN
+        if value == EMPTY:
+            # where the board has no cell: what shows there differs from place to place and is nothing to learn
+            self.holes.update(tuple(cell) for cell in cells)
+            self.taught["light"] = self.taught.get("light", 0) + len(cells)
+            return value
         if key == "piece":
             free = [number for number in range(1, len(COLOURS) + 1) if number not in self.looks.kept]
             value = free[0] if free else UNKNOWN

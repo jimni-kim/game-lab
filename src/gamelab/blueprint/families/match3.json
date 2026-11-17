@@ -1,6 +1,6 @@
 {
   "id": "match3",
-  "revision": 3,
+  "revision": 4,
   "summary": "A grid of pieces of a few colours, not always a rectangle. Each move swaps two neighbouring pieces so that three or more of one colour stand in a line. Those are removed, the pieces above fall and new ones come in at the top; lines that form as they fall are removed too. A swap that lines nothing up is undone. A cell may hold something that is not a piece (an obstacle): it is never swapped and lines up with nothing. A move that lines up four or more, or four in a square, leaves a piece with a power, which clears more when it is lined up, swapped or tapped.",
   "state_schema": "match3.v1",
   "board": {
@@ -146,7 +146,10 @@
       "animation_s": 0.5,
       "still": true
     },
-    "tolerance": 4
+    "tolerance": 4,
+    "panel": {
+      "moves": "the tight box [left, top, width, height] in whole-screen image pixels around the number of moves (or the time) left in this level, the digits alone"
+    }
   },
   "policies": [
     "first",

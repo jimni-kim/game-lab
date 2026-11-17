@@ -1,6 +1,8 @@
 """An Android device or emulator as a surface, driven with adb alone.
 
-A look is `adb exec-out screencap -p`; inputs are `adb shell input tap | swipe | keyevent | text`, and a pointer
+A look is `adb exec-out screencap -p`, or on an emulator its console's own screenshot (`adb emu screenrecord
+screenshot`), which takes about a tenth of a second where `screencap` took two (2026-11-17, `game-lab` at
+1080×2400 under software rendering: 0.1 s against 1.8 to 2.7 s, the same picture); inputs are `adb shell input tap | swipe | keyevent | text`, and a pointer
 held, moved and let go is `input motionevent DOWN | MOVE | UP` (a stroke's whole way sent as one shell line, so
 it is not slowed by a round trip a point). Coordinates are the device's own pixels, as its captures show them.
 Nothing is installed on the device.
@@ -15,6 +17,7 @@ from io import BytesIO
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Awaitable, Callable
 
 from .. import pixels
@@ -95,6 +98,8 @@ class AndroidSurface:
     def __init__(self, run: Run | None = None, *, package: str | None = None, keys: bool = False,
                  serial: str | None = None) -> None:
         self.run = run or command(serial)
+        # an emulator is captured by its console, until that fails once
+        self.console = serial is not None and serial.startswith("emulator-")
         # the app the game is, when the caller knows it; else whichever has the focus when asked
         self.package = package
         self.name = f"android:{serial or 'device'}"
@@ -115,10 +120,13 @@ class AndroidSurface:
     async def capture(self, region: list[int] | None = None) -> bytes:
         from PIL import Image
 
-        try:
-            raw = await self.run(["exec-out", "screencap", "-p"])
-        except RuntimeError as error:
-            raise ValueError("capture_failed") from error
+        raw = await self._console_capture() if self.console else None
+        if raw is None:
+            self.console = False
+            try:
+                raw = await self.run(["exec-out", "screencap", "-p"])
+            except RuntimeError as error:
+                raise ValueError("capture_failed") from error
         if not raw.startswith(PNG_SIGNATURE):
             raise ValueError("capture_failed")
         # a device's capture carries an alpha channel the readers refuse: the picture as plain RGB
@@ -133,6 +141,19 @@ class AndroidSurface:
                 if out.tell() <= pixels.MAX_IMAGE_BYTES:
                     break
         return out.getvalue()
+
+    async def _console_capture(self) -> bytes | None:
+        """The emulator's screen as its console takes it, written to a file here; None when it could not."""
+        handle, path = tempfile.mkstemp(suffix=".png")
+        os.close(handle)
+        try:
+            said = await self.run(["emu", "screenrecord", "screenshot", path])
+            raw = Path(path).read_bytes()
+        except (RuntimeError, OSError):
+            return None
+        finally:
+            Path(path).unlink(missing_ok=True)
+        return raw if b"OK" in said and raw.startswith(PNG_SIGNATURE) else None
 
     async def elements(self, queries: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None

@@ -91,8 +91,23 @@ class KitAdapter:
         """Learn the screen from the last look a model read that it can be learned from. False when none."""
         for look in reversed(looks[-3:]):
             if self.kit.calibrate(look.png, look.board, look.state, look.sources):
+                if isinstance(look.panel, dict) and look.panel.get("moves"):
+                    self.kit.place_counter(look.panel["moves"])
                 return True
         return False
+
+    def ticked(self, before: bytes, png: bytes) -> bool | None:
+        """Whether the number of moves left the game shows changed from one screen to the other (`Grid.ticked`);
+        None when nothing tells."""
+        return self.kit.ticked(before, png)
+
+    @property
+    def counts(self) -> bool:
+        """Whether the game's count of moves left is known to change with each move it takes."""
+        return self.kit.counts
+
+    def tally(self, ticked: bool | None) -> None:
+        self.kit.tally(ticked)
 
     def agrees(self, look: Any) -> bool:
         """Whether a look a model read is read the same here."""

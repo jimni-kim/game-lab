@@ -254,6 +254,13 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 12
+        },
+        "panel": {
+          "type": "object",
+          "description": "what a model reading a screen is asked to give of what the game shows beside the board, each by its name with what to give for it",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     }

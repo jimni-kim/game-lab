@@ -112,6 +112,8 @@ class Look:
     # for a game played by drags: the box around each thing that may be dragged, in the order of the state
     # field that lists them (None where the entry is empty), as the model gave them
     sources: list[list[int] | None] | None = None
+    # what the game shows beside the board, as the model gave it of what the family asks (`discovery.panel`)
+    panel: dict[str, Any] | None = None
 
 
 @dataclass
@@ -284,6 +286,8 @@ class Adaptation:
         self.first: tuple[bytes, dict[str, Any], list[int], dict[str, Any]] | None = None
         # where the last screen read shows each thing that may be dragged (`Look.sources`)
         self.sources: list[list[int] | None] | None = None
+        # what the last screen read shows beside the board (`Look.panel`)
+        self.panel: dict[str, Any] | None = None
         # the last reading refused as no result of the move just played (`accept`): what the screen was read as
         self.refused: dict[str, Any] | None = None
         # set by who plays a family that has a reader of its own (`kits`). `arrange`: the things a reading lists
@@ -294,6 +298,10 @@ class Adaptation:
         # believed only when the count agrees with it
         self.arrange: Any = None
         self.gauge: Any = None
+        # `survey`: the board's box, rows and columns as the looks of its cells lay them out, learned from one
+        # reading of a screen (None when that cannot tell): a reading of another count is read again with that
+        # count's grid drawn, and believed only when it then has that count
+        self.survey: Any = None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
         self.compute = compute
@@ -312,7 +320,8 @@ class Adaptation:
         shown, scale = view(png)
         context = {"family": self.descriptor, **({"board": [round(value * scale) for value in board]} if board else {}),
                    **({"sources": self.controls["source"]} if "source" in self.controls else {}),
-                   **({"places": self.controls["places"]} if "places" in self.controls else {})}
+                   **({"places": self.controls["places"]} if "places" in self.controls else {}),
+                   **({"panel": self.descriptor["discovery"]["panel"]} if "panel" in self.descriptor.get("discovery", {}) else {})}
         content = [{"type": "text", "text": json.dumps(context)}, _image(shown)]
         if board and shape:
             content.append(_image(overlay(png, board, *shape)))
@@ -329,6 +338,8 @@ class Adaptation:
             answer["board"] = whole(answer.get("board"))
             if isinstance(answer.get("sources"), list):
                 answer["sources"] = [whole(box) for box in answer["sources"]]
+            if isinstance(answer.get("panel"), dict):
+                answer["panel"] = {name: whole(value) for name, value in answer["panel"].items()}
         return answer
 
     async def _read(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
@@ -379,13 +390,15 @@ class Adaptation:
 
     async def _label(self, surface: Surface, board: list[int] | None, rules: dict[str, Any] | None,
                      accept: Any = None, retries: int = LABEL_RETRIES, patient: bool = True,
-                     prior: dict[str, Any] | None = None) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
+                     prior: dict[str, Any] | None = None, anew: bool = False
+                     ) -> tuple[bytes, dict[str, Any], list[int], dict[str, Any]]:
         """One screen read by the model into a state the rule model accepts whole (and `accept`, when given,
         takes as the last move's result); asked again on a fresh capture when it is not. `patient` off: a
         screen the model says shows no board is not asked about again (the caller has another way past it).
         `prior`: what is already known of this screen (the rules' prediction of the move just played, else the
         last state read); a value the model leaves unread takes the prior's, so a thing half hidden now (a card
-        another was laid on) is not lost for want of a second reading."""
+        another was laid on) is not lost for want of a second reading. `anew`: the board is likely another than
+        the one the game had (most of its cells looked like nothing known): the screen is shown with no grid drawn."""
         problem = "no_board"
         for _ in range(1 + retries):
             png = await surface.capture()
@@ -397,7 +410,8 @@ class Adaptation:
             # a screen whose board counts out to another size than the game had is shown with no grid drawn on
             # it: the board may be another now
             counted = self.gauge(png, board) if rules is not None and board and self.gauge is not None else None
-            loose = counted is not None and "rows" in rules and counted != (rules["rows"], rules["cols"])
+            loose = anew and board is not None or (
+                counted is not None and "rows" in rules and counted != (rules["rows"], rules["cols"]))
             answer = await self.label(png, None if loose else board, None if loose else shape)
             if answer is None:
                 problem = "no_board"
@@ -416,14 +430,21 @@ class Adaptation:
             if check_layout({"board": found}, size) is None:
                 problem = "board_off_screen"
                 continue
+            surveyed = await self._surveyed(png, answer, found)
+            if surveyed is not None and surveyed[0] is not answer:
+                # read again with the grid the looks lay out drawn: that grid's box is the board's
+                answer, found, loose = surveyed[0], surveyed[1], True
             chosen = rules if rules is not None else self._rules(answer.get("rules"))
             if chosen is None:
                 problem = "rules_refused"
                 continue
             if rules is None:
                 chosen = self._counted(chosen, answer)
+                if surveyed is not None and "rows" in chosen:
+                    chosen = {**chosen, "rows": surveyed[2][0], "cols": surveyed[2][1]}
             self._arranged(answer, chosen)
-            resized = rules is not None and (chosen := self._resized(rules, answer, found, loose, png)) != rules
+            resized = rules is not None and (chosen := self._resized(
+                rules, answer, found, loose, png, surveyed[2] if surveyed is not None else None)) != rules
             family = catalog.family(self.family_id).bind({"rules": chosen})
             # the board is what is learned here: a score read off the page (in the site's own counting) would
             # only make a right board look like a wrong move
@@ -450,9 +471,32 @@ class Adaptation:
                 if self.sources is None:
                     problem = "places_refused"
                     continue
+            self.panel = self._panel(answer.get("panel"), size)
             self.told.append(self._told(answer.get("rules")))
             return png, state.payload, found, chosen
         raise AdaptationFailed("label_failed", problem)
+
+    async def _surveyed(self, png: bytes, answer: dict[str, Any], found: list[int]
+                        ) -> tuple[dict[str, Any], list[int], tuple[int, int]] | None:
+        """The count of rows and columns the looks of a reading's cells lay out (`survey`), with the reading that
+        has it and its box: this one when it has that count; when it has another, the screen read again with that
+        count's grid drawn where the looks put it, if that reading has it. None when nothing tells or the second
+        reading does not have the count either."""
+        grid = _grid(answer["state"]) if isinstance(answer.get("state"), dict) else None
+        if self.survey is None or grid is None:
+            return None
+        seen = self.survey(png, found, answer["state"])
+        if seen is None:
+            return None
+        if (seen[1], seen[2]) == (len(grid), len(grid[0])):
+            return answer, found, (seen[1], seen[2])
+        log.info("the cells lay out %sx%s where the reading has %sx%s: read again", seen[1], seen[2], len(grid), len(grid[0]))
+        again = await self.label(png, seen[0], (seen[1], seen[2]))
+        regrid = _grid(again["state"]) if again is not None and isinstance(again.get("state"), dict) else None
+        if regrid is None or (len(regrid), len(regrid[0])) != (seen[1], seen[2]) \
+                or any(len(row) != seen[2] for row in regrid):
+            return None
+        return again, seen[0], (seen[1], seen[2])
 
     def _sources(self, seen: Any, state: dict[str, Any], size: list[int]) -> list[list[int] | None] | None:
         """The boxes the model gave for the things that may be dragged, when there is one on the screen for
@@ -495,7 +539,7 @@ class Adaptation:
             answer["sources"] = placed[1]
 
     def _resized(self, rules: dict[str, Any], answer: dict[str, Any], box: list[int], loose: bool,
-                 png: bytes | None = None) -> dict[str, Any]:
+                 png: bytes | None = None, surveyed: tuple[int, int] | None = None) -> dict[str, Any]:
         """The game's rule values as this reading shows them, when it shows a board of another size or more places
         for dragged things than the game had: `rules` themselves when it shows neither or may not be believed.
         A board of another size is believed only on a screen read with no grid drawn on it (`loose`), when its
@@ -508,7 +552,7 @@ class Adaptation:
                 and all(isinstance(row, list) and len(row) == len(grid[0]) for row in grid) and grid[0] \
                 and (len(grid), len(grid[0])) != (rules["rows"], rules["cols"]):
             across, down = box[2] / len(grid[0]), box[3] / len(grid)
-            counted = self.gauge(png, box) if self.gauge is not None and png is not None else None
+            counted = surveyed or (self.gauge(png, box) if self.gauge is not None and png is not None else None)
             if 1 / SQUARE <= across / down <= SQUARE and counted == (len(grid), len(grid[0])):
                 new["rows"], new["cols"] = len(grid), len(grid[0])
         count, listed, boxes = controls.get("count"), state.get(controls.get("source", "")), answer.get("sources")
@@ -536,6 +580,17 @@ class Adaptation:
         if not isinstance(seen, dict) or set(seen) != set(self.controls["places"]):
             return None
         return seen if all(boxes(value) for value in seen.values()) else None
+
+    def _panel(self, seen: Any, size: list[int]) -> dict[str, Any] | None:
+        """What the model gave of what the family asks to be shown beside the board: each name it asks for that
+        came as a box on the screen (a name given otherwise is left out). None when the family asks nothing."""
+        from .adapters.generated import _box
+
+        asked = self.descriptor.get("discovery", {}).get("panel")
+        if not asked:
+            return None
+        seen = seen if isinstance(seen, dict) else {}
+        return {name: seen[name] for name in asked if _box(seen.get(name), size)}
 
     def _unknowable(self) -> list[str]:
         """The rule values a game may be played without knowing: those the family lets be null."""
@@ -598,7 +653,7 @@ class Adaptation:
             if action is None or action["kind"] in family.meta_actions:
                 break
             sent = self.input_for(action, board, _shape(family, state), state, self.sources)
-            trace.looks.append(Look(png, state, board, action, sent, frames=self.frames, sources=self.sources))
+            trace.looks.append(Look(png, state, board, action, sent, frames=self.frames, sources=self.sources, panel=self.panel))
             await self._send(surface, sent)
             await asyncio.sleep(SETTLE_S)
             before = state
@@ -606,7 +661,7 @@ class Adaptation:
             # moves reveal what was hidden, `assess` is what the rules can say of it (the cells a move may open)
             png, state, _, _ = await self._read(surface, board, rules, accept=lambda after: family.model.assess(
                 before, action, after, family.rules)["effect"] == "confirmed")
-        trace.looks.append(Look(png, state, board, frames=self.frames, sources=self.sources))
+        trace.looks.append(Look(png, state, board, frames=self.frames, sources=self.sources, panel=self.panel))
         if len(trace.looks) <= HELD_BACK + 2:
             raise AdaptationFailed("game_ended" if over else "game_too_short",
                                    f"{len(trace.looks) - 1} moves were played before the game ended" if over else "")
@@ -629,7 +684,7 @@ class Adaptation:
                 accept=None if partial is None else lambda read: _agrees(_board(partial), _board(read)))
         except AdaptationFailed:
             return None
-        return Look(png, state, board, frames=self.frames, sources=self.sources)
+        return Look(png, state, board, frames=self.frames, sources=self.sources, panel=self.panel)
 
     # ── generate and adopt ────────────────────────────────────────────
 

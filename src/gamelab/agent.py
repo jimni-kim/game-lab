@@ -65,6 +65,11 @@ RETRY_LOOKS, RETRIES = 12, 2
 # a game that must be still but whose pixels never rest is settled once its state has read the same this long;
 # a screen the adapter leaves unread the same way this long is not waited on further
 RESTLESS_S = 1.0
+# a family's own reader takes a board at rest when it read the same this many frames in a row (a piece still moving
+# reads as none, so a board read whole and alike that often is not one caught between two falls). A move whose
+# result reads as the board it was played from is one the game did not take once the count of moves left the game
+# shows has not changed this long after it was sent; when no such count is known, once this longer time is over
+SAME_READS, REFUSED_S, ABSENT_S = 3, 1.5, 3.0
 # after its trial moves a still game waits the longest of them plus this margin, then looks once
 ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
@@ -418,6 +423,7 @@ class Agent:
                 self.adaptation.arrange = lambda things: self.adapter.arrange(things) \
                     if isinstance(self.adapter, KitAdapter) else None
                 self.adaptation.gauge = lambda png, box: kits.count(self.family_id, png, box)
+                self.adaptation.survey = lambda png, box, state: kits.survey(self.family_id, {}, png, box, state)
         except AdaptationFailed as error:
             raise _End(Outcome.UNSUPPORTED, error.reason, error.detail) from None
         except ValueError as error:
@@ -575,6 +581,9 @@ class Agent:
             self.carried, self.state = after, after.state
             return
         effect = "unknown" if after is None else self._effect(before.state, action, after.state)
+        if isinstance(self.adapter, KitAdapter) and effect == "confirmed" and after.by == L3:
+            # a move the game took: whether the count of moves left it shows changed with it
+            self.adapter.tally(self.adapter.ticked(before.png, after.png))
         self._learn_ways(before, action, effect)
         if after is not None and after.by == L3 and effect == "confirmed":
             await self._settle(after, (before, action))
@@ -882,6 +891,8 @@ class Agent:
         self.read_told = told = {"frames": 0, "drawn_through": 0, "by": "kit" if kit else "adapter"}
         began = clock()
         dealt = False
+        # frames in a row that read the same, and whether the count of moves left changed since the move was sent
+        same_reads, ticked = 0, False
         if kit:
             # what the rules say the move left: it fills what the screen leaves unclear
             prior = self._prior(expect) if expect is not None else None
@@ -932,9 +943,13 @@ class Agent:
             # the same state under pixels that keep moving: an animation that never ends is not waited out
             if key is None or key[:-1] != read:
                 read_since = looked
+            same_reads = same_reads + 1 if key is not None and key[:-1] == read else (1 if key is not None else 0)
             read = key[:-1] if key is not None else None
             restless = policy.still and usable and clock() - read_since >= RESTLESS_S
-            settled = (not dealt or key == previous) if fast else (not policy.still or image == pictured)
+            settled = (not dealt or key == previous) if fast else (
+                not policy.still or image == pictured or (kit and same_reads >= SAME_READS))
+            if kit and expect is not None and not ticked:
+                ticked = bool(self.adapter.ticked(expect[0].png, png))
             if image is None or image != pictured:
                 rested = looked
             previous, pictured = key, image
@@ -942,8 +957,13 @@ class Agent:
             if usable:
                 self.kit_reads += isinstance(self.adapter, KitAdapter)
                 reading = Reading(png, state.payload, looked, L3)
-                if expect is not None and (settled or restless) \
-                        and self._effect(expect[0].state, expect[1], state.payload) == "confirmed":
+                effect = self._effect(expect[0].state, expect[1], state.payload) if expect is not None else None
+                if expect is not None and (settled or restless) and effect == "confirmed":
+                    return reading
+                if kit and effect == "absent" and same_reads >= SAME_READS and not ticked \
+                        and clock() - began >= (REFUSED_S if self.adapter.counts else ABSENT_S):
+                    # the board as it was, and the game's count of moves left as it was: the move was not taken
+                    told["refused_s"] = round(clock() - began, 2)
                     return reading
                 stable = clock() - stable_since >= policy.stable_s or restless
                 if stable and (expect is None or clock() >= deadline):
@@ -1078,7 +1098,8 @@ class Agent:
             else:
                 png, state, board, rules = await self._asking(tool._label(
                     self.seen, self.board, self.trace.rules if self.trace else None,
-                    accept if expect is not None or partial is not None else None, patient=False, prior=self._prior(expect)))
+                    accept if expect is not None or partial is not None else None, patient=False, prior=self._prior(expect),
+                    anew=self.why == "scene_changed"))
                 tool.last_state, tool.frames = state, await tool._frames(self.seen, png)
         except AdaptationFailed as error:
             # no board on the screen, or one the model could not read as the rules have it
@@ -1099,7 +1120,7 @@ class Agent:
             self._resize(rules)
         # where the board is now: the first screen's box, or another when the game has moved on the screen
         self.board = board
-        look = Look(png, state, self.board, frames=tool.frames, sources=tool.sources)
+        look = Look(png, state, self.board, frames=tool.frames, sources=tool.sources, panel=tool.panel)
         self.trace.looks.append(look)
         if expect is None and partial is None:
             self.unproven = look

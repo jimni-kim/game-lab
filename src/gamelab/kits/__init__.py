@@ -23,5 +23,24 @@ def count(family_id: str, png: bytes, box: list[int]) -> tuple[int, int] | None:
     return grid.pitch(png, box) if family_id in KITS else None
 
 
+def survey(family_id: str, rules: dict[str, Any], png: bytes, box: list[int], state: dict[str, Any]
+           ) -> tuple[list[int], int, int] | None:
+    """The board's box, rows and columns as a reader taught this one reading of the screen lays them out by the
+    looks it learned (`Valued.survey`): a reading of a board with no lines between its cells that took it for
+    another size than it is shows so. None for a family whose reader does not count so, or when it cannot tell."""
+    kit = KITS.get(family_id)
+    grid_ = state.get(getattr(kit, "field", "grid")) if isinstance(state, dict) else None
+    if kit is None or not getattr(kit, "surveys", False) or not isinstance(grid_, list) or not grid_ \
+            or not isinstance(grid_[0], list):
+        return None
+    scratch = kit({**rules, "rows": len(grid_), "cols": len(grid_[0])})
+    try:
+        if not scratch.calibrate(png, box, state):
+            return None
+        return scratch.survey(png, scratch.board)
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
 def make(family_id: str, rules: dict[str, Any]) -> Any:
     return KITS[family_id](rules)

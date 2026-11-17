@@ -45,6 +45,30 @@ async def test_a_look_is_a_screencap_as_opaque_rgb_and_may_be_cut_to_a_region():
     assert adb.ran == [["exec-out", "screencap", "-p"]] * 2 and await surface.size() == [108, 240]
 
 
+async def test_an_emulator_is_captured_by_its_console_and_by_screencap_once_that_fails():
+    adb, shots = Adb(Image.new("RGBA", (108, 240), (40, 50, 60, 255))), []
+
+    async def console(args):
+        if args[:3] == ["emu", "screenrecord", "screenshot"]:
+            shots.append(args[3])
+            if len(shots) > 1:
+                return b"KO: no display"
+            adb.picture.save(args[3], format="PNG")
+            return b"OK"
+        return await adb(args)
+    surface = AndroidSurface(console, serial="emulator-5556")
+    with pixels.decode(await surface.capture(), [108, 240]) as image:
+        assert image.getpixel((0, 0)) == (40, 50, 60)
+    assert adb.ran == [] and surface.console
+    await surface.capture()
+    await surface.capture()
+    # the console failed once: screencap from then on, and nothing is left behind where the console wrote
+    assert len(shots) == 2 and adb.ran == [["exec-out", "screencap", "-p"]] * 2 and not surface.console
+    import os
+    assert not any(os.path.exists(path) for path in shots)
+    assert not AndroidSurface(adb, serial="R58M123").console
+
+
 async def test_a_capture_that_is_no_picture_is_an_unread_look_not_a_crash():
     async def broken(args):
         return b"error: device offline"

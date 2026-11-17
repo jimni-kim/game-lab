@@ -37,6 +37,14 @@ GAUGE_FEWEST, GAUGE_MOST, GAUGE_LEAST, GAUGE_REACH, GAUGE_CLEAR, GAUGE_APART = 3
 FIT_REACH, FIT_SPREAD, FIT_CLEAR, FIT_SHAPE, FIT_INNER = 0.4, 0.12, 1.5, 0.04, 4
 # a value's looks kept at most, and the values a reader keeps looks of at most
 LOOKS_MOST, VALUES_MOST = 24, 64
+# the number a game shows of the moves left (`Grid.counter`): compared made this many pixels a side, it changed
+# when the two pictures differ by more than this (mean difference a channel, of 255); it is believed once it was
+# seen to change with a move the game took and has not failed to more often than that
+TICK_SIDE, TICK = 12, 12.0
+# counting a board by the cells whose looks are known (`Valued.survey`): counts this many either side of the one a
+# reading gave are tried; a line of cells beside the board is the board's when this many of its cells look like
+# something known; and a board has at most this many cells a side
+SURVEY_SPREAD, SURVEY_LINE, SURVEY_MOST = 3, 2, 14
 
 
 def open_picture(png: bytes) -> Any:
@@ -219,6 +227,10 @@ class Grid:
         self.told: dict[str, Any] = {}
         # how often what a cell looks like was learned again from the screen alone
         self.relearned = 0
+        # where the game shows how many moves are left, as a model gave it, and how often it was seen to change
+        # with a move the game took and not to
+        self.counter: list[int] | None = None
+        self.ticks = {"seen": 0, "missed": 0}
 
     pitch = staticmethod(pitch)
 
@@ -247,6 +259,39 @@ class Grid:
 
     def _place(self, image: Any, board: list[int]) -> None:
         self.size, self.board = list(image.size), [round(part) for part in board]
+
+    def place_counter(self, box: Any) -> None:
+        """Where the game shows how many moves are left, as a model gave it: what was seen of it before is kept
+        while the box is where it was."""
+        if not (isinstance(box, list) and len(box) == 4):
+            return
+        if self.counter is None or any(abs(one - other) > max(4, box[3] // 4) for one, other in zip(box, self.counter)):
+            self.ticks = {"seen": 0, "missed": 0}
+        self.counter = [round(part) for part in box]
+
+    def ticked(self, before: bytes, png: bytes) -> bool | None:
+        """Whether the number of moves left changed between two screens; None when nothing tells (no counter
+        known, or one not believed yet)."""
+        if self.counter is None:
+            return None
+        one, other = open_picture(before), open_picture(png)
+        if one.size != other.size or list(one.size) != self.size:
+            return None
+        return distance(look(one, self.counter, 0.0, TICK_SIDE), look(other, self.counter, 0.0, TICK_SIDE)) > TICK
+
+    @property
+    def counts(self) -> bool:
+        """Whether the counter is believed: it changed with a move the game took, and failed to no more often."""
+        return self.counter is not None and self.ticks["seen"] >= 1 and self.ticks["missed"] <= self.ticks["seen"]
+
+    def tally(self, ticked: bool | None) -> None:
+        """A move the game took, and whether the counter changed with it. One that keeps not changing is no
+        counter: it is let go."""
+        if ticked is None:
+            return
+        self.ticks["seen" if ticked else "missed"] += 1
+        if self.ticks["missed"] >= 2 and self.ticks["missed"] > self.ticks["seen"]:
+            self.counter, self.ticks = None, {"seen": 0, "missed": 0}
 
     def cell_picture(self, png: bytes, cell: tuple[int, int], around: float = 0.0) -> bytes | None:
         """One cell cut out of a screen as a picture of its own, with this share of a cell around it."""
@@ -325,6 +370,8 @@ class Valued(Grid):
     near, apart = MERGE, MERGE / 2
     # whether the rules say enough of a move's result for a screen to be taken as soon as it shows one
     foresees = True
+    # whether a reading's count of rows and columns is checked against the looks of its cells (`survey`)
+    surveys = False
     # a board box learned again within this many pixels of the one kept is the one kept
     SAME_BOX = 2
     # the kinds of unread cells put to a light model at most at once, and the pictures shown of each
@@ -439,6 +486,62 @@ class Valued(Grid):
         self.told = {"unread": sum(cell is None for row in grid for cell in row)}
         return {self.field: grid, "score": None, "scene": "playing"}, None
 
+    def survey(self, png: bytes, box: list[int]) -> tuple[list[int], int, int] | None:
+        """The board's box, rows and columns as the cells whose looks are known lay it out (PLAN §23, Y1): of the
+        counts near this reader's that divide `box`, the one under which most cells look like something known;
+        then, a cell at a time, the lines beside it that hold known looks too (a reading that took a board for
+        narrower than it is gave a box as narrow), and none at its edges that hold none. A board with no lines
+        drawn between its cells is counted so, where `pitch` cannot. None when too few cells are known."""
+        if not len(self.looks):
+            return None
+        image = open_picture(png)
+        left, top, width, height = box
+
+        def known(x: float, y: float, w: float, h: float) -> bool:
+            return 0 <= x and 0 <= y and x + w <= image.width and y + h <= image.height \
+                and self.looks.name(self._look(image, [x, y, w, h]))[0] is not None
+
+        def share(rows: int, cols: int) -> float:
+            w, h = width / cols, height / rows
+            return sum(known(left + c * w, top + r * h, w, h) for r in range(rows) for c in range(cols)) / (rows * cols)
+
+        def near(count: int) -> range:
+            return range(max(GAUGE_FEWEST, count - SURVEY_SPREAD), min(SURVEY_MOST, count + SURVEY_SPREAD) + 1)
+        # the columns with the rows as said, then the rows with the columns so found: the count said wins a tie
+        cols = max(near(self.cols), key=lambda count: (share(self.rows, count), count == self.cols))
+        rows = max(near(self.rows), key=lambda count: (share(count, cols), count == self.rows))
+        if share(rows, cols) < 0.5:
+            return None
+        w, h = width / cols, height / rows
+        # [first row, first column, rows, columns] in cells of the box said
+        first_row, first_col = 0, 0
+
+        def line(index: int, across: bool) -> int:
+            """How many cells of a row (`across`) or a column at `index` (in cells from the box) look known."""
+            if across:
+                return sum(known(left + (first_col + c) * w, top + index * h, w, h) for c in range(cols))
+            return sum(known(left + index * w, top + (first_row + r) * h, w, h) for r in range(rows))
+        changed = True
+        while changed:
+            changed = False
+            if cols < SURVEY_MOST and line(first_col - 1, False) >= SURVEY_LINE:
+                first_col, cols, changed = first_col - 1, cols + 1, True
+            if cols < SURVEY_MOST and line(first_col + cols, False) >= SURVEY_LINE:
+                cols, changed = cols + 1, True
+            if rows < SURVEY_MOST and line(first_row - 1, True) >= SURVEY_LINE:
+                first_row, rows, changed = first_row - 1, rows + 1, True
+            if rows < SURVEY_MOST and line(first_row + rows, True) >= SURVEY_LINE:
+                rows, changed = rows + 1, True
+        while cols > GAUGE_FEWEST and not line(first_col, False):
+            first_col, cols = first_col + 1, cols - 1
+        while cols > GAUGE_FEWEST and not line(first_col + cols - 1, False):
+            cols -= 1
+        while rows > GAUGE_FEWEST and not line(first_row, True):
+            first_row, rows = first_row + 1, rows - 1
+        while rows > GAUGE_FEWEST and not line(first_row + rows - 1, True):
+            rows -= 1
+        return [round(left + first_col * w), round(top + first_row * h), round(cols * w), round(rows * h)], rows, cols
+
     def same(self, state: dict[str, Any], said: dict[str, Any]) -> bool:
         """Whether a screen read here is read as a model read it."""
         return state.get(self.field) == said.get(self.field)
@@ -447,16 +550,20 @@ class Valued(Grid):
         return False
 
     def summary(self) -> dict[str, Any]:
-        return {"values": len(self.looks.kept), "looks": len(self.looks), "taught": dict(self.taught)}
+        return {"values": len(self.looks.kept), "looks": len(self.looks), "taught": dict(self.taught),
+                **({"counter": dict(self.ticks)} if self.counter else {})}
 
     # ── kept between games ────────────────────────────────────────────
 
     def to_json(self) -> dict[str, Any]:
-        return {"rows": self.rows, "cols": self.cols, "size": self.size, "board": self.board, "looks": self.looks.to_json()}
+        return {"rows": self.rows, "cols": self.cols, "size": self.size, "board": self.board, "looks": self.looks.to_json(),
+                **({"counter": self.counter, "ticks": dict(self.ticks)} if self.counter else {})}
 
     def restore(self, kept: dict[str, Any]) -> bool:
         if (kept.get("rows"), kept.get("cols")) != (self.rows, self.cols) or not kept.get("board") or not kept.get("looks"):
             return False
         self.size, self.board = kept["size"], kept["board"]
         self.looks.restore(kept["looks"])
+        if isinstance(kept.get("counter"), list):
+            self.counter, self.ticks = kept["counter"], {"seen": 0, "missed": 0, **kept.get("ticks", {})}
         return True
