@@ -14,11 +14,13 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .. import catalog, model
+from .. import catalog, checker, model
 from ..contracts import Budget, GoalSpec
 from ..run import Run
 
 ROOT = Path(__file__).resolve().parents[3]
+# the light model asked about single cells unless a run names another (PLAN §20, X1)
+LIGHT_MODEL = "gpt-6-luna"
 # one file a browser or device, held by the run that moves it (`lock`)
 LOCKS = ROOT / "out" / ".lock"
 # a progress line every this many inputs, so a long game can be followed while it runs
@@ -57,6 +59,9 @@ def model_arguments(parser: argparse.ArgumentParser) -> None:
                         help=f"the model that reads the game, writes its adapter and gets play past screens ({model.MODEL_VARIABLE} unless given)")
     parser.add_argument("--writer-model",
                         help="another model to write the adapters (the --vision-model unless given)")
+    parser.add_argument("--light-model", default=LIGHT_MODEL,
+                        help="a light model that names single cells cut out of the screen when a family's reader and "
+                             "the rules cannot (PLAN §20); 'none': such cells are the --vision-model's")
     parser.add_argument("--model-base", default=model.api_base(),
                         help=f"an OpenAI-compatible API's base URL ({model.BASE_VARIABLE}, else {model.DEFAULT_BASE})")
 
@@ -76,6 +81,21 @@ def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, mod
         raise SystemExit(f"asking {args.vision_model} needs a key: set {model.KEY_VARIABLE}")
     client = model.ChatClient(args.vision_model, key, base=args.model_base)
     return client, model.Recorded(client, model.prompts(catalog.FRAGMENT / "prompts"))
+
+
+def light_model(args: argparse.Namespace) -> Any:
+    """The light model of a run (`--light-model`), as what names single cells (`checker.Chat`): made once a run
+    and kept on its arguments. None when the run names none or has no key."""
+    if not hasattr(args, "_light"):
+        name, key = getattr(args, "light_model", None), model.api_key()
+        args._light = checker.Chat(name, key, base=args.model_base) if name and name != "none" and key else None
+    return args._light
+
+
+async def close_light(args: argparse.Namespace) -> None:
+    if getattr(args, "_light", None) is not None:
+        await args._light.close()
+        args._light = None
 
 
 def writer_model(args: argparse.Namespace, vision: model.Recorded | None, *,

@@ -319,7 +319,8 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
         run, adapted = await agent.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
                                         store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
                                         watch=watching(recorder) if watching else recorder,
-                                        accept_consent=args.accept_consent, writer=writer, hint=hint)
+                                        accept_consent=args.accept_consent, writer=writer, hint=hint,
+                                        light=measure.light_model(args))
     finally:
         await game.tidy()
     elapsed = time.monotonic() - started
@@ -385,6 +386,7 @@ async def main(args: argparse.Namespace) -> int:
         for opened in (client, writer_client):
             if opened is not None:
                 await opened.close()
+        await measure.close_light(args)
         if results:
             measure.write_summary(args.out, args, results, site=args.site)
     return 0

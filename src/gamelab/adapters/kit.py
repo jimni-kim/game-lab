@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from .. import catalog, kits, pixels
+from ..kits import grid
 from ..contracts import CELLS_UNREAD, NeedObservation, Observation, StateEstimate
 from ..families import GridFamily
 
@@ -37,6 +38,9 @@ class KitAdapter:
         # what the rules say the screen about to be read shows (`expecting`)
         self.prior: dict[str, Any] | None = None
         self.unmoved: dict[str, Any] | None = None
+        # the unread cells of the screen last asked about (`steady`), and the looks a light model was asked of
+        self._unread: list[Any] = []
+        self._asked: set[bytes] = set()
 
     @property
     def played(self) -> dict[str, Any]:
@@ -46,7 +50,24 @@ class KitAdapter:
     def layout(self) -> dict[str, Any] | None:
         if self.kit.board is None:
             return None
-        return {"board": list(self.kit.board), "regions": [list(box) for box in (self.kit.tray or {}).get("slots", [])]}
+        return {"board": list(self.kit.board), "regions": [list(box) for box in self._tray().get("slots", [])]}
+
+    def _tray(self) -> dict[str, Any]:
+        """Where the family's reader knows dragged things to wait, when its games have such a place."""
+        return getattr(self.kit, "tray", None) or {}
+
+    @property
+    def foresees(self) -> bool:
+        """Whether the rules say enough of a move's result for a screen to be taken as soon as it shows one."""
+        return self.kit.foresees
+
+    def awaits(self, prior: dict[str, Any] | None) -> bool:
+        """Whether the screen about to be read shows something the rules cannot say, to be taken only once two
+        frames in a row read the same."""
+        return self.kit.awaits(prior)
+
+    def summary(self) -> dict[str, Any]:
+        return {"relearned_alone": self.kit.relearned, **self.kit.summary()}
 
     @property
     def size(self) -> list[int] | None:
@@ -76,21 +97,52 @@ class KitAdapter:
     def agrees(self, look: Any) -> bool:
         """Whether a look a model read is read the same here."""
         state, _ = self.kit.read(look.png)
-        if state is None:
-            return False
-        tray = [seen for seen, said in zip(state["tray"], look.state.get("tray") or []) if seen != []]
-        said = [said for seen, said in zip(state["tray"], look.state.get("tray") or []) if seen != []]
-        return state["board"] == look.state.get("board") and tray == said
+        return state is not None and self.kit.same(state, look.state)
 
-    def reads(self, png: bytes) -> bool:
-        """Whether a screen is read whole at the size the game has: every cell told."""
-        state, _ = self.kit.read(png)
-        return state is not None and all(cell is not None for row in state["board"] for cell in row)
+    # ── what a screen leaves unread ───────────────────────────────────
+
+    def teach(self, png: bytes, state: dict[str, Any], by: str = "rules") -> int:
+        """The cells this screen leaves unread are what `state` has there (told by the rules, or by a light
+        model): the reader keeps their looks and reads them from now on. How many it learned."""
+        teach = getattr(self.kit, "teach", None)
+        return teach(png, state, by) if teach is not None else 0
+
+    def excludes(self, png: bytes, state: dict[str, Any]) -> bool:
+        """Whether a state cannot be what this screen shows, by what its unread cells do not look like."""
+        excludes = getattr(self.kit, "excludes", None)
+        return excludes(png, state) if excludes is not None else False
+
+    def steady(self, png: bytes) -> bool:
+        """Whether what this screen leaves unread it left unread, looking the same, on the screen asked about
+        just before: a thing caught moving (a tile sliding in, one growing as it appears) is not learned from."""
+        unread = getattr(self.kit, "unread", None)
+        seen = unread(png) if unread is not None else []
+        was, self._unread = self._unread, seen
+        return bool(seen) and len(seen) == len(was) and all(
+            cell == other and grid.distance(look, before) <= grid.MERGE / 2
+            for (cell, look), (other, before) in zip(seen, was))
+
+    def questions(self, png: bytes) -> list[tuple[list[tuple[int, int]], list[bytes]]] | None:
+        """What a light model is to be asked of a screen's unread cells: each kind of them (cells that look
+        alike) with pictures of a few. None when the family's cells are not a light model's to name, the kinds
+        are too many to be new values (something lies over the board), or these were asked about before."""
+        if getattr(self.kit, "options", lambda: None)() is None:
+            return None
+        kinds = self.kit.kinds(png)
+        if not kinds or len(kinds) > self.kit.KINDS_MOST:
+            return None
+        looks = dict(self.kit.unread(png))
+        fresh = [kind for kind in kinds if looks[kind[0]] not in self._asked]
+        if len(fresh) != len(kinds):
+            return None
+        self._asked.update(looks[kind[0]] for kind in kinds)
+        return [(kind, [picture for cell in kind[:self.kit.SHOWN]
+                        if (picture := self.kit.cell_picture(png, cell, self.kit.AROUND)) is not None]) for kind in kinds]
 
     def arrange(self, things: list[tuple[Any, Any]]) -> tuple[list[Any], list[Any]] | None:
         """Things a reading lists, each with its box, put into the slots they wait in: each in the slot whose
         middle its own is nearest. None when the slots are not known or two fall into one."""
-        slots = (self.kit.tray or {}).get("slots")
+        slots = self._tray().get("slots")
         if not slots:
             return None
         listed: list[Any] = [None] * len(slots)
@@ -133,16 +185,14 @@ class KitAdapter:
 
     def sources(self) -> list[list[int] | None]:
         """Where each waiting piece was last read to be."""
-        return list(self.kit.sources)
+        return list(getattr(self.kit, "sources", []))
 
     def source_on(self, png: bytes, index: int) -> list[int] | None:
         """Where the piece waiting in one slot is on a screen, as the reader sees it."""
         kit = self.kit
-        if kit.tray is None or not 0 <= index < len(kit.tray["slots"]):
+        if not self._tray() or not 0 <= index < len(kit.tray["slots"]):
             return None
-        from ..kits.block_placement import _open
-
-        image = _open(png)
+        image = grid.open_picture(png)
         if list(image.size) != kit.size:
             return None
         piece, source = kit._slot(image, kit.tray["slots"][index])
@@ -152,22 +202,19 @@ class KitAdapter:
         """The one thing asked of an adapter by name: the input a move is played with (`target`)."""
         if name != "target":
             return None
-        from ..adaptation import drag_for
+        from ..adaptation import input_for
 
         action, state, controls = arguments["action"], arguments["state"], self._played["controls"]
         try:
-            index = action[controls["index"]]
-            source, piece = self.kit.sources[index], state[controls["source"]][index]
-            if not source or not piece:
-                return None
-            return drag_for(source, self.kit.board, (self.kit.rows, self.kit.cols), piece, action[controls["onto"]],
-                            controls["duration_ms"])
-        except (KeyError, IndexError, TypeError):
+            return input_for(controls, action, self.kit.board, (self.kit.rows, self.kit.cols), state, self.sources())
+        except (KeyError, IndexError, TypeError, ValueError):
             return None
 
     def checked_input(self, asked: Any) -> Any:
-        if not isinstance(asked, dict) or asked.get("kind") != "drag" \
-                or not all(type(asked.get(name)) in (int, float) for name in ("x0", "y0", "x1", "y1")):
+        kind = asked.get("kind") if isinstance(asked, dict) else None
+        names = {"key": (), "tap": ("x", "y"), "drag": ("x0", "y0", "x1", "y1")}.get(kind)
+        if names is None or kind != {"keys": "key"}.get(self._played["controls"]["kind"], self._played["controls"]["kind"]) \
+                or not all(type(asked.get(name)) in (int, float) for name in names):
             raise ValueError("input_refused")
         return asked
 
@@ -175,6 +222,8 @@ class KitAdapter:
         """What tells, from a frame taken while a move's piece is held over the board, whether it lies where the
         move puts it (`carry`): None when the move names no cells."""
         controls = self._played["controls"]
+        if not hasattr(self.kit, "hover"):
+            return None
         try:
             piece, anchor = state[controls["source"]][action[controls["index"]]], action[controls["onto"]]
             cells = [[anchor[0] + r, anchor[1] + c] for r, c in piece]

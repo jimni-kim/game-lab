@@ -223,7 +223,8 @@ async def play_one(args: argparse.Namespace, number: int, surface: AndroidSurfac
     run, adapted = await agent.play(surface, model, None if args.identify else args.family, goal=goal,
                                     budget=budget, policy=args.policy, store=Store(args.adapter_store),
                                     fresh=args.regenerate, cancel=cancel, watch=watching(recorder) if watching else recorder,
-                                    accept_consent=args.accept_consent, writer=writer, hint=hint)
+                                    accept_consent=args.accept_consent, writer=writer, hint=hint,
+                                    light=measure.light_model(args))
     result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, adaptation=adapted)
     request = {"family": args.family, "app": await surface.address(),
                "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
@@ -280,6 +281,7 @@ async def main(args: argparse.Namespace) -> int:
         for opened in (client, writer_client):
             if opened is not None:
                 await opened.close()
+        await measure.close_light(args)
         if results:
             measure.write_summary(args.out, args, results, family=args.family, package=args.package)
     return 0

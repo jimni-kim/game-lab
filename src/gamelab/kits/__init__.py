@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import grid
 from .block_placement import BlockKit
+from .minesweeper import MinesKit
+from .slide_merge import SlideKit
 
-KITS: dict[str, Any] = {BlockKit.family_id: BlockKit}
+KITS: dict[str, Any] = {kit.family_id: kit for kit in (BlockKit, SlideKit, MinesKit)}
 
 
 def has(family_id: str | None) -> bool:
@@ -16,7 +19,7 @@ def has(family_id: str | None) -> bool:
 def count(family_id: str, png: bytes, box: list[int]) -> tuple[int, int] | None:
     """The rows and columns of the board in `box`, counted from the picture alone by the family's reader; None
     when it cannot tell."""
-    return KITS[family_id].pitch(png, box) if family_id in KITS else None
+    return grid.pitch(png, box) if family_id in KITS else None
 
 
 def make(family_id: str, rules: dict[str, Any]) -> Any:

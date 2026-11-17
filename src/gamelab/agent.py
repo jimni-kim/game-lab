@@ -33,6 +33,7 @@ from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS
 from .adapters.generated import GeneratedAdapter
 from .adapters.kit import KitAdapter
 from .carry import Carrier
+from .checker import CHOICE, Check
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
@@ -98,6 +99,10 @@ HISTORY_KEPT = 8
 SWIPES = {"ArrowLeft": (-1, 0), "ArrowRight": (1, 0), "ArrowUp": (0, -1), "ArrowDown": (0, 1)}
 SWIPE_SPAN, SWIPE_MS = 0.6, 120
 WON = "won"
+# what a light model is asked of one cell cut out of a board, and what it is told of the game
+LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
+                  "with a little of its neighbours around it.")
+LIGHT_CONTEXT = "A cell of the board of this game: {game}"
 
 
 class Watch(Protocol):
@@ -172,7 +177,12 @@ class Agent:
     def __init__(self, surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-                 writer: Model | None = None, direct: bool = True) -> None:
+                 writer: Model | None = None, direct: bool = True, light: Any = None) -> None:
+        # what names a single cell cut out of the screen when the family's reader and the rules cannot (`checker`:
+        # a light model); None: such a cell is the reading model's
+        self.light = light
+        # the questions put to it, the cells its answers named, and the answers the rules did not take
+        self.light_told = {"asked": 0, "named": 0, "refused": 0}
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
         # the screen as a model is shown it: what keeps moving over it (a tutorial's hand) left out (`motion`)
         self.seen = Steady(surface)
@@ -324,9 +334,9 @@ class Agent:
     def _kit_summary(self) -> dict[str, Any] | None:
         if not kits.has(self.family_id) and not self.kit_reads:
             return None
-        kit = self.adapter.kit if isinstance(self.adapter, KitAdapter) else None
-        return {"adopted": self.kit_adopted, "relearned_alone": kit.relearned if kit else None,
-                "empties": len(kit.empties) if kit else None, "reads": self.kit_reads,
+        told = self.adapter.summary() if isinstance(self.adapter, KitAdapter) else {}
+        return {"adopted": self.kit_adopted, **told, "reads": self.kit_reads,
+                **({"light": {**self.light_told, **self.light.spent.summary()}} if self.light is not None else {}),
                 "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
 
     def _keep_profile(self) -> None:
@@ -796,7 +806,8 @@ class Agent:
         kit = isinstance(self.adapter, KitAdapter)
         # a family's own reader knows what the move leaves and is asked as soon as the screen may show it: no time
         # measured on other moves is waited out first (a move that clears nothing is done at once)
-        wait = KIT_FIRST_S if kit else policy.animation_s
+        fast = kit and self.adapter.foresees
+        wait = KIT_FIRST_S if fast else policy.animation_s
         after = clock() + wait if expect is not None and wait else None
         deadline = (after or clock()) + policy.timeout_s
         previous = pictured = read = unread = None
@@ -808,10 +819,9 @@ class Agent:
             # what the rules say the move left: it fills what the screen leaves unclear
             prior = self._prior(expect) if expect is not None else None
             self.adapter.expecting(prior, expect[0].state if expect is not None else None)
-            # a tray dealt anew is not the rules' to say: it is taken once two frames in a row read it the same
-            # (pieces still flying in read as others)
-            listed = prior.get(self.adaptation.controls.get("source", "")) if isinstance(prior, dict) else None
-            dealt = isinstance(listed, list) and bool(listed) and all(entry is None for entry in listed)
+            # what the rules cannot say of the screen (a tray dealt anew) is taken once two frames in a row read
+            # it the same (pieces still flying in read as others)
+            dealt = self.adapter.awaits(prior)
         while True:
             self._check_time()
             # a screen something kept moving over is read as it is under that, for as long as it keeps moving
@@ -827,9 +837,13 @@ class Agent:
             if self.watch is not None:
                 await self.watch.seen(png)
             state, why = self._observe(png)
-            if state is None and why == adaptation.CELLS_UNREAD and expect is not None and self._learn_unread(png, expect):
-                # the rules told what the code could not read: it reads it now
-                state, why = self._observe(png)
+            if state is None and why == adaptation.CELLS_UNREAD and expect is not None:
+                # still: the same cells unread, looking the same, as on the frame before (asked once a frame)
+                still = not kit or self.adapter.steady(png)
+                if still and (self._learn_unread(png, expect) or await self._ask_light(png, expect)):
+                    # the rules, or a light model shown the cells alone, told what the code could not read: it
+                    # reads it now
+                    state, why = self._observe(png)
             usable = state is not None
             if not usable:
                 # a screen read through small moving things that could not be read is drawn through next time
@@ -850,7 +864,7 @@ class Agent:
                 read_since = looked
             read = key[:-1] if key is not None else None
             restless = policy.still and usable and clock() - read_since >= RESTLESS_S
-            settled = (not dealt or key == previous) if kit else (not policy.still or image == pictured)
+            settled = (not dealt or key == previous) if fast else (not policy.still or image == pictured)
             if image is None or image != pictured:
                 rested = looked
             previous, pictured = key, image
@@ -894,6 +908,15 @@ class Agent:
         except (ValueError, KeyError, TypeError):
             return False
         agreeing = [state for state in possible if _agrees(_board(partial), _board(state))]
+        if isinstance(self.adapter, KitAdapter):
+            # a result that has, where the screen is unread, a value the cell there does not look like is not
+            # this screen's (a new tile unlike every 2 seen is the 4 it may also be)
+            agreeing = [state for state in agreeing if not self.adapter.excludes(png, state)]
+            if not agreeing or any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
+                return False
+            learned = self.adapter.teach(png, agreeing[0])
+            self.told_by_rules += learned
+            return bool(learned)
         if not agreeing or any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
             return False
         raw = self.adapter.raw(png)
@@ -914,6 +937,49 @@ class Agent:
             self.adapter.bank.add(value, sample)
         self.told_by_rules += len(kept)
         return bool(kept)
+
+    async def _ask_light(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
+        """What the family's reader left unread on the result of a move and the rules leave open, put to a light
+        model: each kind of unread cell cut out and shown alone, to be named one of the values the family's cells
+        hold (PLAN §20, X1). Its answers are kept only when the screen then reads as a result the rules allow of
+        the move; else the screen is the reading model's, as before. True when the reader learned from them."""
+        if self.light is None or not isinstance(self.adapter, KitAdapter) or self.adapter.partial is None:
+            return False
+        asked = self.adapter.questions(png)
+        if not asked:
+            return False
+        kit = self.adapter.kit
+        checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.options())
+                  for index, (_, pictures) in enumerate(asked) for shown, picture in enumerate(pictures)]
+        self.light_told["asked"] += 1
+        started = time.monotonic()
+        try:
+            answers = await self.light.ask(checks, LIGHT_CONTEXT.format(game=self.family.descriptor["summary"]))
+        except Exception as error:
+            log.info("the light model could not be asked: %s", error)
+            return False
+        finally:
+            self.model_seconds += time.monotonic() - started
+        state = json.loads(json.dumps(self.adapter.partial))
+        grid = state[kit.field]
+        for index, (cells, pictures) in enumerate(asked):
+            said = {(answers.get(f"k{index}-{shown}") or {}).get("choice") for shown in range(len(pictures))}
+            if len(said) != 1 or None in said:
+                self.light_told["refused"] += 1
+                return False            # no answer, or two pictures of one kind named differently
+            value = kit.value(next(iter(said)))
+            for row, col in cells:
+                grid[row][col] = value
+        try:
+            fits = self._effect(expect[0].state, expect[1], state) == "confirmed"
+        except (ValueError, KeyError, TypeError):
+            fits = False
+        if not fits:
+            self.light_told["refused"] += 1
+            return False
+        learned = self.adapter.teach(png, state, "light")
+        self.light_told["named"] += learned
+        return bool(learned)
 
     async def _read_model(self, expect: tuple[Reading, dict[str, Any]] | None, partial: dict[str, Any] | None) -> Reading | None:
         """The screen read by the model into a state the rule model accepts, and kept as a look. With `expect`
@@ -1471,10 +1537,12 @@ class Agent:
 async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-               writer: Model | None = None, direct: bool = True, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               writer: Model | None = None, direct: bool = True, light: Any = None, **ignored: Any
+               ) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
-    asked to write the adapters and `model` everything else."""
+    asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
+    family's reader could not."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
-                       direct=direct).run()
+                       direct=direct, light=light).run()

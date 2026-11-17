@@ -18,19 +18,14 @@ look, else from one reading by a model.
 """
 from __future__ import annotations
 
-from io import BytesIO
 from typing import Any
 
-# a cell is compared by its inner part (this share cut off each side), made this many pixels a side
-INSET, SIDE = 0.2, 8
-# looks of empty cells nearer than this (mean difference a channel, of 255) are one look
-MERGE = 6.0
+from .grid import CHANGED_SHARE, MERGE, Grid, distance as _distance, groups, median as _median, open_picture as _open
+
 # the line between empty and block when no block was seen yet: this many times MERGE, and no less than CUT_LEAST
 CUT_BLIND, CUT_LEAST = 3.0, 20.0
 # a cell this share of the line either side of it is not told
 UNSURE = 0.15
-# a board this share of whose cells disagree with what the rules expect is another scene
-CHANGED_SHARE = 0.25
 # empties learned from the screen alone: the commonest look, when this share of the cells have it
 MAJORITY = 0.55
 EMPTIES_MOST = 64
@@ -38,11 +33,6 @@ EMPTIES_MOST = 64
 # when this share of its place differs, not there when less than BLOCK_NOT; a piece is at most PIECE_MOST blocks
 # a side; a slot reaches this many blocks either side of the middle of the pieces
 DIFFERS, BLOCK_IS, BLOCK_NOT, PIECE_MOST, SLOT_REACH = 16, 0.6, 0.25, 5, 3.1
-# counting a board's rows and columns from its picture (`pitch`): a board has from GAUGE_FEWEST to GAUGE_MOST cells
-# a side and a cell is at least GAUGE_LEAST pixels; an edge is looked for this many pixels either side of where a
-# count puts it; the best count's lines must stand this far above its cells' middles (of 255) and that margin be
-# this share larger than the next count's
-GAUGE_FEWEST, GAUGE_MOST, GAUGE_LEAST, GAUGE_REACH, GAUGE_CLEAR, GAUGE_APART = 3, 14, 8, 2, 6.0, 0.2
 # parts of a slot's coarse picture this near each other (a part is a quarter of a block) are one piece
 SEAM = 2
 # a block's four sides: each looked for in a strip this deep (a share of the block) along the side, left out this
@@ -57,26 +47,9 @@ EDGE = 4
 HOVER_REACH, HOVER_WITHIN = 2, 0.3
 
 
-def _open(png: bytes) -> Any:
-    from PIL import Image
-
-    with Image.open(BytesIO(png)) as image:
-        return image.convert("RGB")
-
-
-def _distance(one: bytes, other: bytes) -> float:
-    return sum(abs(a - b) for a, b in zip(one, other)) / len(one)
-
-
 def _piece(cells: list[tuple[int, int]]) -> list[list[int]]:
     top, left = min(r for r, _ in cells), min(c for _, c in cells)
     return [list(cell) for cell in sorted((r - top, c - left) for r, c in cells)]
-
-
-def _median(values: list[float]) -> float:
-    ordered = sorted(values)
-    half = len(ordered) // 2
-    return ordered[half] if len(ordered) % 2 else (ordered[half - 1] + ordered[half]) / 2
 
 
 def _joined(cells: list[tuple[int, int]]) -> bool:
@@ -91,35 +64,22 @@ def _joined(cells: list[tuple[int, int]]) -> bool:
     return len(seen) == len(cells)
 
 
-class BlockKit:
+class BlockKit(Grid):
     family_id = "block_placement"
+    # the move's result is the rules' to say: a screen is asked for it as soon as it may show it
+    foresees = True
 
     def __init__(self, rules: dict[str, Any]) -> None:
-        self.rows, self.cols, self.slots = rules["rows"], rules["cols"], rules["tray_size"]
-        self.size: list[int] | None = None
-        self.board: list[int] | None = None
+        super().__init__(rules["rows"], rules["cols"])
+        self.slots = rules["tray_size"]
         self.empties: list[bytes] = []
         self.cut = CUT_LEAST
         # the tray: each slot's box and how large one block of a waiting piece is drawn
         self.tray: dict[str, Any] | None = None
         # where each slot's piece was last read to be
         self.sources: list[list[int] | None] = [None] * self.slots
-        # what the last reading left out and why
-        self.told: dict[str, Any] = {}
-        self.relearned = 0
 
     # ── the board ─────────────────────────────────────────────────────
-
-    def _cells(self) -> list[tuple[int, int, list[float]]]:
-        left, top, width, height = self.board
-        w, h = width / self.cols, height / self.rows
-        return [(r, c, [left + c * w, top + r * h, w, h]) for r in range(self.rows) for c in range(self.cols)]
-
-    @staticmethod
-    def _look(image: Any, box: list[float]) -> bytes:
-        x, y, w, h = box
-        inner = image.crop((round(x + w * INSET), round(y + h * INSET), round(x + w * (1 - INSET)), round(y + h * (1 - INSET))))
-        return inner.resize((SIDE, SIDE)).tobytes()
 
     def _far(self, look: bytes) -> float:
         best = 255.0
@@ -149,10 +109,10 @@ class BlockKit:
         a reading of it (`state`, and `sources`: the box of each waiting piece)."""
         image = _open(png)
         grid = state.get("board")
-        if not isinstance(grid, list) or len(grid) != self.rows or any(len(row) != self.cols for row in grid):
+        if not self._shaped(grid):
             return False
         was = (self.size, self.board, self.empties, self.cut)
-        self.size, self.board = list(image.size), [round(part) for part in board]
+        self._place(image, board)
         looks = [(grid[r][c], self._look(image, box)) for r, c, box in self._cells()]
         empties = [look for value, look in looks if value == 0]
         blocks = [look for value, look in looks if value == 1]
@@ -181,55 +141,10 @@ class BlockKit:
     def _majority(self, image: Any) -> bool:
         """The empties learned from the screen alone: the look most cells share, when most do."""
         looks = [self._look(image, box) for _, _, box in self._cells()]
-        groups: list[list[bytes]] = []
-        for look in looks:
-            for group in groups:
-                if _distance(look, group[0]) <= MERGE:
-                    group.append(look)
-                    break
-            else:
-                groups.append([look])
-        groups.sort(key=len, reverse=True)
-        if len(groups[0]) < MAJORITY * len(looks):
+        kinds = groups(looks)
+        if len(kinds[0]) < MAJORITY * len(looks):
             return False
-        rest = [look for group in groups[1:] for look in group]
-        return self._learn(groups[0], rest)
-
-    @staticmethod
-    def pitch(png: bytes, box: list[int]) -> tuple[int, int] | None:
-        """How many rows and columns the board in `box` has, counted from the picture alone: of every count a
-        board may have, the one whose lines between cells lie where the picture has its edges and whose cell
-        middles lie where it has none (half the count puts middles on lines, twice it puts lines on middles).
-        None when no count stands out (a board with no lines between its cells and nothing on it)."""
-        from PIL import Image, ImageFilter
-
-        image = _open(png)
-        left, top, width, height = (round(part) for part in box)
-        if width < GAUGE_MOST * GAUGE_LEAST or height < GAUGE_MOST * GAUGE_LEAST:
-            return None
-        edges = image.crop((left, top, left + width, top + height)).convert("L").filter(ImageFilter.FIND_EDGES)
-
-        def count(profile: list[int]) -> int | None:
-            size = len(profile)
-
-            def near(at: float) -> float:
-                middle = min(size - 1, max(0, round(at)))
-                return max(profile[max(0, middle - GAUGE_REACH):middle + GAUGE_REACH + 1])
-            scores = {}
-            for cells in range(GAUGE_FEWEST, GAUGE_MOST + 1):
-                side = size / cells
-                lines = [near(index * side) for index in range(1, cells)]
-                middles = [near((index + 0.5) * side) for index in range(cells)]
-                scores[cells] = sum(lines) / len(lines) - sum(middles) / len(middles)
-            ranked = sorted(scores, key=scores.get, reverse=True)
-            best, second = ranked[0], ranked[1]
-            if scores[best] < GAUGE_CLEAR or scores[best] - scores[second] < GAUGE_APART * scores[best]:
-                return None
-            return best
-        across = list(edges.resize((width, 1), Image.BOX).tobytes())
-        down = list(edges.resize((1, height), Image.BOX).tobytes())
-        cols, rows = count(across), count(down)
-        return (rows, cols) if rows and cols else None
+        return self._learn([looks[index] for index in kinds[0]], [looks[index] for kind in kinds[1:] for index in kind])
 
     # ── the tray ──────────────────────────────────────────────────────
 
@@ -557,6 +472,20 @@ class BlockKit:
         if down or across:
             told["shift"] = [round(across * self.board[2] / self.cols), round(down * self.board[3] / self.rows)]
         return told
+
+    def same(self, state: dict[str, Any], said: dict[str, Any]) -> bool:
+        """Whether a screen read here is read as a model read it (a piece left unread says nothing)."""
+        pairs = [(seen, told) for seen, told in zip(state["tray"], said.get("tray") or []) if seen != []]
+        return state["board"] == said.get("board") and all(seen == told for seen, told in pairs)
+
+    def awaits(self, prior: dict[str, Any] | None) -> bool:
+        """Whether the screen about to be read shows what the rules cannot say: a tray dealt anew, which is
+        taken once two frames in a row read it the same (pieces still flying in read as others)."""
+        listed = prior.get("tray") if isinstance(prior, dict) else None
+        return isinstance(listed, list) and bool(listed) and all(entry is None for entry in listed)
+
+    def summary(self) -> dict[str, Any]:
+        return {"empties": len(self.empties)}
 
     # ── kept between games ────────────────────────────────────────────
 

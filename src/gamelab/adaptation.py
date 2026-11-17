@@ -237,6 +237,34 @@ def drag_for(source: list[int], board: list[int], shape: tuple[int, int], piece:
             "x1": first[0] + first[2] * cols / 2, "y1": first[1] + first[3] * rows / 2, "ms": ms}
 
 
+def input_for(controls: dict[str, Any], action: dict[str, Any], board: list[int], shape: tuple[int, int],
+              state: dict[str, Any] | None = None, sources: Any = None) -> dict[str, Any]:
+    """The input a move is played with by a family's controls, as a generated adapter's `target()`
+    would give it: the direction's key, a tap at the middle of the cell the move names, placed on the
+    board box the model gave, or a drag from the middle of the thing the move names to the middle of the
+    cells it is to cover."""
+    if controls["kind"] == "keys":
+        return {"kind": "key", "key": controls["keys"][action["direction"]]}
+    if controls["kind"] == "places":
+        if action["kind"] in controls["tap"]:
+            x, y = _middle(place(sources, controls["tap"][action["kind"]], taking=False))
+            return {"kind": "tap", "x": x, "y": y}
+        start, end = controls["drag"][action["kind"]]
+        (x0, y0), (x1, y1) = _middle(place(sources, action[start], taking=True)), _middle(place(sources, action[end], taking=False))
+        return {"kind": "drag", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "ms": controls["duration_ms"]}
+    if controls["kind"] == "drag" and "source" not in controls:
+        # from one cell of the board to another: the middle of each
+        one, other = cell_box(board, shape, action[controls["from"]]), cell_box(board, shape, action[controls["to"]])
+        return {"kind": "drag", "x0": one[0] + one[2] / 2, "y0": one[1] + one[3] / 2,
+                "x1": other[0] + other[2] / 2, "y1": other[1] + other[3] / 2, "ms": controls["duration_ms"]}
+    if controls["kind"] == "drag":
+        index = action[controls["index"]]
+        return drag_for(sources[index], board, shape, state[controls["source"]][index], action[controls["onto"]],
+                        controls["duration_ms"])
+    left, top, width, height = cell_box(board, shape, action["cell"])
+    return {"kind": "tap", "x": left + width / 2, "y": top + height / 2}
+
+
 class Adaptation:
     def __init__(self, model: Model, family_id: str, *, policy: str | None = None, compute: int = 200,
                  recovery: Recovery | None = None, writer: Model | None = None) -> None:
@@ -536,31 +564,8 @@ class Adaptation:
 
     def input_for(self, action: dict[str, Any], board: list[int], shape: tuple[int, int],
                   state: dict[str, Any] | None = None, sources: list[list[int] | None] | None = None) -> dict[str, Any]:
-        """The input a move is played with before any adapter exists, as a generated adapter's `target()`
-        would give it: the direction's key, a tap at the middle of the cell the move names, placed on the
-        board box the model gave, or a drag from the middle of the thing the move names to the middle of the
-        cells it is to cover."""
-        controls = self.controls
-        if controls["kind"] == "keys":
-            return {"kind": "key", "key": controls["keys"][action["direction"]]}
-        if controls["kind"] == "places":
-            if action["kind"] in controls["tap"]:
-                x, y = _middle(place(sources, controls["tap"][action["kind"]], taking=False))
-                return {"kind": "tap", "x": x, "y": y}
-            start, end = controls["drag"][action["kind"]]
-            (x0, y0), (x1, y1) = _middle(place(sources, action[start], taking=True)), _middle(place(sources, action[end], taking=False))
-            return {"kind": "drag", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "ms": controls["duration_ms"]}
-        if controls["kind"] == "drag" and "source" not in controls:
-            # from one cell of the board to another: the middle of each
-            one, other = cell_box(board, shape, action[controls["from"]]), cell_box(board, shape, action[controls["to"]])
-            return {"kind": "drag", "x0": one[0] + one[2] / 2, "y0": one[1] + one[3] / 2,
-                    "x1": other[0] + other[2] / 2, "y1": other[1] + other[3] / 2, "ms": controls["duration_ms"]}
-        if controls["kind"] == "drag":
-            index = action[controls["index"]]
-            return drag_for(sources[index], board, shape, state[controls["source"]][index], action[controls["onto"]],
-                            controls["duration_ms"])
-        left, top, width, height = cell_box(board, shape, action["cell"])
-        return {"kind": "tap", "x": left + width / 2, "y": top + height / 2}
+        """The input a move is played with before any adapter exists (`input_for`)."""
+        return input_for(self.controls, action, board, shape, state, sources)
 
     async def _send(self, surface: Surface, sent: dict[str, Any]) -> None:
         if sent["kind"] == "key":
