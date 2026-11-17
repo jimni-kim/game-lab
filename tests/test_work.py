@@ -9,7 +9,7 @@ from gamelab import work
 from gamelab.contracts import LOST, Budget, GoalSpec, Scope
 from gamelab.model import TurnResult
 from gamelab.rules.minesweeper import EXPLODED
-from test_adaptation_mines import COMPUTE, LOST_EARLY, WINNING, Mines, Reader, middle, quick, source as mines_source  # noqa: F401
+from test_adaptation_mines import BOARD, COMPUTE, LOST_EARLY, WINNING, Mines, Reader, middle, quick, source as mines_source  # noqa: F401
 from test_direct import PRESS, Lamps, Player
 
 
@@ -38,8 +38,8 @@ class Levels(Mines):
 
 class Passing(Reader):
     """The model, which also gets past a level's end as it is asked: the level played is given up with how it
-    ended, and a level that ended before the part began is passed by the notice's button (`uses` what it says
-    the button uses)."""
+    ended, and a level that ended before the part began is the model's to pass by its own inputs: the notice's
+    button (`uses` what it says the button uses), on a screen it names a result, and then a board it names so."""
 
     def __init__(self, fake, uses=None, stop=None, **options):
         super().__init__(fake, [mines_source()] * 8, **options)
@@ -47,6 +47,22 @@ class Passing(Reader):
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
+        if context.get("name_screen"):
+            self.asked.append(("name", context, 1))
+            return TurnResult(text=json.dumps({"scene": "result" if self.fake.covered else "board",
+                                               "situation": f"level {self.fake.dealt} {self.fake.ended or 'open'}"}))
+        if context.get("play"):
+            self.asked.append(("play", context, 1))
+            if self.stop is not None and self.stop(self.fake):
+                action, scene = {"kind": "stop", "because": "the hearts ran out"}, "result"
+            elif self.fake.covered:
+                action = {"kind": "tap", "at": middle(self.fake.button), **({"uses": self.uses(self.fake)} if self.uses else {})}
+                scene = "result"
+            else:
+                action, scene = {"kind": "tap", "at": [BOARD[0] + 5, BOARD[1] + 5]}, "board"
+            return TurnResult(text=json.dumps({"situation": f"level {self.fake.dealt}", "scene": scene, "guided": False,
+                                               "score": None, "action": action, "expect": "the next level",
+                                               "notes": "the button above the board deals the next level"}))
         if "tried" not in context:
             return await super().complete(request)
         self.asked.append(("recover", context, 1))
@@ -81,15 +97,27 @@ async def test_levels_are_cleared_one_after_another_and_the_work_hands_back_what
     handback = made["work"]
     assert handback["levels"] == {"wanted": 3, "won": 3, "lost": 0}
     assert [(part["outcome"], part["reason"]) for part in handback["parts"]] == [("goal_reached", "won")] * 3
-    # every move of every part is in the one run, and the record counts them all
+    # every move of every part is in the one run, and the record counts them all: the cells, and the one input
+    # the model sent between two levels (the input sent again unasked is no move of anybody's)
     cells = sum(1 for move in played.moves)
-    assert handback["spent"]["inputs"] == played.record["actions_used"] == cells == len(fake.taps) - 2
+    assert handback["spent"]["inputs"] == played.record["actions_used"] == cells == len(fake.taps) - 1
     assert {move["part"] for move in played.moves} == {1, 2, 3} and played.record["parts"] == 3
-    # the second and third parts began on the last level's end and passed it for the next: the model was asked
-    # the first time, told the work goes on, and the input it gave was sent again unasked the second
-    nexts = [context for kind, context, _ in model.asked if kind == "recover" and context["reason"] == "next_level"]
-    assert len(nexts) == 1 and nexts[0]["onward"]
-    assert [entry["source"] for entry in played.recoveries if entry["reason"] == "next_level"] == ["model", "replay"]
+    # the second and third parts began on the last level's end, a screen the family reads no board on: the
+    # model played on from it by its own inputs, told the work goes on (the button, on a screen it named a
+    # result), and the family played again from the screen it named a board, the model's move there not sent.
+    # The one input that opened the level was sent again unasked the second time
+    between = [context for kind, context, _ in model.asked if kind == "play"]
+    assert len(between) == 2 and all(context["onward"] and context["scenes"]["board"] for context in between)
+    passed = [move for move in played.moves if move["level"] == "L0"]
+    assert len(passed) == 1 and passed[0]["scene"] == "result" and passed[0]["part"] == 2
+    assert [entry["source"] for entry in played.recoveries if entry["reason"] == "next_level"] == ["replay"]
+    assert not [context for kind, context, _ in model.asked if kind == "recover" and context["reason"] == "next_level"]
+    # the input between two levels is no move of a level
+    assert [part["level_moves"] for part in handback["parts"]] == [part["confirmed"] - (number == 1)
+                                                                   for number, part in enumerate(handback["parts"])]
+    # where it stopped: the last level's end, named once by a model for the person
+    assert handback["stopped_at"]["screen"] == "result" and handback["stopped_at"]["situation"] == "level 3 won"
+    assert "(result): level 3 won" in work.told(handback)
     assert handback["stopped_at"]["where"] == "https://mines.example/" and handback["resume"]["scope"] == "current_game"
     assert handback["spent"]["used"] == {} and "levels won 3 of 3" in work.told(handback)
 
@@ -122,9 +150,9 @@ async def test_an_input_that_uses_what_was_not_allowed_is_not_sent_and_the_model
     # the second level's button said it spends coins: never pressed, the work handed back with one level won
     assert fake.dealt == 1 and made["work"]["levels"]["won"] == 1 and played.record["outcome"] == "gave_up"
     assert made["work"]["spent"]["refused"]["currency"] >= 1 and made["work"]["spent"]["used"] == {}
-    told = [context["tried"] for kind, context, _ in model.asked if kind == "recover" and context["tried"]]
-    assert told and "did not allow currency" in told[-1][0]["refused"]
-    assert all(context["allowed_meta_actions"] == [] for kind, context, _ in model.asked if kind == "recover")
+    told = [context["history"] for kind, context, _ in model.asked if kind == "play" and context["history"]]
+    assert told and "did not allow currency" in told[-1][-1]["refused"]
+    assert all(context["goal"]["allowed_meta_actions"] == [] for kind, context, _ in model.asked if kind == "play")
 
 
 async def test_a_stop_condition_a_model_says_is_met_hands_the_work_back_there():

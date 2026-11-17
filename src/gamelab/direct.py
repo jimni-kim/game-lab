@@ -23,6 +23,12 @@ An input that uses up something of the player's beyond the board (a booster, coi
 a lost level) is one the model must say so of (`uses`, by the names of `contracts.META_ACTIONS`), and it is sent
 only when the person allowed each of them (PLAN §25, R2): one that is not allowed is not sent, and the model is
 told it was refused. What was used is counted for the work's account.
+
+The model names each screen by its kind (`scenes`: a level's board, its result, the map, a notice, a story, a
+puzzle of another kind) and says when the game forces one input (`guided`). The loop goes by the name (PLAN §25,
+R5 and R6): which inputs are moves of a level, when a family's own reader is tried again, and, on a screen that
+is no board, a tap sent again and again without asking for as long as each changes a little of the screen
+(`repeat`: a story's lines; PLAN §27, M1).
 """
 from __future__ import annotations
 
@@ -32,7 +38,7 @@ import json
 import time
 from typing import Any
 
-from . import carry, frames, motion, recovery, resources
+from . import carry, frames, motion, recovery, resources, scenes
 from .contracts import META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
@@ -72,6 +78,9 @@ SEQUENCE_MOST, SEQUENCE_GAP_S = 4, 0.3
 CHANGE_WAIT_MS, CHANGE_LOOK_S = 15000, 0.5
 # the game started again from nothing at most this many times a game
 RELAUNCHES_MOST = 2
+# a tap sent at most this many times at one answer (`repeat`), and the share of the screen a tap of them may
+# change and still be followed by the next: more is another scene, which the model looks at first
+REPEAT_MOST, REPEAT_SHARE = 8, 0.3
 
 
 def _point(value: Any, size: tuple[int, int]) -> list[float] | None:
@@ -99,6 +108,10 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
     kind = action.get("kind")
     if kind in NEEDS and not can(kind, kinds):
         return None
+    if kind == TAP and action.get("repeat") is not None:
+        tap = recovery.check(action, size, kinds)
+        return {**tap, "repeat": action["repeat"]} if tap is not None and type(action["repeat"]) is int \
+            and 2 <= action["repeat"] <= REPEAT_MOST else None
     if kind in (TAP, SWIPE):
         return recovery.check(action, size, kinds)
     if kind == WAIT and action.get("until_change") is True:
@@ -241,10 +254,13 @@ class Direct:
     """One game played by a model's own inputs."""
 
     def __init__(self, model: Model, *, hint: str | None = None, accept_consent: bool = False,
-                 refused: dict[str, int] | None = None) -> None:
+                 refused: dict[str, int] | None = None, notes: str = "") -> None:
         self.model, self.hint, self.accept_consent = model, hint, accept_consent
         # what the model wants kept from one question to the next, and what it last said the screen shows
-        self.notes, self.situation = "", ""
+        self.notes, self.situation = notes[:NOTES_MOST], ""
+        # the kind of screen it last named (`scenes`), and whether it said the game forces one input there
+        self.scene: str | None = None
+        self.guided = False
         # the score it read on the first screen that showed one, and on the last
         self.first_score: float | None = None
         self.score: float | None = None
@@ -259,11 +275,14 @@ class Direct:
         self.refused: dict[str, int] = refused if refused is not None else {}
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
-                  moving: list[list[int]] | None = None, onward: bool = False) -> dict[str, Any] | None:
-        """The model's answer for the screen as it is: `{"action", "expect", "uses"}` with the action in the
-        screen's pixels, or None when it gave none the surface can be given or one that uses what `goal` does
-        not allow. `moving`: where something kept moving over the screen, left out of the picture. `onward`:
-        the work goes on past the level the screen shows ended, to the next (`agent.Agent.onward`)."""
+                  moving: list[list[int]] | None = None, onward: bool = False,
+                  been_here: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """The model's answer for the screen as it is: `{"action", "expect", "uses", "scene", "guided"}` with the
+        action in the screen's pixels, or None when it gave none the surface can be given or one that uses what
+        `goal` does not allow. `moving`: where something kept moving over the screen, left out of the picture.
+        `onward`: more levels are wanted and none was played in this part of the work yet: whatever the screen
+        shows, the next level is to be reached and played (`agent.Agent.onward`). `been_here`: play left a
+        screen like this one before (`scenes.Trail`)."""
         shown, scale = recovery.view(png)
         size = recovery._size(shown)
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
@@ -273,7 +292,9 @@ class Direct:
                  "inputs": sorted(kind for kind in NEEDS if can(kind, kinds)
                                   and (kind != RELAUNCH or self.relaunches < RELAUNCHES_MOST)) + [WAIT],
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
-                 **({"onward": True} if onward else {}), "notes": self.notes,
+                 "scenes": scenes.KINDS,
+                 **({"onward": True} if onward else {}),
+                 **({"been_here": been_here} if been_here else {}), "notes": self.notes,
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(shown).decode("ascii")}}
@@ -292,6 +313,7 @@ class Direct:
             self.situation = answer["situation"][:300]
         if isinstance(answer.get("notes"), str):
             self.notes = answer["notes"][:NOTES_MOST]
+        self.scene, self.guided = scenes.kind(answer.get("scene")), answer.get("guided") is True
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
             self.first_score = self.score if self.first_score is None else self.first_score
@@ -315,19 +337,23 @@ class Direct:
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
         because = answer["action"].get("because") if action["kind"] == STOP else None
         return {"action": action, "told": told, "expect": expect, "scale": scale, "uses": used,
+                "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {})}
 
     def saw(self, answer: dict[str, Any], before: bytes, after: bytes, moving: list[list[int]] | None = None,
-            carried: dict[str, Any] | None = None) -> bool:
+            carried: dict[str, Any] | None = None, repeated: dict[str, Any] | None = None) -> bool:
         """What the code saw of an input, kept for the next question: whether the screen changed and where
         (not counting where something kept moving all along), and for a carried drag where the thing held
-        was drawn from the finger."""
+        was drawn from the finger. `repeated`: a tap sent again unasked, how many times it was sent in all and
+        why the last was the last; `before` is then the screen its last sending was made on."""
         scale = answer["scale"]
         places = sorted(motion.outside(carry._boxes(before, after), moving or []),
                         key=lambda box: -box[2] * box[3])[:PLACES_TOLD]
         entry = {"action": answer["told"], "expected": answer["expect"], **({"uses": answer["uses"]} if answer.get("uses") else {}),
+                 **({"scene": answer["scene"]} if answer.get("scene") else {}),
                  "screen_changed": bool(places),
-                 "changed_at": [[round(part * scale) for part in box] for box in places]}
+                 "changed_at": [[round(part * scale) for part in box] for box in places],
+                 **({"repeated": repeated} if repeated else {})}
         if carried:
             # whether the thing was seen held on the way, the press it was given, and how far its drawing's middle
             # was from where it was to land when the finger let go (when it was seen then)
@@ -343,4 +369,5 @@ class Direct:
 
     def summary(self) -> dict[str, Any]:
         return {"questions": self.questions, "score_first": self.first_score, "score_last": self.score,
-                "notes": self.notes, "situation": self.situation, **({"refused": dict(self.refused)} if self.refused else {})}
+                "notes": self.notes, "situation": self.situation, "scene": self.scene,
+                **({"refused": dict(self.refused)} if self.refused else {})}

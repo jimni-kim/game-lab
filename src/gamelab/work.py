@@ -7,14 +7,16 @@ it that says how many are played and what is handed back.
     one part     every objective but `levels` is one game, played as it always was
     levels       a game for each level, each on the same surface with nothing started again between them, the
                  next told that the level it first sees ended is the last one's (`onward`), so a result or a
-                 map screen is passed for the next level rather than taken for its end. A level won counts; a
+                 map screen is passed for the next level rather than taken for its end, and what a model
+                 playing between the levels noted for itself goes to the next part. A level won counts; a
                  level lost ends the work unless the person allowed another try (`retry`) and did not ask to
                  stop at a loss (`LOST`)
     budget       one for the whole work: each part is given what the parts before it left of the inputs, the
                  seconds and the tokens
     hand back    the work's own account (`handback`): why it stopped, the levels won and lost, what it spent
-                 (inputs, moves, what was used beyond the board, tokens), and where it stopped, for the next
-                 request to go on from (`Scope.CURRENT_GAME`)
+                 (inputs, moves, what was used beyond the board, tokens), and where it stopped (the kind of
+                 screen, `scenes`, and what it shows, asked of a model once when levels were played), for the
+                 next request to go on from (`Scope.CURRENT_GAME`)
 
 Nothing here reads the screen or sends an input: the parts do.
 """
@@ -25,9 +27,13 @@ from dataclasses import replace
 import time
 from typing import Any
 
-from . import agent, catalog
+import logging
+
+from . import agent, catalog, scenes
 from .contracts import LOST, Budget, GoalSpec, Outcome, Scope
 from .run import Run
+
+log = logging.getLogger("gamelab.work")
 
 LEVELS = "levels"
 # a part that ended without a move of its own, a level counted for nothing: the work does not go round again on it
@@ -80,6 +86,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     used = confirmed = tokens_in = tokens_out = questions = 0
     won = lost = empty = 0
     ended: tuple[str, str, str] | None = None
+    # what the model playing between the levels kept for itself, for the part after
+    notes = str(options.pop("notes", "") or "")
     while ended is None:
         left, spent = _left(budget, used, started, tokens_in) if parts else (budget, None)
         if spent is not None:
@@ -95,12 +103,13 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             allowed_meta_actions=goal.allowed_meta_actions)
         run, adapted = await agent.play(surface, model, family_id, goal=part, budget=left, cancel=cancel,
                                         watch=_Numbered(watch, used) if watch is not None and parts else watch,
-                                        fresh=fresh and not parts, onward=levels, **options)
+                                        fresh=fresh and not parts, onward=levels, **{**options, "notes": notes})
         parts.append((run, adapted))
         record = run.record
         used, confirmed = used + record["actions_used"], confirmed + record["confirmed_actions"]
         tokens_in, tokens_out = tokens_in + adapted["tokens"]["input"], tokens_out + adapted["tokens"]["output"]
         questions += adapted["questions"]
+        notes = (adapted.get("direct") or {}).get("notes") or notes
         outcome, reason, detail = record["outcome"], record["reason"], record.get("detail", "")
         if not levels:
             ended = (outcome, reason, detail)
@@ -111,7 +120,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             family_id = record["family"]
         if outcome not in (Outcome.GOAL_REACHED, Outcome.GAME_OVER):
             ended = (outcome, reason, detail)
-        elif not record["confirmed_actions"]:
+        elif not record.get("level_moves", record["confirmed_actions"]):
             # it ended on what it first saw: that was no level played here
             empty += 1
             if empty > EMPTY_MOST:
@@ -131,18 +140,31 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         for kind in account:
             _added(account[kind], (adapted.get("account") or {}).get(kind))
     site = await surface.address()
+    stopped = {"screen": last.get("screen"), "situation": last.get("situation") or ""}
+    if levels and (budget.max_input_tokens is None or tokens_in < budget.max_input_tokens):
+        # where the levels left the game: the screen after the last of them is named once, for the person
+        try:
+            named = await scenes.name(model, await surface.capture())
+            tokens_in, tokens_out = tokens_in + named["usage"].input_tokens, tokens_out + named["usage"].output_tokens
+            questions += 1
+            if named["scene"] or named["situation"]:
+                stopped = {"screen": named["scene"], "situation": named["situation"]}
+        except Exception as error:
+            log.info("the last screen could not be named: %s", error)
     handback = {
         "goal": goal.to_json(), "outcome": outcome, "reason": reason, "detail": detail,
         "levels": {"wanted": goal.target_value, "won": won, "lost": lost} if levels else None,
         "parts": [{"outcome": run.record["outcome"], "reason": run.record["reason"], "family": run.record.get("family"),
                    "actions": run.record["actions_used"], "confirmed": run.record["confirmed_actions"],
+                   "level_moves": run.record.get("level_moves"),
                    "used": (adapted.get("account") or {}).get("used") or {}} for run, adapted in parts],
         "spent": {"inputs": used, "moves": confirmed, "used": account["used"], "refused": account["refused"],
                   "tokens": {"input": tokens_in, "output": tokens_out}, "questions": questions,
                   "seconds": round(time.monotonic() - started, 1)},
         # where the work stopped: the next request may go on from this screen as it stands
         "stopped_at": {"where": site, "family": last_run.record.get("family"), "scene": last.get("scene"),
-                       "situation": last.get("situation") or "", "in_play": last.get("scene") == "playing"
+                       "screen": stopped["screen"], "situation": stopped["situation"],
+                       "in_play": last.get("scene") == "playing"
                        and outcome not in (Outcome.GOAL_REACHED, Outcome.GAME_OVER)},
         "resume": {"where": site, "scope": str(Scope.CURRENT_GAME)},
     }
@@ -164,4 +186,5 @@ def told(handback: dict[str, Any]) -> str:
     done = f"levels won {levels['won']} of {levels['wanted']}, lost {levels['lost']}; " if levels else ""
     used = ", ".join(f"{name} {count}" for name, count in sorted(spent["used"].items())) or "nothing beside the board"
     return (f"{handback['outcome']} ({handback['reason']}): {done}{spent['inputs']} inputs, {spent['moves']} moves, "
-            f"used {used}; stopped at {stopped['where']}" + (f": {stopped['situation']}" if stopped["situation"] else ""))
+            f"used {used}; stopped at {stopped['where']}" + (f" ({stopped['screen']})" if stopped.get("screen") else "")
+            + (f": {stopped['situation']}" if stopped["situation"] else ""))

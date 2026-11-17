@@ -20,7 +20,11 @@ questions), when a model sees nothing more to do (`gave_up`, with what it said o
 says a condition the person set for stopping is met (`stopped`).
 
 One game is one part of the work a person asked for (`work`): when more levels follow (`onward`), a level the
-screen shows ended before any move here is passed for the next one, not taken for this game's end.
+screen shows ended before any move here is passed for the next one, not taken for this game's end. Whatever
+stands between two levels (a result, a map, a notice, a story, a puzzle of another kind) is no family's to
+read: until a move of a level is confirmed in this part, a screen the family reads no board on is the model's
+to play by its own inputs (`_between`), and the family plays again from the first screen the model names a
+board that the family's reader reads (`scenes`, `_resume`; PLAN §25, R5 and R6).
 """
 from __future__ import annotations
 
@@ -31,7 +35,7 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, carry, catalog, direct, kits, made, samples
+from . import adaptation, carry, catalog, direct, kits, made, recovery as recovering, samples, scenes
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
 from .adapters.generated import GeneratedAdapter
@@ -194,9 +198,23 @@ class Agent:
     def __init__(self, surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-                 writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False) -> None:
+                 writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
+                 notes: str = "") -> None:
         # more levels follow this one (`work`): a level shown ended before any move here is passed for the next
         self.onward = onward
+        # what a model playing the part before this one by its own inputs kept for itself (how this game gets
+        # from one level to the next): the model of this part starts from it
+        self.notes = notes
+        # moves of a level confirmed in this part: the family's, and the model's own on a screen it named a board
+        self.level_moves = 0
+        # the kind of the last screen a model named, or a board once a move on it was confirmed (`scenes`)
+        self.screen: str | None = None
+        # the screens the model's own play passed through since the last move of a level (`scenes.Trail`), the
+        # one input it sent among them when it was one a kept recovery can send again, and the input count a
+        # family tried again on a screen named a board did not read it at
+        self.trail = scenes.Trail()
+        self.passage: dict[str, Any] | None = None
+        self.unread_at: int | None = None
         # what the inputs sent used up beyond the board, and what inputs not sent would have (PLAN §25, R2)
         self.account: dict[str, dict[str, int]] = {"used": {}, "refused": {}}
         # what names a single cell cut out of the screen when the family's reader and the rules cannot (`checker`:
@@ -339,6 +357,7 @@ class Agent:
             record = {"version": RECORD_VERSION, "family": self.family_id, "phase": "ended", "outcome": str(outcome),
                       "reason": reason, "detail": detail, "goal": self.goal.to_json(), "budget": self.budget.to_json(),
                       "policy": self.policy, "actions_used": self.used, "confirmed_actions": self.confirmed,
+                      "level_moves": self.level_moves,
                       "levels": dict(self.levels), "history": self.moves[-HISTORY_KEPT:]}
             run = Run(record, list(self.moves), looks=self.shots, last_screen=self.last_png,
                       recoveries=list(self.recovery.log) if self.recovery else [])
@@ -362,6 +381,7 @@ class Agent:
                 # what was used up beyond the board, and where the game stood when it ended: what the work hands back
                 "account": {kind: dict(counts) for kind, counts in self.account.items()},
                 "scene": self.state.get("scene") if isinstance(self.state, dict) else None,
+                "screen": self.screen,
                 "situation": self.player.situation if self.player is not None and self.policy == "model" else self._situation(),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
@@ -437,7 +457,9 @@ class Agent:
                 return True
         return False
 
-    async def _take(self, family_id: str, probe: bool = False) -> bool:
+    async def _take(self, family_id: str, probe: bool = False, kept: bool = True) -> bool:
+        """`kept` off: nothing kept of the site is taken up (it did not read the screen): the family is tried by
+        a model's reading alone."""
         if self.adapter is not None:
             self.adapter.close()
         self.adapter = self.trace = self.made = self.board = self.carried = self.unproven = self.unread_move = None
@@ -457,12 +479,13 @@ class Agent:
         except ValueError as error:
             raise _End(Outcome.UNSUPPORTED, str(error)) from None
         self.family_id = family_id
-        kept = None if self.store is None or self.fresh or kits.has(family_id) else self.store.load(self.site, family_id)
-        profile = self.store.profile(self.site, family_id) if kits.has(family_id) and self.store and not self.fresh else None
+        old = None if self.store is None or self.fresh or not kept or kits.has(family_id) else self.store.load(self.site, family_id)
+        profile = self.store.profile(self.site, family_id) if kits.has(family_id) and self.store and not self.fresh \
+            and kept else None
         if profile is not None and self._restore(family_id, profile):
             pass
-        elif kept is not None:
-            source, meta, self.trace = kept
+        elif old is not None:
+            source, meta, self.trace = old
             self.made, self.generations = Made(source, meta["generations"], True, meta["report"]), meta["generations"]
             self.board = self.trace.looks[0].board
             self._adopted()
@@ -811,6 +834,8 @@ class Agent:
     async def _confirmed(self, before: Reading, action: dict[str, Any], sent: dict[str, Any], after: Reading,
                          sent_at: float) -> None:
         self.confirmed += 1
+        self.level_moves += 1
+        self.screen = scenes.BOARD
         self.stalled = self.tries = self.fruitless = 0
         if self._made_plays():
             self.transitions = [*self.transitions, {"state": before.state, "action": action, "after": after.state}][-made.EXAMPLES_KEPT:]
@@ -853,8 +878,9 @@ class Agent:
         return self.family.model.assess(before, action, after, self.family.rules)["effect"]
 
     def _before_any(self) -> bool:
-        """Whether more levels follow and nothing was played here yet: what the screen shows ended is the last's."""
-        return self.onward and not self.confirmed
+        """Whether more levels follow and no move of a level was confirmed here yet: what the screen shows ended
+        is the last's, and whatever else it shows stands between that level and the next."""
+        return self.onward and not self.level_moves
 
     def _passed(self, state: dict[str, Any]) -> bool:
         if not self._before_any():
@@ -937,6 +963,10 @@ class Agent:
                 return None
             if self.rewrites >= MAX_RELEARNS:
                 self._demote("relearn_limit")
+            elif expect is None and self._before_any() and self.direct:
+                # no level is open as far as the reader sees, and none was played here yet: the screen is one
+                # between two levels, the model's to look at as that (`_between`), not to read a board from
+                return None
             elif self.unread is None and expect is None:
                 # nothing vouches for what the model will read here until a move from it is confirmed
                 self.distrusted = self.blind = True
@@ -1497,6 +1527,9 @@ class Agent:
         if self._before_any():
             # whatever stands in the way, the next level is what is looked for
             reason = NEXT_LEVEL
+            if self.direct:
+                await self._between()
+                return
         if self.tries >= MAX_TRIES:
             if await self._other_family():
                 return
@@ -1512,8 +1545,10 @@ class Agent:
                 self.distrusted = self.blind = False
             # an input of the model's stands between the last move and this screen: it is read for itself
             self.unread_move = None
+            self.screen = self.recovery.log[-1].get("scene") or self.screen
             return
         action = self.recovery.log[-1]["action"] or {}
+        self.screen = self.recovery.log[-1].get("scene") or self.screen
         if action.get("kind") == STOP:
             raise _End(Outcome.STOPPED, "stop_condition", self.recovery.log[-1].get("because") or self._situation())
         if action.get("kind") == GIVE_UP and "end" in action and self._before_any():
@@ -1529,6 +1564,19 @@ class Agent:
         if await self._other_family():
             return
         await self._give_up(reason)
+
+    async def _between(self) -> None:
+        """The screen stands between two levels (PLAN §25, R6): the input that opened the next level from a
+        screen like it before is sent again unasked; else the model plays on by its own inputs, through
+        whatever the game puts there, until a screen it names a board is read by the family (`_resume`)."""
+        self.carried = None
+        if self.recovery is not None and await self.recovery.replay(self.seen, NEXT_LEVEL):
+            self.unread_move = None
+            return
+        self.fruitless = self.since_tried = 0
+        if self.resumable is None and (self.game is None or self.family_id != self.game.id):
+            self.resumable = self.family_id
+        await self._play_direct(self._situation())
 
     # ── a game of no registered family ────────────────────────────────
 
@@ -1601,7 +1649,7 @@ class Agent:
         self.adapter, self.family_id, self.policy = None, None, "model"
         if self.player is None:
             self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent,
-                                        refused=self.account["refused"])
+                                        refused=self.account["refused"], notes=self.notes)
         player = self.player
         self.found["direct"] = told = player.summary()
         self.levels.setdefault(L0, 0)
@@ -1624,9 +1672,15 @@ class Agent:
                 await self.watch.seen(before)
             left = {"inputs": self.budget.max_actions - self.used,
                     "seconds": None if self._left() is None else round(self._left())}
+            # a screen that is no board, when play left one like it before: the model is told, with what it tried
+            # from there, and play that keeps coming back to it is given up (PLAN §27, M5)
+            been = self.trail.met(before) if player.scene != scenes.BOARD else None
+            if been is not None and self.trail.round():
+                raise _End(Outcome.GAVE_UP, "going_round", player.situation)
+            between = self._before_any()
             try:
                 answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving,
-                                                       onward=self._before_any()))
+                                                       onward=between, been_here=been))
             except Exception as error:
                 log.info("the model could not be asked for a move: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -1638,7 +1692,10 @@ class Agent:
                     raise _End(Outcome.GAVE_UP, "model_no_answer", player.situation)
                 continue
             silent = 0
-            action = answer["action"]
+            action, scene = answer["action"], answer["scene"]
+            self.screen = scene or self.screen
+            # a move of a level: an input on a screen the model names a board (or names nothing)
+            level = scene in (None, scenes.BOARD)
             if action["kind"] == direct.STOP:
                 raise _End(Outcome.STOPPED, "stop_condition", answer.get("because") or player.situation)
             if action["kind"] == direct.DONE and self._before_any():
@@ -1649,8 +1706,23 @@ class Agent:
                            WON if won else "end_screen", player.situation)
             if action["kind"] == direct.GIVE_UP:
                 raise _End(Outcome.GAVE_UP, "model_gave_up", player.situation)
+            if scene == scenes.BOARD and not answer["guided"] and self.resumable is not None \
+                    and self.resumes < RESUMES_MOST and action["kind"] not in (direct.WAIT, direct.RELAUNCH) \
+                    and (self.unread_at is None or self.used - self.unread_at >= RESUME_EVERY):
+                # a level is open and takes any move: the family whose board it is plays it, and the model's
+                # move is not sent. One the family does not read is the model's, and the family is tried again
+                # some moves on
+                if await self._resume():
+                    return
+                self.unread_at = self.used
             if self.watch is not None:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
+            if not level:
+                # the one input sent between two levels, when a kept recovery can send it again (`_resume`)
+                self.passage = {"action": {key: value for key, value in action.items() if key != "repeat"},
+                                "signature": recovering.signature(before)} \
+                    if between and not self.trail.inputs and not answer["uses"] and action["kind"] in recovering.NEEDS else None
+                self.trail.sent(answer["told"])
             carried = await direct.send(self.seen, action, self.carrier, before)
             self.used += 1
             for name in answer["uses"]:
@@ -1659,16 +1731,37 @@ class Agent:
                 await self.watch.sent()
             after = await direct.settled(self.seen)
             moving = motion.joined(moving + self.seen.moving)
-            changed = player.saw(answer, before, after, moving, carried)
+            repeated, sent_on = None, before
+            if action.get("repeat") and not level and not answer["uses"]:
+                # a tap to be sent again while each changes a little of the screen (a story's lines): the next
+                # is not sent once one changed nothing or so much that the scene is another (PLAN §27, M1)
+                sends, why = 1, "count"
+                while sends < action["repeat"]:
+                    share = self._share(sent_on, after, moving)
+                    if not share or share >= direct.REPEAT_SHARE or self.used >= self.budget.max_actions:
+                        why = "no_change" if not share else "scene_changed" if share >= direct.REPEAT_SHARE else "budget"
+                        break
+                    self._check_stops()
+                    sent_on = after
+                    await direct.send(self.seen, {"kind": direct.TAP, "at": action["at"]})
+                    self.used, sends = self.used + 1, sends + 1
+                    after = await direct.settled(self.seen)
+                    moving = motion.joined(moving + self.seen.moving)
+                repeated = {"sent": sends, "stopped": why}
+            changed = player.saw(answer, sent_on, after, moving, carried, repeated) or bool(repeated and repeated["sent"] > 1)
             if carried and carried.get("picked") and not changed:
                 self.carrier.doubt()
             self.levels[L0] += 1
             self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": answer["told"], "level": L0,
                                "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
                                "expected": answer["expect"], "at_s": round(time.monotonic() - self.started, 2),
+                               **({"scene": scene} if scene else {}), **({"repeated": repeated} if repeated else {}),
                                **({"carried": carried} if carried else {})})
             if changed or action["kind"] == direct.WAIT:
                 self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT), 0
+                if level and changed and action["kind"] != direct.WAIT:
+                    self.level_moves += 1
+                    self.trail.clear()
             else:
                 idle += 1
                 if idle >= MAX_IDLE:
@@ -1689,7 +1782,9 @@ class Agent:
                     if await self._resume():
                         return
                     continue
-            if changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
+            # a model that names no kind of screen: the family is tried again when the scene changed, or some
+            # moves on
+            if scene is None and changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
 
     def _due(self) -> bool:
@@ -1701,21 +1796,33 @@ class Agent:
         whose play broke off may read the board now: a tutorial gave way to the game, a level to the next."""
         if self.resumable is None or self.resumes >= RESUMES_MOST:
             return False
+        return self._share(before, after, moving) >= RESUME_SHARE
+
+    def _share(self, before: bytes, after: bytes, moving: list[list[int]]) -> float:
+        """The share of the screen that changed between two pictures of it, left out what kept moving."""
         from io import BytesIO
         from PIL import Image
 
         with Image.open(BytesIO(after)) as image:
             area = image.width * image.height
         changed = motion.outside(carry_boxes(before, after), moving)
-        return sum(box[2] * box[3] for box in changed) >= RESUME_SHARE * area
+        return sum(box[2] * box[3] for box in changed) / area
 
     async def _resume(self) -> bool:
-        """The family whose play broke off, tried again on the screen as it is now: taken when its board reads."""
+        """The family whose play broke off, tried again on the screen as it is now: taken when its board reads.
+        A reader kept of the site vouches for nothing here: it must read this screen, else the family is tried
+        by a model's reading of it."""
         family_id, self.resumes, self.since_tried = self.resumable, self.resumes + 1, 0
         tried = {"family": family_id, "at_action": self.used, "taken": False}
         self.found.setdefault("resumes", []).append(tried)
+        reading = None
         try:
             taken = await self._take(family_id, probe=True)
+            if taken and self.adapter is not None:
+                reading = await self._read_code(None)
+                if reading is None:
+                    tried["kept_unread"] = self.why
+                    taken = await self._take(family_id, probe=True, kept=False)
         except _End:
             raise
         except Exception as error:
@@ -1730,7 +1837,13 @@ class Agent:
         tried["taken"] = self.resumed = True
         self.tries = self.stalled = self.fruitless = 0
         self.shrugged = False
-        self.carried = self.unread_move = self.ineffective = self.state = None
+        self.unread_move = self.ineffective = self.state = None
+        self.carried = reading
+        if self.passage is not None and self.trail.inputs == 1 and self.recovery is not None:
+            # one input opened the level from the screen before it: sent again unasked on a screen like that one
+            self.recovery.known = [*self.recovery.known, {**self.passage, "next": True}][-recovering.KNOWN_KEPT:]
+        self.passage = None
+        self.trail.clear()
         return True
 
     def _won_meets_goal(self) -> bool:
@@ -1772,11 +1885,11 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
-               **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               notes: str = "", **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
     family's reader could not."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
-                       direct=direct, light=light, onward=onward).run()
+                       direct=direct, light=light, onward=onward, notes=notes).run()

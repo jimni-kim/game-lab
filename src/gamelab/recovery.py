@@ -209,6 +209,26 @@ class Recovery:
                            "replayed": entry["source"] == "replay", "reason": reason})
         return True
 
+    async def replay(self, surface: Any, reason: str) -> bool:
+        """The input kept for a screen like this one sent again, with no model asked: True when one was sent."""
+        seen = signature(await surface.capture())
+        self._forget()
+        action = self._replay(seen, reason) if reason in REPLAYED_REASONS else None
+        if action is None:
+            return False
+        entry: dict[str, Any] = {"reason": reason, "source": "replay", "situation": None, "action": action, "changed": None}
+        self.log.append(entry)
+        try:
+            await send(surface, action)
+            await asyncio.sleep(SETTLE_S)
+            entry["changed"] = _distance(seen, signature(await surface.capture())) > 0
+        except Exception:
+            log.exception("recovery input failed: %s", action)
+            return False
+        self.tried.append({"action": action, "screen_changed": entry["changed"], "signature": seen, "replayed": True,
+                           "reason": reason})
+        return True
+
     def _forget(self) -> None:
         """A replayed input after which play is stuck again did not get past its screen: it is not kept."""
         if self.tried and self.tried[-1]["replayed"]:
@@ -227,6 +247,8 @@ class Recovery:
 
     async def _ask(self, png: bytes, reason: str, context: dict[str, Any], kinds: frozenset[str],
                    entry: dict[str, Any], timeout_s: float | None) -> dict[str, Any] | None:
+        from . import scenes
+
         png, scale = view(png)
         size = _size(png)
         timeout = RECOVER_TIMEOUT_S if timeout_s is None else min(RECOVER_TIMEOUT_S, timeout_s)
@@ -237,6 +259,7 @@ class Recovery:
                  "inputs": sorted(kind for kind, needs in NEEDS.items() if needs in kinds) + [WAIT],
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
                  "allowed_meta_actions": sorted(self.allowed), **({"stop_conditions": list(self.stops)} if self.stops else {}),
+                 "scenes": scenes.KINDS,
                  **context,
                  "tried": [{"action": tried["action"], "screen_changed": tried["screen_changed"],
                             **({"refused": tried["refused"]} if "refused" in tried else {})}
@@ -258,6 +281,8 @@ class Recovery:
             return None
         if isinstance(answer.get("situation"), str):
             entry["situation"] = answer["situation"][:300]
+        if scenes.kind(answer.get("scene")) is not None:
+            entry["scene"] = answer["scene"]
         action, used = check(answer.get("action"), size, kinds), uses(answer.get("action"))
         if action is None or used is None:
             return None
