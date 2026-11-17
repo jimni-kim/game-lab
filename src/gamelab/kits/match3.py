@@ -40,6 +40,10 @@ GOAL_KINDS = ("collect", "bring_down", "other")
 # this share of a cell a side, this share in from each corner, each made this many pixels a side; corners nearer
 # than UNDER_NEAR (mean difference a channel, of 255) are one look
 UNDER_SIDE, UNDER_IN, UNDER_PIXELS, UNDER_NEAR = 0.14, 0.03, 2, 12.0
+# a layer seen through is little unlike the cell with none: their corners are told apart by the nearest, and one
+# value's corners give way to another's only when as near as this (2026-11-17, a game's jelly: learned at the
+# usual half of UNDER_NEAR, the corners with none took the place of every jelly's)
+UNDER_APART = UNDER_NEAR / 6
 # a piece with a power of a kind nobody knows: what a look not learned yet reads as
 UNKNOWN = POWERED * POWER
 # what a light model may call a cell it is shown, and the value each is
@@ -80,6 +84,7 @@ class Match3Kit(Valued):
         # how many layers lie under a cell's piece, by what its corners look like, when the reading learned from
         # said some cell had any (`under`); None for a board with none
         self.unders: Looks | None = None
+        self.layered = False
 
     def calibrate(self, png: bytes, board: list[int], state: dict[str, Any], sources: Any = None) -> bool:
         grid = state.get(self.field)
@@ -109,8 +114,9 @@ class Match3Kit(Valued):
                 self.looks.add(number, pieces[index][1])
         under = state.get("under")
         self.unders = None
-        if self._shaped(under) and any(isinstance(cell, int) and cell > 0 for row in under for cell in row):
-            self.unders = Looks(UNDER_NEAR, UNDER_NEAR / 2)
+        self.layered = self._shaped(under) and any(isinstance(cell, int) and cell > 0 for row in under for cell in row)
+        if self.layered:
+            self.unders = Looks(UNDER_NEAR, UNDER_APART)
             for r, c, box in self._cells():
                 if (r, c) not in self.holes and isinstance(under[r][c], int):
                     self.unders.add(under[r][c], self._corners(image, box))
@@ -297,7 +303,8 @@ class Match3Kit(Valued):
         image = self._shown(png)
         if image is None or not isinstance(listed, list):
             return None
-        layered = self.unders is not None and any(value for value in self.unders.kept if value)
+        # whether the board has layers is what the reading learned from said, not whether their corners stood out
+        layered = self.layered
         found = []
         for thing in listed:
             if not isinstance(thing, dict) or thing.get("kind") not in GOAL_KINDS:
@@ -325,6 +332,10 @@ class Match3Kit(Valued):
             return None
         return ranked[0][1]
 
+    def summary(self) -> dict[str, Any]:
+        return {**super().summary(), **({"unders": {str(value): len(looks) for value, looks in self.unders.kept.items()},
+                                          "layered": self.layered} if self.unders is not None else {})}
+
     def to_json(self) -> dict[str, Any]:
         return {**super().to_json(), **({"unders": self.unders.to_json()} if self.unders is not None else {}), "holes": sorted(self.holes), "proven": sorted(self.proven)}
 
@@ -333,7 +344,8 @@ class Match3Kit(Valued):
             return False
         self.holes = {tuple(cell) for cell in kept.get("holes", [])}
         if kept.get("unders"):
-            self.unders = Looks(UNDER_NEAR, UNDER_NEAR / 2)
+            self.unders = Looks(UNDER_NEAR, UNDER_APART)
             self.unders.restore(kept["unders"])
+            self.layered = any(value for value in self.unders.kept)
         self.proven = set(kept.get("proven", []))
         return True
