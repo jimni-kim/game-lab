@@ -6,10 +6,11 @@ from typing import Any
 
 from . import grid
 from .block_placement import BlockKit
+from .match3 import Match3Kit
 from .minesweeper import MinesKit
 from .slide_merge import SlideKit
 
-KITS: dict[str, Any] = {kit.family_id: kit for kit in (BlockKit, SlideKit, MinesKit)}
+KITS: dict[str, Any] = {kit.family_id: kit for kit in (BlockKit, SlideKit, MinesKit, Match3Kit)}
 
 
 def has(family_id: str | None) -> bool:

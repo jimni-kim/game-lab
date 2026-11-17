@@ -12,6 +12,8 @@ from gamelab.contracts import Budget, GoalSpec
 from gamelab.kits import grid
 from fake_screen import BOARD, Screen, render
 from test_adaptation import Author
+import test_adaptation_match3 as gems
+import test_adaptation_mines as mines
 
 
 @pytest.fixture(autouse=True)
@@ -96,3 +98,89 @@ def test_a_cell_is_the_value_whose_look_it_has_and_none_when_it_has_no_look_know
     # what is said of a look now holds over what was said of it before
     looks.add(16, bytes([41] * 12))
     assert looks.name(bytes([41] * 12))[0] == 16 and set(looks.kept) == {2, 16}
+
+
+MINE_NAMES = {mines.OPEN_FACE: 0, **{ink: count for count, ink in mines.INKS.items()}, mines.COVERED_FACE: 9,
+              mines.FLAG_INK: 10, mines.MINE_INK: 11, mines.EXPLODED_FACE: 12}
+
+
+async def test_minesweeper_is_read_by_the_familys_reader_and_each_new_look_is_named_once_by_a_light_model():
+    fake = mines.Mines()
+    reader, light = mines.Reader(fake), Light(MINE_NAMES)
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"),
+                                    budget=Budget(60, mines.COMPUTE, 300), light=light)
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "terminal") or \
+        played.record["outcome"] == "goal_reached", (played.record, made)
+    assert fake.over() and not any(cell == mines.EXPLODED for row in fake.grid for cell in row)
+    # the model read the first screen (every cell covered); each look after it (an opened cell, a 1, a 2, ...)
+    # was shown to the light model once, cut out alone, and nobody wrote any code
+    assert labels(reader) == 1 and made["generations"] == 0, (reader.asked, made)
+    told = made["kit"]["light"]
+    assert told["questions"] >= 1 and told["refused"] == 0 and told["named"] == made["kit"]["taught"]["light"] > 0
+    assert sum(len(checks) for checks in light.asked) <= 2 * 9 and all(len(checks) <= 2 * 6 for checks in light.asked)
+
+
+async def test_a_light_models_answer_the_rules_do_not_allow_is_not_kept_and_the_screen_is_the_models():
+    fake = mines.Mines()
+    # it calls an opened cell with nothing on it covered: no move leaves the cell it opened covered
+    reader, light = mines.Reader(fake), Light({**MINE_NAMES, mines.OPEN_FACE: 9})
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"),
+                                    budget=Budget(60, mines.COMPUTE, 300), light=light)
+    assert played.record["outcome"] == "goal_reached" and fake.over(), (played.record, made)
+    told = made["kit"]["light"]
+    assert told["refused"] >= 1 and labels(reader) > 1 and made["generations"] == 0, (told, made)
+    # what the model read taught the reader: the game was not read by the model from there on
+    assert played.record["levels"]["L3"] > played.record["levels"]["L2"], played.record["levels"]
+
+
+async def test_with_no_light_model_a_new_look_is_the_models_to_read_and_still_no_code_is_written():
+    fake = mines.Mines()
+    reader = mines.Reader(fake)
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"),
+                                    budget=Budget(60, mines.COMPUTE, 300))
+    assert played.record["outcome"] == "goal_reached" and fake.over(), (played.record, made)
+    assert 1 < labels(reader) < len(fake.taps) and made["generations"] == 0 and "write" not in [kind for kind, _, _ in reader.asked]
+
+
+class Muddled(gems.Jeweller):
+    """A model that takes some pieces of one colour for another colour nobody else has."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            answer["state"]["grid"] = [[7 if cell == 3 and col % 3 == 0 else cell for col, cell in enumerate(row)]
+                                       for row in answer["state"]["grid"]]
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_match_three_is_read_by_the_familys_reader_by_what_its_pieces_look_like_and_no_code_is_written(tmp_path):
+    fake = gems.Gems()
+    jeweller = gems.Jeweller(fake)
+    played, made = await agent.play(fake, jeweller, "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120),
+                                    store=Store(tmp_path))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    assert played.record["levels"] == {"L2": 1, "L3": 19} and [kind for kind, _ in jeweller.asked] == ["label"], made
+    assert not fake.refused and [move["action"] for move in played.moves] == fake.swaps and made["generations"] == 0
+
+
+async def test_one_kind_of_piece_a_model_calls_two_colours_is_one_kind_by_what_it_looks_like():
+    fake = gems.Gems()
+    muddled = Muddled(fake)
+    played, made = await agent.play(fake, muddled, "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    # six kinds of piece on the screen are six values, whatever the model called them, and the game is read by
+    # the reader from the first screen on
+    assert made["kit"]["values"] == len(gems.INKS) and played.record["levels"] == {"L2": 1, "L3": 19}, (played.record, made)
+    assert not fake.refused and [kind for kind, _ in muddled.asked] == ["label"]
+
+
+async def test_a_screen_left_unread_is_looked_at_twice_before_it_is_the_models_however_slow_its_captures(monkeypatch):
+    """On a device whose every capture takes longer than a screen is waited on, the first frame after a move was
+    already too old: the screen went to the model before the rules were asked what the new tile is."""
+    monkeypatch.setattr(agent, "RESTLESS_S", 0.0)
+    fake = Screen()
+    author = Author(fake, [])
+    played, made = await agent.play(fake, author, "slide_merge", goal=GoalSpec("actions", 40), budget=Budget(60, 20, 120))
+    assert played.record["outcome"] == "goal_reached" and labels(author) == 1, (played.record, made)
+    assert made["kit"]["taught"]["rules"] >= 2

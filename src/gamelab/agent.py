@@ -182,7 +182,7 @@ class Agent:
         # a light model); None: such a cell is the reading model's
         self.light = light
         # the questions put to it, the cells its answers named, and the answers the rules did not take
-        self.light_told = {"asked": 0, "named": 0, "refused": 0}
+        self.light_told = {"questions": 0, "named": 0, "refused": 0}
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
         # the screen as a model is shown it: what keeps moving over it (a tutorial's hand) left out (`motion`)
         self.seen = Steady(surface)
@@ -812,6 +812,7 @@ class Agent:
         deadline = (after or clock()) + policy.timeout_s
         previous = pictured = read = unread = None
         stable_since = rested = read_since = unread_since = clock()
+        unread_frames = 0
         self.read_told = told = {"frames": 0, "drawn_through": 0, "by": "kit" if kit else "adapter"}
         began = clock()
         dealt = False
@@ -852,8 +853,11 @@ class Agent:
                 self.unread = self.adapter.partial if why == adaptation.CELLS_UNREAD else None
                 seen = (why, self.unread)
                 if seen != unread:
-                    unread, unread_since = seen, looked
-                if clock() - unread_since >= max(policy.stable_s, RESTLESS_S) or clock() >= deadline:
+                    unread, unread_since, unread_frames = seen, looked, 0
+                unread_frames += 1
+                # left unread the same way for long enough, on two frames at least (a device whose captures take
+                # longer than that wait would else be given up on at its first: 2026-11-17, a capture took 1.3 s)
+                if (unread_frames >= 2 and clock() - unread_since >= max(policy.stable_s, RESTLESS_S)) or clock() >= deadline:
                     return None
             image = self.adapter.picture(png) if usable and policy.still else None
             key = (state.id, state.geometry_ref, image) if usable else None
@@ -909,9 +913,10 @@ class Agent:
             return False
         agreeing = [state for state in possible if _agrees(_board(partial), _board(state))]
         if isinstance(self.adapter, KitAdapter):
-            # a result that has, where the screen is unread, a value the cell there does not look like is not
-            # this screen's (a new tile unlike every 2 seen is the 4 it may also be)
-            agreeing = [state for state in agreeing if not self.adapter.excludes(png, state)]
+            if agreeing and any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
+                # the rules leave it open: a result that has, where the screen is unread, a value the cell there
+                # does not look like is not this screen's (a new tile unlike every 2 seen is the 4 it may also be)
+                agreeing = [state for state in agreeing if not self.adapter.excludes(png, state)]
             if not agreeing or any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
                 return False
             learned = self.adapter.teach(png, agreeing[0])
@@ -951,7 +956,7 @@ class Agent:
         kit = self.adapter.kit
         checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.options())
                   for index, (_, pictures) in enumerate(asked) for shown, picture in enumerate(pictures)]
-        self.light_told["asked"] += 1
+        self.light_told["questions"] += 1
         started = time.monotonic()
         try:
             answers = await self.light.ask(checks, LIGHT_CONTEXT.format(game=self.family.descriptor["summary"]))

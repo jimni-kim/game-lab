@@ -32,8 +32,9 @@ GAUGE_FEWEST, GAUGE_MOST, GAUGE_LEAST, GAUGE_REACH, GAUGE_CLEAR, GAUGE_APART = 3
 # fitting a board box to the picture's own lines (`fit`): each side is looked for within this share of a cell of
 # where it was said to be; an edge counts for a line within this share of a cell of it (a gutter's two edges are one
 # line, at its middle); the best place's lines must stand this many times above what a place has on average; and
-# the cells keep the shape they were said to have within this share
-FIT_REACH, FIT_SPREAD, FIT_CLEAR, FIT_SHAPE = 0.4, 0.12, 1.5, 0.04
+# the cells keep the shape they were said to have within this share; a board with this many lines between its
+# cells is fitted by those alone
+FIT_REACH, FIT_SPREAD, FIT_CLEAR, FIT_SHAPE, FIT_INNER = 0.4, 0.12, 1.5, 0.04, 4
 # a value's looks kept at most, and the values a reader keeps looks of at most
 LOOKS_MOST, VALUES_MOST = 24, 64
 
@@ -119,10 +120,11 @@ def pitch(png: bytes, box: list[int]) -> tuple[int, int] | None:
     return (rows, cols) if rows and cols else None
 
 
-def _fit_side(profile: list[int], first: float, last: float, lines: int, start: int) -> tuple[float, float] | None:
+def _fit_side(profile: list[int], first: float, last: float, lines: int, start: int, *, inner: bool = False
+              ) -> tuple[float, float] | None:
     """Where the first and the last of `lines` evenly spaced lines lie along a profile of edges that begins at
     `start`: the pair, each within FIT_REACH of a cell of where it was said to be, on whose lines the profile is
-    strongest. None when no pair stands out."""
+    strongest (`inner`: on those of its lines that lie between two cells). None when no pair stands out."""
     cell = (last - first) / (lines - 1)
     reach, spread = max(1, round(FIT_REACH * cell)), max(1, round(FIT_SPREAD * cell))
     # each place's edges with those within `spread` of it, the nearer counting for more (by the square of how far):
@@ -141,11 +143,12 @@ def _fit_side(profile: list[int], first: float, last: float, lines: int, start: 
             return 0.0
         plain, first, second = sums[high] - sums[low], firsts[high] - firsts[low], seconds[high] - seconds[low]
         return plain - (second - 2 * middle * first + middle * middle * plain) / (spread * spread)
+    counted = range(1, lines - 1) if inner else range(lines)
     scores = {}
     for one in range(-reach, reach + 1):
         for other in range(-reach, reach + 1):
             step = (last + other - first - one) / (lines - 1)
-            scores[one, other] = sum(near(first + one + index * step) for index in range(lines))
+            scores[one, other] = sum(near(first + one + index * step) for index in counted)
     best = max(scores, key=lambda pair: (scores[pair], -abs(pair[0]) - abs(pair[1])))
     mean = sum(scores.values()) / len(scores)
     if scores[best] <= 0 or scores[best] < FIT_CLEAR * mean:
@@ -173,8 +176,14 @@ def fit(image: Any, box: list[int], rows: int, cols: int) -> list[int]:
     x0, y0 = x0 + 1, y0 + 1
     across = list(edges.resize((edges.width, 1), Image.BOX).tobytes())
     down = list(edges.resize((1, edges.height), Image.BOX).tobytes())
-    sides = _fit_side(across, left, left + width, cols + 1, x0)
-    ends = _fit_side(down, top, top + height, rows + 1, y0)
+    def side(profile: list[int], first: float, last: float, lines: int, start: int) -> tuple[float, float] | None:
+        # a board's outer lines are drawn otherwise than those between two cells (a frame, the page beside it)
+        # and pull the fit their way: a board with enough lines between its cells is fitted by those alone. One
+        # with few is fitted by all its lines: those between its cells are too few to stand out, and moved by
+        # them the box came out differently from screen to screen of one game (2026-11-17, kept screens)
+        return _fit_side(profile, first, last, lines, start, inner=lines > FIT_INNER + 2)
+    sides = side(across, left, left + width, cols + 1, x0)
+    ends = side(down, top, top + height, rows + 1, y0)
     wide, high = (sides[1] - sides[0]) / width if sides else 1.0, (ends[1] - ends[0]) / height if ends else 1.0
     if abs(wide / high - 1) > FIT_SHAPE:
         # the cells came out another shape than they were said to have: the way that changed more caught other
@@ -331,8 +340,8 @@ class Valued(Grid):
             return False
         image = open_picture(png)
         fitted = fit(image, board, self.rows, self.cols)
-        same = self.board is not None and self.size == list(image.size) and all(
-            abs(one - other) <= self.SAME_BOX for one, other in zip(fitted, self.board))
+        same = self.board is not None and self.size == list(image.size) and (all(
+            abs(one - other) <= self.SAME_BOX for one, other in zip(fitted, self.board)) or self._still_reads(image, grid))
         if not same:
             self._place(image, fitted)
             self.looks = Looks(self.near, self.apart)
@@ -340,6 +349,14 @@ class Valued(Grid):
             if grid[r][c] is not None:
                 self.looks.add(self._key(grid[r][c]), self._look(image, box))
         return len(self.looks) > 0
+
+    def _still_reads(self, image: Any, grid: list[list[Any]]) -> bool:
+        """Whether the board as it was learned still reads this screen as it was just read: most of its cells
+        named, and named as said. A model places the same board a little differently each time it is asked, and
+        what was learned of the board is not let go for that."""
+        named = [(self.looks.name(self._look(image, box))[0], grid[r][c]) for r, c, box in self._cells() if grid[r][c] is not None]
+        told = [(seen, said) for seen, said in named if seen is not None]
+        return len(told) >= (1 - CHANGED_SHARE) * len(named) > 0 and all(seen == self._key(said) for seen, said in told)
 
     @staticmethod
     def _key(value: Any) -> Any:

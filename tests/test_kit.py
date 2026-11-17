@@ -335,7 +335,7 @@ def test_a_boards_rows_and_columns_are_counted_from_its_picture():
     fake.family = fake.family.bind({"rules": {"rows": 6, "cols": 6}})
     fake.state = fake.family.initial_state(3)
     assert kits.count("block_placement", asyncio.run(fake.capture()), BOARD) == (6, 6)
-    assert kits.count("minesweeper", b"", BOARD) is None
+    assert kits.count("klondike", b"", BOARD) is None
 
 
 async def test_a_reading_of_another_size_is_not_believed_when_the_picture_counts_out_to_the_size_the_game_has():
