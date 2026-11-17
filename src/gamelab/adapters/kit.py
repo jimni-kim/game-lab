@@ -122,6 +122,24 @@ class KitAdapter:
             cell == other and grid.distance(look, before) <= grid.MERGE / 2
             for (cell, look), (other, before) in zip(seen, was))
 
+    def settle(self, png: bytes, prior: dict[str, Any] | None) -> list[Any] | None:
+        """For a family whose reader learns what a look is from a board at rest (`kits.match3`): what the rules
+        say is learned, and the kinds of look still to be named are given back. None for any other family."""
+        settle = getattr(self.kit, "settle", None)
+        return settle(png, prior) if settle is not None else None
+
+    def took(self, png: bytes, action: dict[str, Any]) -> None:
+        """The game took a move: what the reader learns from that of the cells the move swapped."""
+        took = getattr(self.kit, "took", None)
+        if took is not None and isinstance(action.get("cell"), list) and isinstance(action.get("to"), list):
+            took(png, [action["cell"], action["to"]])
+
+    def refused(self, png: bytes, action: dict[str, Any]) -> bool:
+        """The game did not take a move: whether the reader learned from that what a cell the move used is."""
+        refused = getattr(self.kit, "refused", None)
+        cells = [action[name] for name in ("cell", "to") if isinstance(action.get(name), list)]
+        return bool(refused(png, cells)) if refused is not None and cells else False
+
     def questions(self, png: bytes) -> list[tuple[list[tuple[int, int]], list[bytes]]] | None:
         """What a light model is to be asked of a screen's unread cells: each kind of them (cells that look
         alike) with pictures of a few. None when the family's cells are not a light model's to name, the kinds
@@ -213,7 +231,9 @@ class KitAdapter:
     def checked_input(self, asked: Any) -> Any:
         kind = asked.get("kind") if isinstance(asked, dict) else None
         names = {"key": (), "tap": ("x", "y"), "drag": ("x0", "y0", "x1", "y1")}.get(kind)
-        if names is None or kind != {"keys": "key"}.get(self._played["controls"]["kind"], self._played["controls"]["kind"]) \
+        controls = self._played["controls"]
+        allowed = {{"keys": "key"}.get(controls["kind"], controls["kind"]), *(("tap",) if controls.get("taps") else ())}
+        if names is None or kind not in allowed \
                 or not all(type(asked.get(name)) in (int, float) for name in names):
             raise ValueError("input_refused")
         return asked

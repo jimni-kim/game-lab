@@ -5,9 +5,11 @@ first.
 """
 from __future__ import annotations
 
-from ..rules.match3 import apply, legal_actions
+from ..rules.match3 import AREA, COLOUR, LINE, POWERED, SEEKER, apply, legal_actions
 
 POLICIES = ("first", "greedy")
+# what a piece with a power is counted as when a move earns one: about the pieces it clears when used
+WORTH = {LINE: 6, SEEKER: 3, AREA: 7, COLOUR: 10}
 
 
 def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[dict] = ()) -> dict:
@@ -29,7 +31,10 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
         if nodes >= budget and best is not None:
             break
         nodes += 1
-        key = (apply(state, rules, action)["cleared"], action["cell"][0] + action["to"][0])
+        result = apply(state, rules, action)
+        # a move that earns a piece with a power is worth what that power will clear later (WORTH)
+        low = action["cell"][0] + action.get("to", action["cell"])[0]
+        key = (result["cleared"] + WORTH.get(result["made"] // POWERED, 0), low)
         if best_key is None or key > best_key:
             best, best_key = action, key
     return {"action": best, "nodes": nodes}

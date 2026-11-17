@@ -184,3 +184,116 @@ async def test_a_screen_left_unread_is_looked_at_twice_before_it_is_the_models_h
     played, made = await agent.play(fake, author, "slide_merge", goal=GoalSpec("actions", 40), budget=Budget(60, 20, 120))
     assert played.record["outcome"] == "goal_reached" and labels(author) == 1, (played.record, made)
     assert made["kit"]["taught"]["rules"] >= 2
+
+
+WAYS = {"swap": {"square": True, "swap_power": True, "pair_power": True, "tap_power": False},
+        "tap": {"square": False, "swap_power": False, "pair_power": False, "tap_power": True}}
+
+
+async def test_a_piece_with_a_power_is_learned_from_the_move_that_made_it_and_the_games_ways_from_what_it_took():
+    """A game that leaves a piece with a power where four or more lined up, takes four in a square and sets a
+    power off when it is swapped: nobody is asked what the new pieces are (the rules say where the move left one
+    and of which kind), and each way of moving is tried once and kept as the game took it."""
+    fake = gems.Gems(powers=True, rules=WAYS["swap"])
+    jeweller = gems.Jeweller(fake)
+    played, made = await agent.play(fake, jeweller, "match3", goal=GoalSpec("actions", 40), budget=Budget(60, 200, 120))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    kit = made["kit"]
+    assert [kind for kind, _ in jeweller.asked] == ["label"] and not fake.refused, (jeweller.asked, fake.refused)
+    assert kit["ways"].items() >= {"square": True, "swap_power": True}.items() and all(kit["ways"].values()), kit["ways"]
+    assert kit["taught"]["rules"] >= 3 and kit["values"] > len(gems.INKS)
+    # and the pieces with a power were used: none is left standing as if it were a wall
+    assert sum(gems.rules.power_of(cell) > 0 for row in fake.state["grid"] for cell in row) <= 2
+
+
+async def test_a_game_that_sets_a_power_off_by_a_tap_is_found_out_by_trying_and_one_with_no_powers_costs_one_move(tmp_path):
+    fake = gems.Gems(powers=True, rules=WAYS["tap"])
+    played, made = await agent.play(fake, gems.Jeweller(fake), "match3", goal=GoalSpec("actions", 40), budget=Budget(60, 200, 120),
+                                    store=Store(tmp_path))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    # a swap with a power and a square were each refused once, and after that a power was tapped
+    ways = made["kit"]["ways"]
+    assert ways.items() >= {"square": False, "swap_power": False, "tap_power": True}.items() and not ways.get("pair_power"), ways
+    assert fake.refused == sum(value is False for value in ways.values()) and fake.pops and all(move["effect"] == "confirmed" for move in played.moves if move["kind"] == "pop")
+    # the next game on the site begins with what this one found out: nothing is tried again
+    kept = Store(tmp_path).profile("https://gems.example/", "match3")
+    assert {name: kept["rules"][name] for name in ways} == ways
+    again = gems.Gems(draw=7, powers=True, rules=WAYS["tap"])
+    played, made = await agent.play(again, gems.Jeweller(again), "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120),
+                                    store=Store(tmp_path))
+    assert played.record["outcome"] == "goal_reached" and not again.refused and "ways" not in made["kit"], (again.refused, made["kit"])
+    # a game with no powers at all: only the square is tried, once
+    plain = gems.Gems()
+    played, made = await agent.play(plain, gems.Jeweller(plain), "match3", goal=GoalSpec("actions", 30), budget=Budget(50, 200, 120))
+    assert made["kit"].get("ways", {}) in ({}, {"square": False}) and plain.refused <= 1, (made["kit"], plain.refused)
+
+
+async def test_a_look_not_learned_is_what_a_light_model_calls_it_else_a_power_until_the_game_refuses_it():
+    from gamelab import kits
+    from gamelab.kits.match3 import UNKNOWN
+    from gamelab.rules.match3 import LINE, LOOSE, POWERED
+
+    fake = gems.Gems(powers=True, rules=WAYS["swap"])
+    kit = kits.make("match3", {"rows": 8, "cols": 8})
+    assert kit.calibrate(await fake.capture(), gems.BOARD, fake.state)
+    # two things nobody saw made: a piece with a power, and another kind of thing
+    fake.state["grid"][2][3], fake.state["grid"][5][5] = POWERED * LINE + 2, POWERED * 3
+    png = await fake.capture()
+    assert kit.read(png)[0]["grid"][2][3] == UNKNOWN            # worth using, until something says what it is
+    asked = kit.settle(png, None)
+    assert sorted(cells for cells, _ in asked) == [[(2, 3)], [(5, 5)]] and all(pictures for _, pictures in asked)
+    assert set(kit.asked()) >= {"line", "area", "colour", "seeker", "fixed", "loose", "piece"}
+    kit.name(png, [(2, 3)], "line")
+    kit.name(png, [(5, 5)], None)
+    grid = kit.read(png)[0]["grid"]
+    assert (grid[2][3], grid[5][5]) == (POWERED * LINE, UNKNOWN) and kit.settle(png, None) == []
+    # the game did not take a move that used the second as a piece: it is something that falls and is not swapped
+    assert kit.refused(png, [[5, 5], [5, 6]]) and kit.read(png)[0]["grid"][5][5] == LOOSE
+    assert not kit.refused(png, [[2, 3]])                       # what is known to be a piece with a power stays one
+
+
+class Walled(gems.Gems):
+    """A game some of whose cells hold a thing that is no piece, drawn in a colour of its own."""
+    WALLS = [(3, 2), (3, 3), (4, 5)]
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        for r, c in self.WALLS:
+            self.state["grid"][r][c] = gems.rules.BLOCK
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for r, row in enumerate(self.state["grid"]):
+            for c, value in enumerate(row):
+                if value == gems.rules.BLOCK:
+                    x, y = gems.BOARD[0] + c * gems.CELL, gems.BOARD[1] + r * gems.CELL
+                    draw.rectangle((x + 4, y + 4, x + gems.CELL - 5, y + gems.CELL - 5), fill=(245, 240, 235))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+class Fooled(gems.Jeweller):
+    """A model that calls the thing that is no piece a white piece."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            answer["state"]["grid"] = [[8 if cell == gems.rules.BLOCK else cell for cell in row] for row in answer["state"]["grid"]]
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_thing_a_model_calls_a_piece_that_the_game_never_lets_be_swapped_is_learned_to_be_none():
+    fake = Walled()
+    fooled = Fooled(fake)
+    played, made = await agent.play(fake, fooled, "match3", goal=GoalSpec("actions", 30), budget=Budget(60, 200, 120))
+    assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
+    # the moves that needed it swapped were refused a few times at most, the reader was not doubted for them
+    # (the model read the first screen only), and the game went on with the thing read as something fixed
+    assert fake.refused <= 3 and [kind for kind, _ in fooled.asked] == ["label"], (fake.refused, fooled.asked)
+    assert made["kit"]["values"] == len(gems.INKS) + 1

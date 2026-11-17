@@ -1,7 +1,7 @@
 {
   "id": "match3",
-  "revision": 2,
-  "summary": "A grid of pieces of a few colours, not always a rectangle. Each move swaps two neighbouring pieces so that three or more of one colour stand in a line. Those are removed, the pieces above fall and new ones come in at the top; lines that form as they fall are removed too. A swap that lines nothing up is undone. A cell may hold something that is not a piece (an obstacle): it is never swapped and lines up with nothing.",
+  "revision": 3,
+  "summary": "A grid of pieces of a few colours, not always a rectangle. Each move swaps two neighbouring pieces so that three or more of one colour stand in a line. Those are removed, the pieces above fall and new ones come in at the top; lines that form as they fall are removed too. A swap that lines nothing up is undone. A cell may hold something that is not a piece (an obstacle): it is never swapped and lines up with nothing. A move that lines up four or more, or four in a square, leaves a piece with a power, which clears more when it is lined up, swapped or tapped.",
   "state_schema": "match3.v1",
   "board": {
     "shape": "grid",
@@ -25,7 +25,7 @@
     ]
   },
   "state_fields": {
-    "grid": "the rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is the number of its colour (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; the nearest of these, and always the same number for the same kind of piece), 11 a cell filled by something that is not a piece to swap (an obstacle, a covered or locked cell), 0 a place where the grid has no cell or the cell holds nothing, null a cell nobody read",
+    "grid": "the rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is the number of its colour (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; the nearest, and always the same number for the same kind of piece); a piece with a power (striped, wrapped, a rocket, a bomb, a propeller, a colour ball) is 500 plus its colour's number, or 500 with no colour; 11 something fixed that is no piece (an obstacle, a covered or locked cell), 12 such a thing that falls; 0 no cell or nothing in it; null a cell nobody read",
     "score": "the game's score as read, or null",
     "scene": "the id of the scene the screen shows"
   },
@@ -34,6 +34,11 @@
       "kind": "swap",
       "input": "drag",
       "description": "drag the piece at `cell` onto its neighbour at `to` ([row, column] each)"
+    },
+    {
+      "kind": "pop",
+      "input": "tap",
+      "description": "tap the piece with a power at `cell` to set it off, in a game that takes that"
     }
   ],
   "scenes": [
@@ -78,6 +83,42 @@
         "minimum": 3,
         "maximum": 10
       }
+    },
+    "square": {
+      "description": "whether four of one colour in a two-by-two square is a move; null until the game showed it",
+      "values": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "swap_power": {
+      "description": "whether a piece with a power goes off when swapped with any neighbour; null until the game showed it",
+      "values": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "tap_power": {
+      "description": "whether a piece with a power goes off when tapped; null until the game showed it",
+      "values": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "pair_power": {
+      "description": "whether two pieces with a power swapped with each other go off (and one that clears a colour swapped with anything); null until the game showed it",
+      "values": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
     }
   },
   "discovery": {
@@ -93,7 +134,10 @@
       "kind": "drag",
       "from": "cell",
       "to": "to",
-      "duration_ms": 250
+      "duration_ms": 250,
+      "taps": {
+        "pop": "cell"
+      }
     },
     "settling": {
       "timeout_s": 6,

@@ -252,6 +252,10 @@ def input_for(controls: dict[str, Any], action: dict[str, Any], board: list[int]
         start, end = controls["drag"][action["kind"]]
         (x0, y0), (x1, y1) = _middle(place(sources, action[start], taking=True)), _middle(place(sources, action[end], taking=False))
         return {"kind": "drag", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "ms": controls["duration_ms"]}
+    if action.get("kind") in controls.get("taps", {}):
+        # a move that is a tap on the cell it names, in a game otherwise played by drags
+        left, top, width, height = cell_box(board, shape, action[controls["taps"][action["kind"]]])
+        return {"kind": "tap", "x": left + width / 2, "y": top + height / 2}
     if controls["kind"] == "drag" and "source" not in controls:
         # from one cell of the board to another: the middle of each
         one, other = cell_box(board, shape, action[controls["from"]]), cell_box(board, shape, action[controls["to"]])

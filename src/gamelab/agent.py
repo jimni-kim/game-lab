@@ -183,6 +183,11 @@ class Agent:
         self.light = light
         # the questions put to it, the cells its answers named, and the answers the rules did not take
         self.light_told = {"questions": 0, "named": 0, "refused": 0}
+        # the ways of moving the game was seen to take or not (`_learn_ways`)
+        self.ways: dict[str, Any] = {}
+        # the move just refused taught something (a way the game does not take, a thing that is no piece): it
+        # says nothing against the reading
+        self.taught = False
         self.surface, self.model, self.family_id = surface, Metered(model), family_id
         # the screen as a model is shown it: what keeps moving over it (a tutorial's hand) left out (`motion`)
         self.seen = Steady(surface)
@@ -335,7 +340,7 @@ class Agent:
         if not kits.has(self.family_id) and not self.kit_reads:
             return None
         told = self.adapter.summary() if isinstance(self.adapter, KitAdapter) else {}
-        return {"adopted": self.kit_adopted, **told, "reads": self.kit_reads,
+        return {"adopted": self.kit_adopted, **told, "reads": self.kit_reads, **({"ways": self.ways} if self.ways else {}),
                 **({"light": {**self.light_told, **self.light.spent.summary()}} if self.light is not None else {}),
                 "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
 
@@ -570,6 +575,9 @@ class Agent:
             self.carried, self.state = after, after.state
             return
         effect = "unknown" if after is None else self._effect(before.state, action, after.state)
+        self._learn_ways(before, action, effect)
+        if after is not None and after.by == L3 and effect == "confirmed":
+            await self._settle(after, (before, action))
         self._remember(before, action, effect, after)
         if self.over:
             raise _End(Outcome.GAME_OVER, "terminal")
@@ -589,7 +597,7 @@ class Agent:
         if self.resized is not None and effect in ("absent", "inconsistent") and carry.trusted(self.carried_as):
             self._unresize()
             return
-        self.stalled += 1
+        self.stalled += 0 if self.taught else 1
         if self.carried_as and self.carried_as.get("picked") and effect in ("absent", "inconsistent"):
             # a piece picked up and let go that did not do what it should: how it follows is measured again
             self.carrier.doubt()
@@ -610,9 +618,67 @@ class Agent:
         # not for a move whose carry is not known to have put the piece where it was meant to go (it picked
         # nothing up, or could not tell where the piece hung): that is the carry's, until moves keep failing
         carried_unsure = self.carried_as is not None and not carry.trusted(self.carried_as)
-        if L3 in (before.by, after.by if after else None) and (
+        if L3 in (before.by, after.by if after else None) and not self.taught and (
                 self.stalled >= MAX_STALLED or (self.trial > 0 and not carried_unsure)):
             self._doubt()
+
+    def _learn_ways(self, before: Reading, action: dict[str, Any], effect: str) -> None:
+        """What a move's outcome says of how the game is played, where the family's rules leave that open until
+        the game shows it (`learned`: a way of moving it took, or did not): the game goes on by the rule values so
+        settled, and they are kept with what is kept of the site. A move the game did not take because a cell
+        was not what it was taken for teaches the reader that instead."""
+        learned = getattr(self.family.model, "learned", None)
+        self.taught = False
+        if learned is None or self.trace is None:
+            return
+        if isinstance(self.adapter, KitAdapter) and before.by == L3:
+            if effect == "confirmed":
+                self.adapter.took(before.png, action)
+            elif effect == "absent" and self.adapter.refused(before.png, action):
+                self.taught = True
+                return
+        try:
+            rules = learned(before.state, action, effect, self.family.rules)
+        except (ValueError, KeyError, IndexError, TypeError):
+            return
+        changed = {name: value for name, value in rules.items() if self.family.rules.get(name) != value}
+        if changed:
+            self.taught = effect == "absent"
+            log.info("the game's ways of moving: %s", changed)
+            self.trace.rules = {**self.trace.rules, **changed}
+            self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+            self.ways = {**self.ways, **changed}
+
+    async def _settle(self, after: Reading, expect: tuple[Reading, dict[str, Any]]) -> None:
+        """A board at rest that shows looks the family's reader has not learned (`KitAdapter.settle`): what the
+        rules say of them it has learned by now; each kind left is shown to the light model, a cell cut out
+        alone, and is what it calls it, or, when nobody can say, a piece with a power of a kind not known. The
+        reading is made again with what was learned."""
+        if not isinstance(self.adapter, KitAdapter):
+            return
+        asked = self.adapter.settle(after.png, self._prior(expect))
+        if asked is None:
+            return
+        kit, answers = self.adapter.kit, {}
+        if asked and self.light is not None and len(asked) <= kit.KINDS_MOST:
+            checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.asked())
+                      for index, (_, pictures) in enumerate(asked) for shown, picture in enumerate(pictures)]
+            self.light_told["questions"] += 1
+            started = time.monotonic()
+            try:
+                answers = await self.light.ask(checks, LIGHT_CONTEXT.format(game=self.family.descriptor["summary"]))
+            except Exception as error:
+                log.info("the light model could not be asked: %s", error)
+            finally:
+                self.model_seconds += time.monotonic() - started
+        for index, (cells, pictures) in enumerate(asked):
+            said = {(answers.get(f"k{index}-{shown}") or {}).get("choice") for shown in range(len(pictures))}
+            key = next(iter(said)) if len(said) == 1 else None      # two pictures of one kind called differently: nobody knows
+            kit.name(after.png, cells, key)
+            self.light_told["named" if key else "refused"] += len(cells) if key else 1
+        state, _ = self._observe(after.png)
+        if state is not None:
+            after.state = state.payload
 
     def _spent(self, state: str, action: dict[str, Any]) -> None:
         """A move this board did not take: left out when the next is chosen from the same board."""

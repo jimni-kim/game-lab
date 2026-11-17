@@ -12,6 +12,7 @@ from gamelab import adaptation, agent, catalog, recovery
 from gamelab.adaptation import Store
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
+from gamelab.rules import match3 as rules
 from gamelab.surface import DRAG, KEYS, TAP
 
 SIZE = (700, 600)
@@ -37,11 +38,14 @@ class Gems:
     reads_dom = False
     kinds = frozenset({KEYS, TAP, DRAG})
 
-    def __init__(self, draw=5):
-        self.family = catalog.family("match3")
-        self.draw = draw
+    def __init__(self, draw=5, powers=False, rules=None):
+        # `powers`: whether the game leaves a piece with a power where four or more lined up (drawn with a white
+        # mark, larger for each kind); a game without them removes such a line whole. `rules`: the ways of
+        # moving this game takes (the family's rule values)
+        self.family = catalog.family("match3").bind({"rules": rules or {"square": False, "swap_power": False, "pair_power": False, "tap_power": False}})
+        self.draw, self.powers = draw, powers
         self.state = self.family.initial_state(draw)
-        self.swaps, self.refused = [], 0
+        self.swaps, self.refused, self.pops = [], 0, []
 
     async def size(self):
         return list(SIZE)
@@ -59,7 +63,9 @@ class Gems:
             for col, value in enumerate(cells):
                 x, y = BOARD[0] + col * CELL, BOARD[1] + row * CELL
                 draw.rectangle((x, y, x + CELL - 1, y + CELL - 1), fill=WELL)
-                draw.ellipse((x + 5, y + 5, x + CELL - 6, y + CELL - 6), fill=INKS[value])
+                draw.ellipse((x + 5, y + 5, x + CELL - 6, y + CELL - 6), fill=INKS.get(rules.colour_of(value), (120, 120, 120)))
+                if kind := rules.power_of(value):
+                    draw.rectangle((x + 14, y + 14, x + 16 + 4 * kind, y + 34), fill=(255, 255, 255))
         out = BytesIO()
         image.save(out, format="PNG")
         return out.getvalue()
@@ -69,15 +75,33 @@ class Gems:
 
     async def drag(self, x0, y0, x1, y1, duration_ms):
         one, other = sorted([self._cell(x0, y0), self._cell(x1, y1)])
-        action = {"kind": "swap", "cell": one, "to": other}
+        self._play({"kind": "swap", "cell": one, "to": other})
+
+    def _play(self, action):
         if action not in self.family.model.legal_actions(self.state, self.family.rules):
             self.refused += 1                # the game swaps the two back
             return
-        self.swaps.append(action)
-        self.state = self.family.next_state(self.state, action, self.draw + len(self.swaps))
+        (self.swaps if action["kind"] == "swap" else self.pops).append(action)
+        self.state = self.family.next_state(self.state, action, self.draw + len(self.swaps) + len(self.pops))
+        if not self.powers:
+            self.state = {**self.state, "grid": self._plain(self.state["grid"])}
+
+    def _plain(self, grid):
+        """A game with no powers: where the rules leave one, a piece of a colour that lines nothing up."""
+        grid = [list(row) for row in grid]
+        for r, row in enumerate(grid):
+            for c, value in enumerate(row):
+                if rules.power_of(value):
+                    for colour in INKS:
+                        grid[r][c] = colour
+                        if not rules._lines_through(grid, (r, c)):
+                            break
+        return grid
 
     async def tap(self, x, y, duration_ms):
-        raise AssertionError("a swap is dragged, not tapped")
+        if not self.powers:
+            raise AssertionError("a swap is dragged, not tapped")
+        self._play({"kind": "pop", "cell": self._cell(x, y)})
 
     async def key(self, key):
         raise AssertionError("a swap game is given no key")

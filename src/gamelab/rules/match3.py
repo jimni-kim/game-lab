@@ -9,6 +9,27 @@ unread (None) and settles only what the known pieces settle among themselves, so
 screen may differ from it where the new pieces set off more removals. `assess` therefore takes a settled
 board that changed as the move's result, and only an unchanged board as the move not taken.
 
+A cell is one whole number, and what the rules ask of it is what it does, not what a game calls it:
+
+    1..10        a piece of that colour: it is swapped, lines up and falls
+    11 (BLOCK)   something fixed: not swapped, lines up with nothing, does not fall, pieces rest on it
+    12 (LOOSE)   something that falls and is neither swapped nor lined up (an obstacle that drops)
+    20 + colour  a piece held in place (chained, frozen): it lines up as its colour, and is not swapped nor falls
+    100 * kind + colour   a piece with a power (`KINDS`), of that colour or of none (0): swapped and falls like
+                 a piece, lines up as its colour when it has one
+
+A piece with a power comes of a move that lines up more than three: four in a line (LINE: it clears a row or a
+column), four in a square (SEEKER: it goes for something on the board), five in an L or a T (AREA: what is
+around it), five in a line (COLOUR: every piece of one colour); it is left where the moved piece came to lie.
+POWER is one whose kind nobody knows yet. What a power clears is the game's and is only estimated here (`apply`
+leaves those cells unread, and counts them for a policy to weigh); the board after is read from the screen.
+
+How a game lets a power be used differs, and each way is a rule value that starts unknown (None), is tried,
+and is settled by what the game did (`learned`): `square` (four in a square is a move), `swap_power` (a power
+swapped with any neighbour goes off), `pair_power` (two powers swapped with each other go off, and one that
+clears a colour swapped with anything: games that want a power lined up to set it off still take these),
+`tap_power` (a power tapped goes off).
+
 Pure like every rule model: JSON in and out, no IO, no clock, randomness only from the caller's `draw`.
 """
 from __future__ import annotations
@@ -18,9 +39,18 @@ COLOURS = ("red", "orange", "yellow", "green", "blue", "purple", "pink", "white"
 EMPTY = 0
 # a cell filled by something that is not a piece (an obstacle, a locked or covered cell)
 BLOCK = len(COLOURS) + 1
+# something that falls and is no piece; a piece held in place is HELD + its colour
+LOOSE = BLOCK + 1
+HELD = 20
+# a piece with a power is POWERED * its kind + its colour (0: none)
+POWERED = 100
+LINE, SEEKER, AREA, COLOUR, POWER = 1, 2, 3, 4, 5
+KINDS = (LINE, SEEKER, AREA, COLOUR, POWER)
 RUN = 3
 PLAYING, OVER, WON = "playing", "over", "won"
-DEFAULT_RULES = {"rows": 8, "cols": 8, "colours": 6}
+# the ways of using a power, each unknown (None) until the game showed whether it takes it
+WAYS = ("square", "swap_power", "pair_power", "tap_power")
+DEFAULT_RULES = {"rows": 8, "cols": 8, "colours": 6, "square": None, "swap_power": None, "pair_power": None, "tap_power": None}
 # what comes in at the top is drawn by the game: it can be sampled, not listed
 CAPABILITIES = ("chance_sampled", "hidden")
 STEPS = ((0, 1), (1, 0))
@@ -40,7 +70,7 @@ def validate(state: dict, rules: dict) -> list[str]:
     if not isinstance(grid, list) or len(grid) != rows or any(not isinstance(row, list) or len(row) != cols for row in grid):
         return ["grid_shape"]
     problems = []
-    if any(cell is not None and (type(cell) is not int or not 0 <= cell <= BLOCK) for row in grid for cell in row):
+    if any(cell is not None and not _value(cell) for row in grid for cell in row):
         problems.append("cell_value")
     elif state.get("scene", PLAYING) == PLAYING and not _unread(state) and _runs(grid):
         # a board at rest holds no line of three: one that does is still moving, or was misread
@@ -61,23 +91,76 @@ def _runs(grid) -> set:
     found = set()
     for r in range(rows):
         for c in range(cols):
-            colour = grid[r][c]
-            if not _piece(colour):
+            colour = colour_of(grid[r][c])
+            if not colour:
                 continue
             for dr, dc in STEPS:
-                if 0 <= r - dr and 0 <= c - dc and grid[r - dr][c - dc] == colour:
+                if 0 <= r - dr and 0 <= c - dc and colour_of(grid[r - dr][c - dc]) == colour:
                     continue                 # counted from the line's first cell
                 length = 1
-                while r + dr * length < rows and c + dc * length < cols and grid[r + dr * length][c + dc * length] == colour:
+                while r + dr * length < rows and c + dc * length < cols and colour_of(grid[r + dr * length][c + dc * length]) == colour:
                     length += 1
                 if length >= RUN:
                     found.update((r + dr * step, c + dc * step) for step in range(length))
     return found
 
 
+def _value(cell) -> bool:
+    """Whether a number is one a cell may hold."""
+    if type(cell) is not int:
+        return False
+    if 0 <= cell <= LOOSE or HELD < cell <= HELD + len(COLOURS):
+        return True
+    return cell // POWERED in KINDS and cell % POWERED <= len(COLOURS)
+
+
+def power_of(cell) -> int:
+    """The kind of power a cell's piece has; 0 for none."""
+    return cell // POWERED if cell is not None and cell >= POWERED else 0
+
+
+def colour_of(cell) -> int:
+    """The colour a cell lines up as; 0 when it lines up with nothing."""
+    if cell is None or cell <= EMPTY:
+        return 0
+    if cell < BLOCK:
+        return cell
+    if HELD < cell <= HELD + len(COLOURS):
+        return cell - HELD
+    return cell % POWERED if cell >= POWERED else 0
+
+
 def _piece(cell) -> bool:
-    """Whether a cell holds a piece: something that is swapped, lines up and falls."""
-    return cell is not None and EMPTY < cell < BLOCK
+    """Whether a cell holds something that is swapped: a piece, with a power or none."""
+    return cell is not None and (EMPTY < cell < BLOCK or cell >= POWERED)
+
+
+def _rests(cell) -> bool:
+    """Whether what a cell holds stays where it is when the cells under it empty (nothing passes it either)."""
+    return cell is not None and (cell in (EMPTY, BLOCK) or HELD < cell < POWERED)
+
+
+def _squares(grid) -> set:
+    """The cells of every two-by-two square of one colour."""
+    found = set()
+    for r in range(len(grid) - 1):
+        for c in range(len(grid[0]) - 1):
+            colour = colour_of(grid[r][c])
+            if colour and all(colour_of(grid[y][x]) == colour for y, x in ((r, c + 1), (r + 1, c), (r + 1, c + 1))):
+                found.update(((r, c), (r, c + 1), (r + 1, c), (r + 1, c + 1)))
+    return found
+
+
+def _square_through(grid, cell) -> bool:
+    """Whether the piece at `cell` stands in a two-by-two square of its colour."""
+    r, c = cell
+    colour = colour_of(grid[r][c])
+    for top in (r - 1, r):
+        for left in (c - 1, c):
+            if colour and 0 <= top < len(grid) - 1 and 0 <= left < len(grid[0]) - 1 and all(
+                    colour_of(grid[y][x]) == colour for y in (top, top + 1) for x in (left, left + 1)):
+                return True
+    return False
 
 
 def _swapped(grid, cell, to):
@@ -89,20 +172,51 @@ def _swapped(grid, cell, to):
 
 def _lines_through(grid, cell) -> bool:
     """Whether the piece at `cell` stands in a line of RUN or more."""
+    return _line(grid, cell)[0] >= RUN or _line(grid, cell)[1] >= RUN
+
+
+def _line(grid, cell) -> tuple[int, int]:
+    """How many of its colour the piece at `cell` stands among, across and down (itself counted)."""
     r, c = cell
-    colour = grid[r][c]
-    if not _piece(colour):
-        return False
+    colour = colour_of(grid[r][c])
+    if not colour:
+        return 0, 0
+    lengths = []
     for dr, dc in STEPS:
         length = 1
         for sign in (1, -1):
             step = 1
             while (0 <= r + sign * dr * step < len(grid) and 0 <= c + sign * dc * step < len(grid[0])
-                   and grid[r + sign * dr * step][c + sign * dc * step] == colour):
+                   and colour_of(grid[r + sign * dr * step][c + sign * dc * step]) == colour):
                 length, step = length + 1, step + 1
-        if length >= RUN:
-            return True
-    return False
+        lengths.append(length)
+    return lengths[0], lengths[1]
+
+
+def way(state: dict, rules: dict, action: dict) -> str | None:
+    """What makes a move one the game may take: "line" (three or more line up), else "square" (four in a
+    square), else "pair" (two pieces with a power swapped, or one that clears a colour with anything), "power"
+    (a piece with a power swapped with a neighbour), "tap" (one tapped); None for a move
+    nothing makes one. A way the game was seen not to take (its rule value False) makes none."""
+    grid = state["grid"]
+    if action.get("kind") == "pop":
+        r, c = action["cell"]
+        return "tap" if power_of(grid[r][c]) and rules.get("tap_power") is not False else None
+    (r, c), (r2, c2) = action["cell"], action["to"]
+    if not _piece(grid[r][c]) or not _piece(grid[r2][c2]):
+        return None
+    swapped = _swapped(grid, (r, c), (r2, c2))
+    if grid[r][c] != grid[r2][c2] and (_lines_through(swapped, (r, c)) or _lines_through(swapped, (r2, c2))):
+        return "line"
+    if rules.get("square") is not False and grid[r][c] != grid[r2][c2] \
+            and (_square_through(swapped, (r, c)) or _square_through(swapped, (r2, c2))):
+        return "square"
+    kinds = power_of(grid[r][c]), power_of(grid[r2][c2])
+    if rules.get("pair_power") is not False and (all(kinds) or COLOUR in kinds):
+        return "pair"
+    if rules.get("swap_power") is not False and any(kinds):
+        return "power"
+    return None
 
 
 def legal_actions(state: dict, rules: dict) -> list[dict]:
@@ -115,28 +229,50 @@ def legal_actions(state: dict, rules: dict) -> list[dict]:
         for c in range(len(grid[0])):
             for dr, dc in STEPS:
                 r2, c2 = r + dr, c + dc
-                if (r2 >= len(grid) or c2 >= len(grid[0]) or not _piece(grid[r][c]) or not _piece(grid[r2][c2])
-                        or grid[r][c] == grid[r2][c2]):
+                if r2 >= len(grid) or c2 >= len(grid[0]):
                     continue
-                swapped = _swapped(grid, (r, c), (r2, c2))
-                if _lines_through(swapped, (r, c)) or _lines_through(swapped, (r2, c2)):
-                    found.append({"kind": "swap", "cell": [r, c], "to": [r2, c2]})
+                action = {"kind": "swap", "cell": [r, c], "to": [r2, c2]}
+                if way(state, rules, action) is not None:
+                    found.append(action)
+    # a power is tapped only by a game seen to take it, or when it can be used no other way
+    powers = [[r, c] for r in range(len(grid)) for c in range(len(grid[0])) if power_of(grid[r][c])]
+    if rules.get("tap_power") or (rules.get("tap_power") is None and rules.get("swap_power") is False):
+        found.extend({"kind": "pop", "cell": cell} for cell in powers)
     return found
+
+
+def learned(before: dict, action: dict, effect: str, rules: dict) -> dict:
+    """The rule values as a move's outcome settles them: a way of moving the game took is one it takes, and
+    one it did not take (the board stayed as it was) is one it does not. Only a move nothing else made one says
+    anything, and only of a way not settled yet."""
+    if effect not in ("confirmed", "absent"):
+        return rules
+    try:
+        made = way(before, rules, action)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return rules
+    cells = [action[name] for name in ("cell", "to") if name in action]
+    if any(power_of(before["grid"][r][c]) == POWER for r, c in cells):
+        return rules                 # a thing only taken for a piece with a power says nothing of how powers go off
+    name = {"square": "square", "power": "swap_power", "pair": "pair_power", "tap": "tap_power"}.get(made)
+    if name is None or rules.get(name) is not None:
+        return rules
+    return {**rules, name: effect == "confirmed"}
 
 
 def _fall(grid, removed) -> list:
     """The grid with `removed` cells gone and what was above them fallen; what comes in at the top is unread.
-    An empty place and a blocked cell let nothing through: pieces settle on them, and what comes in above a
-    stretch they close off from the top is as unread as anything else that comes in."""
+    An empty place and whatever stays where it is let nothing through: pieces settle on them, and what comes in
+    above a stretch they close off from the top is as unread as anything else that comes in."""
     out = [list(row) for row in grid]
     for c in range(len(grid[0])):
         r = len(grid) - 1
         while r >= 0:
-            if grid[r][c] in (EMPTY, BLOCK):
+            if _rests(grid[r][c]) and (r, c) not in removed:
                 r -= 1
                 continue
             top = r                      # one stretch of the column between such cells, bottom to top
-            while top - 1 >= 0 and grid[top - 1][c] not in (EMPTY, BLOCK):
+            while top - 1 >= 0 and not (_rests(grid[top - 1][c]) and (top - 1, c) not in removed):
                 top -= 1
             kept = [grid[y][c] for y in range(r, top - 1, -1) if (y, c) not in removed]
             for offset, y in enumerate(range(r, top - 1, -1)):
@@ -145,20 +281,86 @@ def _fall(grid, removed) -> list:
     return out
 
 
+def _made(grid, cell) -> int:
+    """The piece a move leaves at `cell` in place of the one that lined up there: one with the power its line
+    earns, of the line's colour; 0 when the line earns none."""
+    across, down = _line(grid, cell)
+    colour = colour_of(grid[cell[0]][cell[1]])
+    if max(across, down) >= 5:
+        return POWERED * COLOUR                  # it has no colour of its own from here on
+    if across >= RUN and down >= RUN:
+        return POWERED * AREA + colour
+    if max(across, down) == 4:
+        return POWERED * LINE + colour
+    if _square_through(grid, cell) and max(across, down) < RUN:
+        return POWERED * SEEKER + colour
+    return 0
+
+
+def _reach(grid, cell, other=None) -> set:
+    """The cells a power going off at `cell` is taken to clear (an estimate: the game's own reach differs from
+    game to game). `other`: the colour of the piece it was swapped with, for one that clears a colour."""
+    r, c = cell
+    rows, cols = len(grid), len(grid[0])
+    kind = power_of(grid[r][c])
+    if kind == LINE:
+        return {(r, x) for x in range(cols)} | {(y, c) for y in range(rows)}
+    if kind == AREA:
+        return {(y, x) for y in range(max(0, r - 1), min(rows, r + 2)) for x in range(max(0, c - 1), min(cols, c + 2))}
+    if kind == COLOUR:
+        colour = other or colour_of(grid[r][c])
+        return {(y, x) for y in range(rows) for x in range(cols) if colour and colour_of(grid[y][x]) == colour} | {(r, c)}
+    return {(r, c)}
+
+
 def apply(state: dict, rules: dict, action: dict) -> dict:
-    """What a swap leaves as far as the pieces on the board decide it: the lines removed, what was above
-    fallen, the cells new pieces fill left unread, and so on until nothing known lines up. `cleared` counts
-    the pieces removed."""
+    """What a move leaves as far as the pieces on the board decide it: the lines removed (a piece with a power
+    left where a line earned one), what was above fallen, the cells new pieces fill left unread, and so on
+    until nothing known lines up. Where a power goes off, what it reaches is left unread from there up. `cleared`
+    counts the pieces removed, those a power is taken to reach among them; `made` is the power the move earns."""
     grid = state["grid"]
     _require_known(grid)
-    if action not in legal_actions(state, rules):
+    made_by = way(state, rules, action)
+    if made_by is None:
         raise ValueError("illegal_action")
-    grid = _swapped(grid, action["cell"], action["to"])
-    cleared = 0
-    while removed := _runs(grid):
-        cleared += len(removed)
-        grid = _fall(grid, removed)
-    return {"state": {**state, "grid": grid}, "cleared": cleared}
+    moved = [tuple(action["cell"])] if action["kind"] == "pop" else [tuple(action["cell"]), tuple(action["to"])]
+    if action["kind"] != "pop":
+        grid = _swapped(grid, action["cell"], action["to"])
+    cleared, made, blown = 0, 0, set()
+    if made_by in ("power", "pair", "tap"):
+        for cell in moved:
+            if power_of(grid[cell[0]][cell[1]]):
+                partner = next((colour_of(grid[y][x]) for y, x in moved if (y, x) != cell), 0)
+                blown |= _reach(grid, cell, partner)
+    first = True
+    while True:
+        removed = _runs(grid) | (_squares(grid) if first and made_by == "square" else set())
+        if not removed and not (first and blown):
+            break
+        kept = {}
+        if first:
+            for cell in moved:
+                if cell in removed and (earned := _made(grid, cell)):
+                    kept[cell], made = earned, made or earned
+        # a power caught in a line goes off too
+        for r, c in sorted(removed):
+            if power_of(grid[r][c]):
+                blown |= _reach(grid, (r, c))
+        gone = (removed | (blown if first else set())) - set(kept)
+        gone = {(r, c) for r, c in gone if grid[r][c] is not None and grid[r][c] not in (EMPTY, BLOCK)}
+        cleared += len(gone)
+        grid = [list(row) for row in grid]
+        for (r, c), earned in kept.items():
+            grid[r][c] = earned
+        grid = _fall(grid, gone)
+        first = False
+    if blown:
+        # what a power reached is the game's to say: unread from the lowest cell reached up, in each column
+        for c in {c for _, c in blown}:
+            for r in range(max(r for r, x in blown if x == c) + 1):
+                if not _rests(grid[r][c]):
+                    grid[r][c] = None
+    return {"state": {**state, "grid": grid}, "cleared": cleared, "made": made}
 
 
 def evaluate(state: dict, rules: dict) -> int:
@@ -186,7 +388,7 @@ def status(state: dict, rules: dict, goal: dict) -> dict:
 
 
 def assess(before: dict, action: dict, after: dict, rules: dict) -> dict:
-    """Whether the screen after a swap shows it taken. The pieces that come in are the game's, and they may
+    """Whether the screen after a move shows it taken. The pieces that come in are the game's, and they may
     set off removals nobody can predict, so a settled board that is no longer the one before is the move's
     result; `settled_as_predicted` says whether every cell the rules could predict reads as predicted."""
     if _unread(after):
@@ -195,10 +397,16 @@ def assess(before: dict, action: dict, after: dict, rules: dict) -> dict:
         return {"effect": "absent"}
     try:
         predicted = apply(before, rules, action)["state"]["grid"]
-    except ValueError:
+    except (ValueError, KeyError, IndexError, TypeError):
         return {"effect": "inconsistent"}
     if _runs(after["grid"]):
         return {"effect": "inconsistent"}        # still moving, or misread
+    if action.get("kind") == "pop":
+        # a power that went off is gone from where it stood: one still standing there was not set off, whatever
+        # else on the board reads otherwise than before
+        r, c = action["cell"]
+        if after["grid"][r][c] == before["grid"][r][c]:
+            return {"effect": "absent"}
     # a swap that was taken removed pieces: where nothing known fell, the board cannot be just the two swapped back
     same = all(seen == told for row, guess in zip(after["grid"], predicted) for seen, told in zip(row, guess) if told is not None)
     return {"effect": "confirmed", "settled_as_predicted": same}
@@ -237,16 +445,21 @@ def initial_state(rules: dict, draw: int) -> dict:
 
 
 def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
-    """The game's own move: the swap, every removal with new pieces drawn from `draw`, and a board with no
-    move left dealt anew. The score counts the pieces removed."""
+    """The game's own move: the move as `apply` has it, every cell left unread filled with pieces drawn from
+    `draw` and every line they make removed in turn, and a board with no move left dealt anew. The score counts
+    the pieces removed."""
     if action not in legal_actions(state, rules):
         raise ValueError("illegal_action")
     numbers = _stream(draw)
-    grid = _swapped(state["grid"], action["cell"], action["to"])
-    cleared = 0
-    while removed := _runs(grid):
+    result = apply(state, rules, action)
+    grid, cleared = result["state"]["grid"], result["cleared"]
+    while True:
+        grid = [[1 + next(numbers) % rules["colours"] if cell is None else cell for cell in row] for row in grid]
+        removed = _runs(grid)
+        if not removed:
+            break
         cleared += len(removed)
-        grid = [[1 + next(numbers) % rules["colours"] if cell is None else cell for cell in row] for row in _fall(grid, removed)]
+        grid = _fall(grid, removed)
     if not legal_actions({"grid": grid}, rules):
         grid = _deal(rules, numbers)
     return {**state, "grid": grid, "score": (state.get("score") or 0) + cleared}
