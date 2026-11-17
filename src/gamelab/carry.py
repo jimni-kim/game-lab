@@ -102,6 +102,10 @@ AIMS_BLIND, BACK_FOOT = 3, 12
 # after more than this many carries on which the cells showed a held thing but its shape nowhere, such a carry is let
 # go by the game's way of hanging held things alone
 UNFIT_MOST = 2
+# once this many carries in a row lay right at the first look, a carry is let go with no look before it (the look is a
+# capture, about half a second on a phone over adb); the pointer rests this long first for the drawing to catch up,
+# twice as long after such a carry's move did not do what it should, up to the most
+UNCHECKED_AFTER, UNCHECKED_REST_S, UNCHECKED_REST_MOST_S = 5, 0.25, 1.0
 # a held piece whose blocks are drawn apart (`arranged`): its blocks are of one size within ARRANGED_ALIKE, each lies
 # within ARRANGED_NEAR of where the piece's shape puts it (shares of how far apart blocks are drawn), and a block's
 # side is between ARRANGED_LEAST and ARRANGED_MOST of that distance
@@ -344,7 +348,7 @@ def trusted(told: dict[str, Any] | None) -> bool:
     measured how the drawing follows or, sure of that from the carries before, saw the drawing on the way (`quick`).
     A move whose carry is not trusted and did nothing says nothing against how the screen was read."""
     return bool(told and told.get("picked") and (told.get("measured") or told.get("quick") or told.get("checked")
-                                                 or told.get("by_rule")))
+                                                 or told.get("by_rule") or told.get("unchecked")))
 
 
 def followed(one: tuple[list[int], tuple[float, float]], other: tuple[list[int], tuple[float, float]]) -> bool:
@@ -493,6 +497,10 @@ class Carrier:
         # asked: it cannot see this game's held things, and a carry is aimed by its looks alone as before)
         self._drawn: tuple[tuple[float, float], list[int]] | None = None
         self._cells: list[list[int]] | None = None
+        # carries in a row that went straight to where the thing was to lie and were seen to lie right at the first
+        # look: from UNCHECKED_AFTER on, a carry is let go without the look, after resting this long
+        self._passed = 0
+        self._rest_s = UNCHECKED_REST_S
         self._unseen = 0
         # carries on which the cells showed something held but its shape nowhere (`_by_rule`)
         self._unfit = 0
@@ -526,6 +534,10 @@ class Carrier:
         that could not measure was aimed as if the drawing kept to the finger and landed two cells off)."""
         self.since_doubt = 0
         self.hang.shaken = True
+        if self._passed >= UNCHECKED_AFTER:
+            # it was let go unlooked at: perhaps before the drawing had caught up with the pointer
+            self._rest_s = min(UNCHECKED_REST_MOST_S, self._rest_s * 2)
+        self._passed = 0
 
     async def _look(self, before: bytes, start: tuple[float, float], pointer: tuple[float, float],
                     source: list[int] | None, near: tuple[float, float] | None = None) -> dict[str, Any]:
@@ -703,7 +715,16 @@ class Carrier:
             reach = max(FIRST_LEG[0], min(1.0, LEAST_LEG / length))
             await surface.move(start[0] + (end[0] - start[0]) * reach, start[1] + (end[1] - start[1]) * reach, LEG_MS)
             await surface.move(*end, max(LEG_MS, duration_ms - LEG_MS))
+            if self._passed >= UNCHECKED_AFTER:
+                # the cells bore the game's way of hanging held things out carry after carry: this one is let go
+                # where that puts it, with no look first. The screen read after the move says whether it lay
+                # right, and a move that did not do what it should brings the look back (`doubt`)
+                told.update(unchecked=True, picked=True, end=[round(part, 1) for part in end])
+                await asyncio.sleep(self._rest_s)
+                return told
             end, lies = await self._settle(check, end, gain, told)
+            # borne out once more when it lay right at the first look, nothing moved to make it so
+            self._passed = self._passed + 1 if lies and told.get("checked") and not told.get("aimed") else 0
             told["picked"] = any(seen["seen"] for seen in told["checks"])
             if told["picked"]:
                 self.picked_any = True

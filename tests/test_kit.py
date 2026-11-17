@@ -60,9 +60,12 @@ async def test_a_block_game_is_read_by_the_familys_reader_from_its_first_look_an
     carried = [move["carried"] for move in played.moves]
     # the first carries looked on the way; once they agreed on how the game hangs a held piece, the rest went
     # straight there, and every one was let go where the board showed the piece lying right
-    assert carried[0]["measured"] and all(entry["checked"] for entry in carried), carried
+    assert carried[0]["measured"] and all(entry.get("checked") or entry.get("unchecked") for entry in carried), carried
     straight = [entry for entry in carried if entry.get("known")]
     assert len(straight) >= 12 and all(not entry["looks"] for entry in straight), carried
+    # and once five in a row lay right at the first look, the rest were let go with no look before
+    looked = [entry for entry in straight if entry.get("checked")]
+    assert len(looked) == carry.UNCHECKED_AFTER and all(entry.get("unchecked") for entry in straight[len(looked):]), carried
     kept = Store(tmp_path).profile("https://blocks.example/", "block_placement")
     assert kept["kit"]["board"] and len(kept["hang"]) >= 2
 
@@ -467,9 +470,9 @@ async def test_whoever_watches_is_shown_the_frame_taken_with_the_piece_held_over
     played, made = await agent.play(fake, Dealer(fake, []), "block_placement", goal=GoalSpec("actions", 10),
                                     budget=Budget(40, 200, 120), watch=watch)
     assert played.record["outcome"] == "goal_reached"
-    straight = sum(1 for move in played.moves if move["carried"].get("known"))
-    # every carry showed the screen at least once between its sending and its having been sent
-    assert straight >= 4 and watch.during >= len(played.moves), (straight, watch.during)
+    looked = sum(1 for move in played.moves if not move["carried"].get("unchecked"))
+    # every carry that looked at the screen with the piece held showed it, between its sending and its having been sent
+    assert looked >= 5 and watch.during >= looked, (looked, watch.during)
 
 
 class Gapped(Centred):
@@ -515,3 +518,16 @@ async def test_a_game_that_draws_held_blocks_apart_is_played_and_its_way_of_hang
     carried = [move["carried"] for move in played.moves]
     assert carried[0]["measured"] and sum(1 for entry in carried if entry.get("known")) >= 6, carried
     assert {move["effect"] for move in played.moves} == {"confirmed"}
+
+
+async def test_a_carry_let_go_unlooked_at_whose_move_fails_brings_the_look_back_and_rests_longer():
+    fake = Centred()
+    played, made = await agent.play(fake, Dealer(fake, []), "block_placement", goal=GoalSpec("actions", 12), budget=Budget(40, 200, 120))
+    assert played.moves[-1]["carried"].get("unchecked"), played.moves[-1]
+    carrier = carry.Carrier(fake)
+    carrier._passed = carry.UNCHECKED_AFTER
+    carrier.doubt()
+    assert carrier._passed == 0 and carrier._rest_s == 2 * carry.UNCHECKED_REST_S and carrier.hang.shaken
+    # one not let go unlooked at leaves the rest as it was
+    carrier.doubt()
+    assert carrier._rest_s == 2 * carry.UNCHECKED_REST_S
