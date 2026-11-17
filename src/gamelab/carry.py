@@ -102,6 +102,10 @@ AIMS_BLIND, BACK_FOOT = 3, 12
 # after more than this many carries on which the cells showed a held thing but its shape nowhere, such a carry is let
 # go by the game's way of hanging held things alone
 UNFIT_MOST = 2
+# a held piece whose blocks are drawn apart (`arranged`): its blocks are of one size within ARRANGED_ALIKE, each lies
+# within ARRANGED_NEAR of where the piece's shape puts it (shares of how far apart blocks are drawn), and a block's
+# side is between ARRANGED_LEAST and ARRANGED_MOST of that distance
+ARRANGED_ALIKE, ARRANGED_NEAR, ARRANGED_LEAST, ARRANGED_MOST = 0.2, 0.25, 0.5, 1.05
 
 
 def _boxes(before: bytes, after: bytes, ignore: list[list[int]] | None = None) -> list[list[int]]:
@@ -156,9 +160,57 @@ def _overlaps(one: list[int], other: list[int]) -> bool:
         and other[1] < one[1] + one[3]
 
 
+def arranged(boxes: list[list[int]], cells: list[list[int]]) -> list[int] | None:
+    """The box around a held piece whose blocks are drawn apart: of the things that changed, as many as the piece
+    has blocks, of one size, lying as its blocks lie (`cells`, each a row and a column). A game that draws a held
+    piece's blocks with a gap between them shows it as that many things, none of them in the piece's own
+    proportions (2026-11-17: blocks of 84 pixels 14 apart, where what changed is joined within 12). None when no
+    such group is there, or the piece is one block."""
+    if len(cells) < 2 or len(boxes) < len(cells):
+        return None
+    middles = [(box[0] + box[2] / 2, box[1] + box[3] / 2) for box in boxes]
+    (r0, c0), (r1, c1) = cells[0], cells[1]
+    for one, first in enumerate(boxes):
+        for other, second in enumerate(boxes):
+            if one == other or not _alike(first, second):
+                continue
+            # the two as the piece's first two blocks: how far apart blocks are drawn, across and down
+            across = (middles[other][0] - middles[one][0]) / (c1 - c0) if c1 != c0 else None
+            down = (middles[other][1] - middles[one][1]) / (r1 - r0) if r1 != r0 else None
+            pitch = across if down is None else down if across is None else (across + down) / 2
+            if pitch is None or pitch <= 0 or (across is not None and down is not None and abs(across - down) > ARRANGED_NEAR * pitch):
+                continue
+            if c1 == c0 and abs(middles[other][0] - middles[one][0]) > ARRANGED_NEAR * pitch \
+                    or r1 == r0 and abs(middles[other][1] - middles[one][1]) > ARRANGED_NEAR * pitch:
+                continue
+            # a block is drawn no larger than blocks lie apart, and not much smaller
+            if not ARRANGED_LEAST * pitch <= max(first[2], first[3]) <= ARRANGED_MOST * pitch:
+                continue
+            taken, left = [], list(range(len(boxes)))
+            for row, col in cells:
+                at = (middles[one][0] + (col - c0) * pitch, middles[one][1] + (row - r0) * pitch)
+                near = [index for index in left if _alike(boxes[index], first)
+                        and abs(middles[index][0] - at[0]) <= ARRANGED_NEAR * pitch
+                        and abs(middles[index][1] - at[1]) <= ARRANGED_NEAR * pitch]
+                if not near:
+                    break
+                taken.append(near[0])
+                left.remove(near[0])
+            else:
+                found = [boxes[index] for index in taken]
+                x0, y0 = min(box[0] for box in found), min(box[1] for box in found)
+                return [x0, y0, max(box[0] + box[2] for box in found) - x0, max(box[1] + box[3] for box in found) - y0]
+    return None
+
+
+def _alike(one: list[int], other: list[int]) -> bool:
+    return abs(one[2] / max(other[2], 1) - 1) <= ARRANGED_ALIKE and abs(one[3] / max(other[3], 1) - 1) <= ARRANGED_ALIKE
+
+
 def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer: tuple[float, float],
                source: list[int] | None = None, scale: float | None = None,
-               ignore: list[list[int]] | None = None) -> tuple[list[int], list[list[int]]] | None:
+               ignore: list[list[int]] | None = None, cells: list[list[int]] | None = None
+               ) -> tuple[list[int], list[list[int]]] | None:
     """Where the thing pressed at `start` was (`origin`), and every place it may be drawn while the pointer holds
     it at `pointer`, nearest the pointer first: what changed between the capture before the press and the one
     during the hold, as large as what was picked up or larger and in its proportions. `source`: where the screen
@@ -182,6 +234,10 @@ def candidates(before: bytes, during: bytes, start: tuple[float, float], pointer
     narrowed = [_own(before, during, origin, box) for box in rest
                 if box[2] >= origin[2] * 0.7 and box[3] >= origin[3] * 0.7]
     shaped = [box for box in narrowed if _shaped(box, origin) and (scale is None or _scaled(box, origin, scale))]
+    if not shaped and cells:
+        # nothing in the piece's proportions: its blocks may be drawn apart, each a thing of its own
+        together = arranged(rest, cells)
+        shaped = [together] if together is not None else []
     if not shaped:
         return None
     return origin, sorted(shaped, key=lambda box: _gap(pointer, box))
@@ -436,6 +492,7 @@ class Carrier:
         # the carries in a row whose check saw nothing held over the board (after UNSEEN_MOST the check is not
         # asked: it cannot see this game's held things, and a carry is aimed by its looks alone as before)
         self._drawn: tuple[tuple[float, float], list[int]] | None = None
+        self._cells: list[list[int]] | None = None
         self._unseen = 0
         # carries on which the cells showed something held but its shape nowhere (`_by_rule`)
         self._unfit = 0
@@ -482,7 +539,7 @@ class Carrier:
             frame = await self.frames.frame(after)
             png, after = frame.png, frame.at + STILL_GAP_S
             shots += 1
-            found = candidates(before, png, start, near or pointer, source, self._scale, self._ignore)
+            found = candidates(before, png, start, near or pointer, source, self._scale, self._ignore, self._cells)
             boxes = found[1] if found else []
             seen = {"png": png, "origin": found[0] if found else None,
                     "gone": gone(before, png, start, source, self._ignore),
@@ -501,7 +558,8 @@ class Carrier:
 
     async def carry(self, start: tuple[float, float], goal: tuple[float, float], duration_ms: int,
                     hold_s: float | None = None, before: bytes | None = None,
-                    source: list[int] | None = None, check: Any = None) -> dict[str, Any]:
+                    source: list[int] | None = None, check: Any = None,
+                    shape: list[list[int]] | None = None) -> dict[str, Any]:
         """Drag what is at `start` so that its drawing's middle comes to `goal`, pressed `hold_s` (else as long
         as picked things up here) before moving. `before`: the screen as it was last read, when nothing was done
         since; `source`: where it was read to show the thing. Returns what was measured: whether the thing was
@@ -535,6 +593,8 @@ class Carrier:
         if before is None:
             before = (await self.frames.frame()).png
         self._ignore, self._scale = self._ignored(await surface.size()), self._scaled_by()
+        # the thing's blocks, as rows and columns, when whoever read the screen knows them (`arranged`)
+        self._cells = shape
         if self._ignore:
             told["ignored"] = len(self._ignore)
         # pressed again longer only while no carry here has picked a thing up: after one has, a press that

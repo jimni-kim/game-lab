@@ -1130,7 +1130,18 @@ class Agent:
         else:
             check = self.adapter.hover(before.state, action) if isinstance(self.adapter, KitAdapter) else None
             self.carried_as = await self.carrier.carry((sent["x0"], sent["y0"]), (sent["x1"], sent["y1"]), sent["ms"],
-                                                       before=before.png, source=self._source(before, action), check=check)
+                                                       before=before.png, source=self._source(before, action), check=check,
+                                                       shape=self._piece(before, action))
+
+    def _piece(self, before: Reading, action: dict[str, Any]) -> list[list[int]] | None:
+        """The blocks of the thing a move drags, as rows and columns, when the state lists them so."""
+        controls = self.adaptation.controls if self.adaptation else {}
+        try:
+            piece = before.state[controls["source"]][action[controls["index"]]]
+        except (KeyError, IndexError, TypeError):
+            return None
+        return piece if isinstance(piece, list) and piece and all(
+            isinstance(cell, list) and len(cell) == 2 and all(type(part) is int for part in cell) for cell in piece) else None
 
     def _source(self, before: Reading, action: dict[str, Any]) -> list[int] | None:
         """Where the screen a move is played from was read to show the thing the move drags, when it was."""

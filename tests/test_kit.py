@@ -470,3 +470,48 @@ async def test_whoever_watches_is_shown_the_frame_taken_with_the_piece_held_over
     straight = sum(1 for move in played.moves if move["carried"].get("known"))
     # every carry showed the screen at least once between its sending and its having been sent
     assert straight >= 4 and watch.during >= len(played.moves), (straight, watch.during)
+
+
+class Gapped(Centred):
+    """A block game that draws a held piece's blocks apart, each smaller than a cell, hung from the pointer, and
+    shows nothing of where it would land."""
+
+    async def capture(self, region=None):
+        held, self.held = self.held, None
+        png = await super().capture(region)
+        self.held = held
+        if not held:
+            return png
+        image = Image.open(BytesIO(png)).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        source = self.source(held[0])
+        draw.rectangle((source[0] - 2, source[1] - 2, source[0] + source[2] + 2, source[1] + source[3] + 2), fill=blocks.PAGE)
+        left, top = self._held_box()
+        for r, c in self.state["tray"][held[0]]:          # blocks of 32 pixels, 16 apart
+            draw.rectangle((left + c * CELL + 8, top + r * CELL + 8, left + c * CELL + 39, top + r * CELL + 39), fill=blocks.PIECE)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_a_held_piece_whose_blocks_are_drawn_apart_is_found_by_how_its_blocks_lie():
+    fake = Gapped()
+    slot = next(index for index, piece in enumerate(fake.state["tray"]) if len(piece) >= 3)
+    piece, source = fake.state["tray"][slot], fake.source(slot)
+    start = (source[0] + piece[0][1] * blocks.SMALL + 12, source[1] + piece[0][0] * blocks.SMALL + 12)
+    rows, cols = blocks.extent(piece)
+    goal = (BOARD[0] + (2 + cols / 2) * CELL, BOARD[1] + (2 + rows / 2) * CELL)
+    # told nothing of the piece's blocks, the carry sees nothing in its proportions held
+    blind = await carry.Carrier(Gapped()).carry(start, goal, 300, source=source)
+    assert not blind["measured"], blind
+    told = await carry.Carrier(fake).carry(start, goal, 300, source=source, shape=piece)
+    assert told["measured"] and told["picked"] and fake.placed == [(slot, [2, 2])], (told, fake.placed)
+
+
+async def test_a_game_that_draws_held_blocks_apart_is_played_and_its_way_of_hanging_them_learned():
+    fake = Gapped()
+    played, made = await agent.play(fake, Dealer(fake, []), "block_placement", goal=GoalSpec("actions", 14), budget=Budget(60, 200, 120))
+    assert played.record["outcome"] == "goal_reached" and not fake.missed, (played.record, made)
+    carried = [move["carried"] for move in played.moves]
+    assert carried[0]["measured"] and sum(1 for entry in carried if entry.get("known")) >= 6, carried
+    assert {move["effect"] for move in played.moves} == {"confirmed"}
