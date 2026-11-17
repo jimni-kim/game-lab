@@ -4,7 +4,7 @@
 규칙 모델과 풀이기는 코드로 등록해 두고, 사이트마다 다른 판독은 모델(VLM)이 그 사이트에 맞춰 쓰는 어댑터 코드가 맡는다.
 모델은 첫 수들을 읽고 어댑터를 쓰며, 어댑터가 읽지 못하는 화면을 넘기는 데에만 다시 묻는다.
 
-ARMY 게임 플러그인(`codex/game-adaptive-perception` `92ccefe5f`)에서 분리했다. 분리 계획과 버린 것은 [docs/PLAN.md](docs/PLAN.md),
+ARMY 게임 플러그인(`codex/game-adaptive-perception` `92ccefe5f`)에서 분리했다. 지금의 계획은 [docs/PLAN.md](docs/PLAN.md), 분리 계획과 그동안의 기록(§1~§23)은 [docs/PLAN-archive.md](docs/PLAN-archive.md),
 이어 갈 실험 계획은 [docs/origin/](docs/origin/2026-11-13-game-adaptive-perception.md)에 있다.
 
 ## 설치
