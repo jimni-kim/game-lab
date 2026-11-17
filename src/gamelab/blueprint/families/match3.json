@@ -27,7 +27,8 @@
   "state_fields": {
     "grid": "the rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is the number of its colour (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; the nearest, and always the same number for the same kind of piece); a piece with a power (striped, wrapped, a rocket, a bomb, a propeller, a colour ball) is 500 plus its colour's number, or 500 with no colour; 11 something fixed that is no piece (an obstacle, a covered or locked cell), 12 such a thing that falls; 0 no cell or nothing in it; null a cell nobody read",
     "score": "the game's score as read, or null",
-    "scene": "the id of the scene the screen shows"
+    "scene": "the id of the scene the screen shows",
+    "under": "only when some cell of the board has something laid under its piece that clearing the piece breaks (jelly, grass, a tinted tile): the rows of the same rectangle, each cell the number of such layers under it (0 none); leave the field out when no cell has any"
   },
   "actions": [
     {

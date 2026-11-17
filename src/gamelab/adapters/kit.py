@@ -157,6 +157,19 @@ class KitAdapter:
         settle = getattr(self.kit, "settle", None)
         return settle(png, prior) if settle is not None else None
 
+    def unsteady(self, png: bytes, later: bytes) -> set[tuple[int, int]]:
+        """The cells this screen leaves unread that look otherwise on a screen taken a moment later."""
+        unread = getattr(self.kit, "unread", None)
+        if unread is None:
+            return set()
+        now = dict(unread(png))
+        image = self.kit._shown(later)
+        if image is None:
+            return set(now)
+        boxes = {(r, c): box for r, c, box in self.kit._cells()}
+        return {cell for cell, seen in now.items()
+                if grid.distance(seen, self.kit._look(image, boxes[cell])) > self.kit.near}
+
     def took(self, png: bytes, action: dict[str, Any]) -> None:
         """The game took a move: what the reader learns from that of the cells the move swapped."""
         took = getattr(self.kit, "took", None)

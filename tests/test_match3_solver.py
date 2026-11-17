@@ -75,3 +75,34 @@ def test_things_fixed_beside_a_line_are_hit_once_a_wave_and_count_towards_a_goal
     assert result["taken"][X] == 1 and result["hit"] == [[0, 0]]
     assert rules.apply({"grid": grid, "score": None, "scene": "playing"}, rules_for(grid, beside=False),
                        {"kind": "swap", "cell": [1, 2], "to": [2, 2]})["hit"] == []
+
+
+def test_a_goal_to_bring_something_down_is_got_on_with_by_the_rows_it_comes_down():
+    L = rules.LOOSE
+    grid = [[R, L, B, P, B],
+            [O, Y, R, P, B],
+            [Y, G, P, B, O],
+            [B, G, Y, G, B],
+            [P, Y, G, O, R]]
+    # three greens down the second column, under the thing to bring down; or four blues down the last, a line piece
+    assert pick(grid) == {"kind": "swap", "cell": [2, 3], "to": [2, 4]}
+    goals = [{"kind": "bring_down", "target": L, "count": 1}]
+    result = rules.apply({"grid": grid, "score": None, "scene": "playing"}, rules_for(grid), {"kind": "swap", "cell": [4, 1], "to": [4, 2]})
+    assert result["lowered"] == {L: 3}
+    assert rules.progress(goals, result["taken"], result["lowered"], 5) == 3 / 5
+    assert pick(grid, goals=goals) == {"kind": "swap", "cell": [4, 1], "to": [4, 2]}
+
+
+def test_a_move_with_a_power_whose_colour_is_not_known_teaches_nothing_of_how_powers_go_off():
+    line = rules.POWERED * rules.LINE              # a striped piece a light model named, its colour not known
+    grid = [[R, line, B],
+            [O, Y, R],
+            [Y, B, P]]
+    unknown = {"rows": 3, "cols": 3, "colours": 6, "square": None, "swap_power": None, "pair_power": None, "tap_power": None}
+    state = {"grid": grid, "score": None, "scene": "playing"}
+    action = {"kind": "swap", "cell": [0, 1], "to": [1, 1]}
+    assert rules.way(state, unknown, action) == "power"
+    assert rules.learned(state, action, "confirmed", unknown) == unknown
+    # one whose colour is known does teach it
+    grid[0][1] = line + R
+    assert rules.learned(state, action, "confirmed", unknown)["swap_power"] is True

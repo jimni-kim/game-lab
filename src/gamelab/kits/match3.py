@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..rules.match3 import AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, power_of
+from ..rules.match3 import AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, UNDER, power_of
 from .grid import CHANGED_SHARE, Looks, Valued, distance, fit, groups, look, open_picture
 
 # a reading agrees with a model's when this share of the cells both call pieces are gathered alike by both
@@ -36,6 +36,10 @@ DOUBTS = 2
 # `near` of its looks and no other value's are within `apart` further
 GOAL_INSETS, GOAL_NEAR = (0.2, 0.3, 0.4), 1.8
 GOAL_KINDS = ("collect", "bring_down", "other")
+# what lies under a cell's piece (`under`) is told by the cell's corners, where the piece does not reach: a square
+# this share of a cell a side, this share in from each corner, each made this many pixels a side; corners nearer
+# than UNDER_NEAR (mean difference a channel, of 255) are one look
+UNDER_SIDE, UNDER_IN, UNDER_PIXELS, UNDER_NEAR = 0.14, 0.03, 2, 12.0
 # a piece with a power of a kind nobody knows: what a look not learned yet reads as
 UNKNOWN = POWERED * POWER
 # what a light model may call a cell it is shown, and the value each is
@@ -73,6 +77,9 @@ class Match3Kit(Valued):
         # how often a move that needed one swapped was not taken (`refused`)
         self.proven: set[int] = set()
         self.doubted: dict[int, int] = {}
+        # how many layers lie under a cell's piece, by what its corners look like, when the reading learned from
+        # said some cell had any (`under`); None for a board with none
+        self.unders: Looks | None = None
 
     def calibrate(self, png: bytes, board: list[int], state: dict[str, Any], sources: Any = None) -> bool:
         grid = state.get(self.field)
@@ -100,7 +107,45 @@ class Match3Kit(Valued):
             free.remove(number)
             for index in kind:
                 self.looks.add(number, pieces[index][1])
+        under = state.get("under")
+        self.unders = None
+        if self._shaped(under) and any(isinstance(cell, int) and cell > 0 for row in under for cell in row):
+            self.unders = Looks(UNDER_NEAR, UNDER_NEAR / 2)
+            for r, c, box in self._cells():
+                if (r, c) not in self.holes and isinstance(under[r][c], int):
+                    self.unders.add(under[r][c], self._corners(image, box))
         return len(self.looks) > 0
+
+    def _corners(self, image: Any, box: list[float]) -> bytes:
+        """What a cell's four corners look like, where what lies under its piece shows."""
+        x, y, w, h = box
+        side, inward = UNDER_SIDE * w, UNDER_IN * w
+        found = b""
+        for left, top in ((x + inward, y + inward), (x + w - inward - side, y + inward),
+                          (x + inward, y + h - inward - side), (x + w - inward - side, y + h - inward - side)):
+            found += image.crop((round(left), round(top), round(left + side), round(top + side))).resize(
+                (UNDER_PIXELS, UNDER_PIXELS)).tobytes()
+        return found
+
+    def _under(self, image: Any, prior: dict[str, Any] | None, unmoved: dict[str, Any] | None) -> list[list[int]]:
+        """How many layers lie under each cell's piece by its corners. A corner not seen before is what the rules
+        say the move just played left there (`prior`), and when they say it took a layer off, it is learned as that
+        many from now on; with nothing to say, as many as it had."""
+        told = prior.get("under") if isinstance(prior, dict) and self._shaped(prior.get("under")) else None
+        was = unmoved.get("under") if isinstance(unmoved, dict) and self._shaped(unmoved.get("under")) else None
+        under = [[0] * self.cols for _ in range(self.rows)]
+        for r, c, box in self._cells():
+            if (r, c) in self.holes:
+                continue
+            seen = self._corners(image, box)
+            value = self.unders.name(seen)[0]
+            if value is None:
+                value = told[r][c] if told is not None else (was[r][c] if was is not None else 0)
+                if told is not None and was is not None and told[r][c] < was[r][c]:
+                    self.unders.add(value, seen)
+                    self.taught["rules"] += 1
+            under[r][c] = value
+        return under
 
     def read(self, png: bytes, prior: dict[str, Any] | None = None, unmoved: dict[str, Any] | None = None
              ) -> tuple[dict[str, Any] | None, str | None]:
@@ -116,6 +161,10 @@ class Match3Kit(Valued):
             self.told = {"off": unknown}
             return None, "scene_changed"
         state[self.field] = [[UNKNOWN if cell is None else cell for cell in row] for row in grid]
+        if self.unders is not None:
+            image = self._shown(png)
+            if image is not None:
+                state["under"] = self._under(image, prior, unmoved)
         return state, why
 
     def unread(self, png: bytes) -> list[tuple[tuple[int, int], bytes]]:
@@ -248,6 +297,7 @@ class Match3Kit(Valued):
         image = self._shown(png)
         if image is None or not isinstance(listed, list):
             return None
+        layered = self.unders is not None and any(value for value in self.unders.kept if value)
         found = []
         for thing in listed:
             if not isinstance(thing, dict) or thing.get("kind") not in GOAL_KINDS:
@@ -255,6 +305,9 @@ class Match3Kit(Valued):
             count = thing.get("count")
             count = count if type(count) is int and count >= 0 else None
             target = self._pictured(image, thing["box"]) if thing["kind"] != "other" else None
+            if target is None and thing["kind"] == "collect" and layered:
+                # a goal whose picture is like no cell's on a board with layers under its pieces is about those
+                target = UNDER
             found.append({"kind": thing["kind"], "target": target, "count": count})
         return found
 
@@ -273,11 +326,14 @@ class Match3Kit(Valued):
         return ranked[0][1]
 
     def to_json(self) -> dict[str, Any]:
-        return {**super().to_json(), "holes": sorted(self.holes), "proven": sorted(self.proven)}
+        return {**super().to_json(), **({"unders": self.unders.to_json()} if self.unders is not None else {}), "holes": sorted(self.holes), "proven": sorted(self.proven)}
 
     def restore(self, kept: dict[str, Any]) -> bool:
         if not super().restore(kept):
             return False
         self.holes = {tuple(cell) for cell in kept.get("holes", [])}
+        if kept.get("unders"):
+            self.unders = Looks(UNDER_NEAR, UNDER_NEAR / 2)
+            self.unders.restore(kept["unders"])
         self.proven = set(kept.get("proven", []))
         return True

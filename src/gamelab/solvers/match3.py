@@ -49,7 +49,7 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
             break
         nodes += 1
         result = apply(state, rules, action)
-        worth = _worth(result["taken"], result["cleared"], result["made"], goals, rules)
+        worth = _worth(result["taken"], result["cleared"], result["made"], goals, rules, result["lowered"])
         if way(state, rules, action) == "pair":
             worth += PAIR
         scored.append((worth, index, action, result))
@@ -65,11 +65,11 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
     return {"action": best, "nodes": nodes}
 
 
-def _worth(taken: dict, cleared: int, made: int, goals: list, rules: dict) -> float:
+def _worth(taken: dict, cleared: int, made: int, goals: list, rules: dict, lowered: dict | None = None) -> float:
     """What a move that takes `taken`, clears `cleared` and earns `made` is worth (see the module). A thing fixed
     hit beside a line counts towards a goal about it; when no goal says what such things are for, a little, like
     a piece cleared."""
-    gained = progress(goals, taken)
+    gained = progress(goals, taken, lowered, rules.get("rows", 8))
     worth = GOAL * gained + POWER * WORTH.get(made // POWERED, 0) + PIECE * cleared
     if not any(goal.get("target") == BLOCK for goal in goals):
         worth += PIECE * taken.get(BLOCK, 0)

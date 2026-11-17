@@ -70,6 +70,9 @@ RESTLESS_S = 1.0
 # result reads as the board it was played from is one the game did not take once the count of moves left the game
 # shows has not changed this long after it was sent; when no such count is known, once this longer time is over
 SAME_READS, REFUSED_S, ABSENT_S = 3, 1.5, 3.0
+# a board at rest that shows looks not learned is looked at again this long after: a look that changed meanwhile
+# is still moving, and is not asked about
+UNSTABLE_GAP_S = 0.4
 # moves whose lines hit things fixed, none of which looked otherwise after, before such things are taken not to
 # break beside a line
 BESIDE_UNMOVED = 3
@@ -731,6 +734,17 @@ class Agent:
         asked = self.adapter.settle(after.png, self._prior(expect))
         if asked is None:
             return
+        if asked:
+            # a look caught changing (an effect still playing, a piece that sparkles or turns) is no look to learn:
+            # its kind is neither asked about nor named, and reads as a piece with a power of a kind not known on
+            # this board only (PLAN §23: 2026-11-17, a light model asked twelve times in a game, most of the time
+            # the game took, much of it of what was still moving)
+            frame = await self.frames.frame(time.monotonic() + UNSTABLE_GAP_S)
+            moving = self.adapter.unsteady(after.png, frame.png)
+            steady = [(cells, pictures) for cells, pictures in asked if not any(tuple(cell) in moving for cell in cells)]
+            self.light_told["unstable"] = self.light_told.get("unstable", 0) + sum(
+                len(cells) for cells, _ in asked) - sum(len(cells) for cells, _ in steady)
+            asked = steady
         kit, answers = self.adapter.kit, {}
         if asked and self.light is not None and len(asked) <= kit.KINDS_MOST:
             checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.asked())

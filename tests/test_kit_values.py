@@ -584,3 +584,111 @@ def test_a_count_of_moves_left_seen_to_change_is_not_moved_by_one_reading_that_p
     assert kit.counter == [800, 300, 120, 90] and kit.counts
     kit.place_counter([802, 298, 118, 92])             # the same place, read a little otherwise
     assert kit.counter == [802, 298, 118, 92] and kit.counts
+
+
+STEADY, FLICKER = (245, 240, 235), ((255, 0, 255), (0, 200, 200))
+
+
+class Flickering(gems.Gems):
+    """A game in which, after a few moves, two things that are no piece show at the top: one drawn the same on
+    every screen, one in another colour on each (an effect that keeps playing)."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.shots = 0
+
+    def _play(self, action):
+        super()._play(action)
+        if len(self.swaps) == 3:
+            self.state["grid"][0][0] = self.state["grid"][0][7] = gems.rules.BLOCK
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        self.shots += 1
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for col, ink in ((0, STEADY), (7, FLICKER[self.shots % 2])):
+            if self.state["grid"][0][col] == gems.rules.BLOCK:
+                x, y = gems.BOARD[0] + col * gems.CELL, gems.BOARD[1]
+                draw.rectangle((x + 4, y + 4, x + gems.CELL - 5, y + gems.CELL - 5), fill=ink)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_a_look_caught_changing_on_a_board_at_rest_is_not_put_to_the_light_model_nor_learned(monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+
+    monkeypatch.setattr(agent, "UNSTABLE_GAP_S", 0.0)
+    fake = Flickering()
+    light = Light({STEADY: gems.rules.BLOCK})
+    played, made = await agent.play(fake, gems.Jeweller(fake), "match3", goal=GoalSpec("actions", 12),
+                                    budget=Budget(30, 200, 120), light=light)
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    shown = [Image.open(BytesIO(check.image)).convert("RGB") for checks in light.asked for check in checks]
+    middles = {image.getpixel((image.width // 2, image.height // 2)) for image in shown}
+    # the steady one was asked about and named; the one that keeps changing never was
+    assert STEADY in middles and not middles & set(FLICKER), middles
+    assert made["kit"]["light"]["unstable"] >= 1 and made["kit"]["light"]["named"] >= 1, made["kit"]["light"]
+
+
+JELLY, JELLY_GOAL = (120, 200, 250), [560, 100, 48, 48]
+
+
+class Jellied(gems.Gems):
+    """A game some of whose cells have a layer laid under their piece (drawn as the cell's own colour, which shows
+    at its corners), cleared by clearing the piece on it; its goal, beside the board, is to clear them all."""
+    LAYERED = [(r, c) for r in (5, 6, 7) for c in range(2, 6)]
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.state["under"] = [[1 if (r, c) in self.LAYERED else 0 for c in range(8)] for r in range(8)]
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for r, row in enumerate(self.state["under"]):
+            for c, layers in enumerate(row):
+                if layers:
+                    x, y = gems.BOARD[0] + c * gems.CELL, gems.BOARD[1] + r * gems.CELL
+                    for corner in ((x, y), (x + gems.CELL - 9, y), (x, y + gems.CELL - 9), (x + gems.CELL - 9, y + gems.CELL - 9)):
+                        draw.rectangle((*corner, corner[0] + 8, corner[1] + 8), fill=JELLY)
+        left, top, width, height = JELLY_GOAL
+        draw.rectangle((left, top, left + width - 1, top + height - 1), fill=JELLY)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+class Layering(gems.Jeweller):
+    """A model that reads the layers under the pieces and the goal to clear them."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            answer["state"]["under"] = self.fake.state["under"]
+            left = sum(map(sum, self.fake.state["under"]))
+            answer["panel"] = {"goals": [{"box": JELLY_GOAL, "count": left, "kind": "collect"}]}
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_layers_under_pieces_are_read_by_the_cells_corners_and_a_goal_to_clear_them_is_got_on_with():
+    from gamelab.rules.match3 import UNDER
+
+    fake = Jellied()
+    model = Layering(fake)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    goal = made["kit"]["goals"][0]
+    assert (goal["kind"], goal["target"]) == ("collect", UNDER), made["kit"]["goals"]
+    left = sum(map(sum, fake.state["under"]))
+    # the moves went for the layers: most are cleared, and the count kept is what the screen shows
+    assert left <= 1 and goal["count"] <= left, (left, goal)        # with no goal about them, 3 were left
+    assert [kind for kind, _ in model.asked] == ["label"], model.asked

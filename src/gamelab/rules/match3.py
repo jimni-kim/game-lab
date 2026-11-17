@@ -42,6 +42,10 @@ BLOCK = len(COLOURS) + 1
 # something that falls and is no piece; a piece held in place is HELD + its colour
 LOOSE = BLOCK + 1
 HELD = 20
+# what a goal about the layers laid under pieces (jelly, grass) is about, and what a move takes of them is counted
+# as: no cell holds it. A state may say how many such layers lie under each cell (`under`, a grid like `grid`): the
+# piece cleared at a cell takes one off it
+UNDER = 13
 # a piece with a power is POWERED * its kind + its colour (0: none)
 POWERED = 100
 LINE, SEEKER, AREA, COLOUR, POWER = 1, 2, 3, 4, 5
@@ -80,6 +84,11 @@ def validate(state: dict, rules: dict) -> list[str]:
         problems.append("unsettled")
     if state.get("scene", PLAYING) not in (PLAYING, OVER, WON):
         problems.append("scene")
+    under = state.get("under")
+    if under is not None and (not isinstance(under, list) or len(under) != rows or any(
+            not isinstance(row, list) or len(row) != cols or any(type(cell) is not int or cell < 0 for cell in row)
+            for row in under)):
+        problems.append("under")
     return problems
 
 
@@ -257,6 +266,11 @@ def learned(before: dict, action: dict, effect: str, rules: dict) -> dict:
     cells = [action[name] for name in ("cell", "to") if name in action]
     if any(power_of(before["grid"][r][c]) == POWER for r, c in cells):
         return rules                 # a thing only taken for a piece with a power says nothing of how powers go off
+    if any(power_of(before["grid"][r][c]) not in (0, COLOUR) and not colour_of(before["grid"][r][c]) for r, c in cells):
+        # a piece with a power whose colour is not known may have lined up by its colour: the game taking the move
+        # says nothing of how powers go off (2026-11-17, a striped candy named by a light model taught a game that
+        # takes only lines that it sets a power off swapped with anything)
+        return rules
     name = {"square": "square", "power": "swap_power", "pair": "pair_power", "tap": "tap_power"}.get(made)
     if name is None or rules.get(name) is not None:
         return rules
@@ -331,7 +345,8 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
     moved = [tuple(action["cell"])] if action["kind"] == "pop" else [tuple(action["cell"]), tuple(action["to"])]
     if action["kind"] != "pop":
         grid = _swapped(grid, action["cell"], action["to"])
-    cleared, made, blown, taken, hit = 0, 0, set(), {}, []
+    cleared, made, blown, taken, hit, lowered = 0, 0, set(), {}, [], {}
+    under = [list(row) for row in state["under"]] if isinstance(state.get("under"), list) else None
     if made_by in ("power", "pair", "tap"):
         for cell in moved:
             if power_of(grid[cell[0]][cell[1]]):
@@ -354,6 +369,12 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
         gone = (removed | (blown if first else set())) - set(kept)
         gone = {(r, c) for r, c in gone if grid[r][c] is not None and grid[r][c] not in (EMPTY, BLOCK)}
         cleared += len(gone)
+        if under is not None:
+            # each piece cleared takes one layer off what lies under it (the layer stays where it is: it does not fall)
+            for r, c in gone | (removed & set(kept)):
+                if under[r][c] > 0:
+                    under[r][c] -= 1
+                    taken[UNDER] = taken.get(UNDER, 0) + 1
         if rules.get("beside") is not False:
             # each thing fixed beside a line cleared is hit once by this wave (it stays where it is: whether it
             # broke is the screen's to show)
@@ -369,6 +390,8 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
         grid = [list(row) for row in grid]
         for (r, c), earned in kept.items():
             grid[r][c] = earned
+        for what, rows in _lowering(grid, gone).items():
+            lowered[what] = lowered.get(what, 0) + rows
         grid = _fall(grid, gone)
         first = False
     if blown:
@@ -379,14 +402,41 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
                     grid[r][c] = None
     if not taken.get(BLOCK):
         taken.pop(BLOCK, None)
-    return {"state": {**state, "grid": grid}, "cleared": cleared, "made": made, "taken": taken, "hit": hit}
+    return {"state": {**state, "grid": grid, **({"under": under} if under is not None else {})}, "cleared": cleared,
+            "made": made, "taken": taken, "hit": hit, "lowered": lowered}
 
 
-def progress(goals, taken: dict) -> int:
-    """How far a move's `taken` (`apply`) goes towards a level's goals: the things a goal to collect is about
-    that it takes, each goal's counted no further than what it still needs (a goal met gains nothing more)."""
-    return sum(min(taken.get(goal["target"], 0), goal["count"] if goal.get("count") is not None else len(COLOURS) ** 2)
-               for goal in goals or () if goal.get("kind") == "collect" and goal.get("target") is not None)
+def _lowering(grid, gone) -> dict:
+    """How many rows the things that fall and are no piece (LOOSE) come down as `gone` cells empty below them:
+    the cells gone under each, down to whatever stays where it is."""
+    lowered = {}
+    for r, row in enumerate(grid):
+        for c, cell in enumerate(row):
+            if cell != LOOSE or (r, c) in gone:
+                continue
+            rows, y = 0, r + 1
+            while y < len(grid) and ((y, c) in gone or not _rests(grid[y][c])):
+                rows += (y, c) in gone
+                y += 1
+            if rows:
+                lowered[cell] = lowered.get(cell, 0) + rows
+    return lowered
+
+
+def progress(goals, taken: dict, lowered: dict | None = None, rows: int = 8) -> float:
+    """How far a move's `taken` and `lowered` (`apply`) go towards a level's goals: the things a goal to collect
+    is about that it takes, each goal's counted no further than what it still needs (a goal met gains nothing
+    more); and for a goal to bring something down, the rows that thing comes down, a board's height counting as
+    one brought down."""
+    gained = 0.0
+    for goal in goals or ():
+        if goal.get("target") is None or goal.get("count") == 0:
+            continue
+        if goal.get("kind") == "collect":
+            gained += min(taken.get(goal["target"], 0), goal["count"] if goal.get("count") is not None else len(COLOURS) ** 2)
+        elif goal.get("kind") == "bring_down":
+            gained += (lowered or {}).get(goal["target"], 0) / max(1, rows)
+    return gained
 
 
 def advance(goals, taken: dict):
@@ -448,7 +498,7 @@ def assess(before: dict, action: dict, after: dict, rules: dict) -> dict:
 
 
 def unread_state(rules: dict, scene: str) -> dict:
-    return {"grid": [[None] * rules["cols"] for _ in range(rules["rows"])], "score": None, "scene": scene}
+    return {"grid": [[None] * rules["cols"] for _ in range(rules["rows"])], "score": None, "scene": scene, "under": None}
 
 
 # ── the replay game (seeded by the caller) ─────────────────────────────
@@ -487,17 +537,19 @@ def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
         raise ValueError("illegal_action")
     numbers = _stream(draw)
     result = apply(state, rules, action)
-    grid, cleared = result["state"]["grid"], result["cleared"]
+    grid, cleared, under = result["state"]["grid"], result["cleared"], result["state"].get("under")
     while True:
         grid = [[1 + next(numbers) % rules["colours"] if cell is None else cell for cell in row] for row in grid]
         removed = _runs(grid)
         if not removed:
             break
         cleared += len(removed)
+        for r, c in removed if under is not None else ():
+            under[r][c] = max(0, under[r][c] - 1)
         grid = _fall(grid, removed)
     if not legal_actions({"grid": grid}, rules):
         grid = _deal(rules, numbers)
-    return {**state, "grid": grid, "score": (state.get("score") or 0) + cleared}
+    return {**state, "grid": grid, "score": (state.get("score") or 0) + cleared, **({"under": under} if under is not None else {})}
 
 
 def shown(state: dict) -> dict:
