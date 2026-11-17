@@ -21,3 +21,12 @@ def _readers_under_test(request, monkeypatch):
 
     if not request.module.__name__.startswith("test_kit"):
         monkeypatch.setattr(kits, "KITS", {"block_placement": kits.KITS["block_placement"]})
+
+
+@pytest.fixture(autouse=True)
+def _profiles_kept_aside(tmp_path, monkeypatch):
+    """What pages save is kept in a browser profile of their host (`eval web`): under each test's own folder here,
+    never the repository's `out/`."""
+    from gamelab.eval import web
+
+    monkeypatch.setattr(web, "PROFILES", tmp_path / "browser")

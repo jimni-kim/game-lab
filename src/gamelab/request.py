@@ -4,6 +4,11 @@ One question: the model reads the words and answers with the address they give o
 mean, the objective and its number, and what they say of the game. The host checks the answer; nothing the
 model says is played without that. A page is played in the browser, an app on the device; a request that
 names neither is not taken. The words about the game go on to the loop as its `hint`.
+
+The answer also gives the reach of the work (PLAN §25, R1 and R2): whether it goes on from the screen as it
+stands or starts the game again, when to stop short of the objective, and which things beside the board that
+cost something the person allowed. A permission is taken only by its name among `META_ACTIONS`; none is the
+default, and stopping is the person's to say in their own words.
 """
 from __future__ import annotations
 
@@ -12,12 +17,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import resources
-from .contracts import GoalSpec
+from .contracts import LOST, META_ACTIONS, OBJECTIVES, GoalSpec, Scope
 from .model import Model, Msg, TurnRequest
 
-OBJECTIVES = ("play_until_end", "reach_value", "actions")
 ASK_TOKENS, ASK_TIMEOUT_S = 1000, 60.0
 MOST = 2000
+# the conditions to stop at a request may give, and how much of each one's words
+STOPS_MOST, STOP_MOST = 4, 120
 # the installed apps a model is shown at most, and how much of each one's name
 APPS_MOST, LABEL_MOST = 200, 80
 
@@ -29,7 +35,8 @@ async def understand(model: Model, words: str, apps: list[dict[str, Any]] | None
     prompt = (resources.FRAGMENT / "prompts" / "ask_goal.md").read_text(encoding="utf-8")
     shown = [{"package": app["package"], "label": (app.get("label") or app["package"])[:LABEL_MOST]}
              for app in (apps or [])[:APPS_MOST]]
-    context = {"request": words[:MOST], "objectives": list(OBJECTIVES), **({"apps": shown} if apps is not None else {})}
+    context = {"request": words[:MOST], "objectives": list(OBJECTIVES), "scopes": [str(scope) for scope in Scope],
+               "meta_actions": META_ACTIONS, "lost": LOST, **({"apps": shown} if apps is not None else {})}
     result = await model.complete(TurnRequest(system_stable=prompt, max_tokens=ASK_TOKENS, timeout_s=ASK_TIMEOUT_S,
                                               messages=[Msg("user", [{"type": "text", "text": json.dumps(context, ensure_ascii=False)}])]))
     try:
@@ -49,5 +56,24 @@ async def understand(model: Model, words: str, apps: list[dict[str, Any]] | None
     app = app if not named and isinstance(app, str) and app in {shown_app["package"] for shown_app in shown} else None
     hint = answer.get("game")
     return {"url": url if named else None, "app": app,
-            "goal": GoalSpec(objective, target if objective != "play_until_end" else None),
+            "goal": GoalSpec(objective, target if objective != "play_until_end" else None, scope=_scope(answer.get("scope")),
+                             stop_conditions=_stops(answer.get("stop")), allowed_meta_actions=_allowed(answer.get("allowed"))),
             "hint": hint[:200] if isinstance(hint, str) and hint.strip() else None}
+
+
+def _scope(value: Any) -> Scope:
+    """From the screen as it stands only when the request says so; else the game is started again, as a run is."""
+    return Scope.CURRENT_GAME if value == Scope.CURRENT_GAME else Scope.NEW_GAME
+
+
+def _stops(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    said = [one.strip()[:STOP_MOST] for one in value if isinstance(one, str) and one.strip()]
+    return tuple(dict.fromkeys(said))[:STOPS_MOST]
+
+
+def _allowed(value: Any) -> frozenset[str]:
+    """The permissions named, those the host knows; a name it does not know is no permission."""
+    return frozenset(name for name in value if isinstance(name, str) and name in META_ACTIONS) \
+        if isinstance(value, list) else frozenset()

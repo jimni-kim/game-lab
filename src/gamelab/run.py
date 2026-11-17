@@ -24,7 +24,7 @@ class Run:
 
 def check(goal: GoalSpec, budget: Budget, family_id: str, policy: str | None) -> str:
     """The policy a run plays, once its goal, budget and policy are ones the family can be run with."""
-    if goal.objective in ("reach_value", "actions") and goal.target_value is None:
+    if goal.objective in ("reach_value", "actions", "levels") and goal.target_value is None:
         raise ValueError("goal_target_missing")
     if budget.max_seconds is not None and not (math.isfinite(budget.max_seconds) and budget.max_seconds > 0):
         raise ValueError("invalid_budget")

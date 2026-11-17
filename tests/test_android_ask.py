@@ -155,3 +155,40 @@ def test_a_second_run_on_a_held_device_is_refused_at_once(tmp_path, monkeypatch)
             pass
     with measure.lock("android-emulator-5554"):
         pass
+
+
+async def test_work_that_goes_on_from_the_screen_does_not_start_the_app_again(tmp_path, quick):
+    """PLAN §25, R4: a request to go on from what is open is played from the screen as it stands. The app in
+    front is not touched; an app behind another is brought to the front, never stopped first."""
+    from gamelab.contracts import GoalSpec, Scope
+
+    args = game_args(tmp_path)
+    args.package, args.asked = "com.example.game", {"goal": GoalSpec("levels", 3, scope=Scope.CURRENT_GAME), "hint": None}
+    assert await android.steps_for(args, AndroidSurface(Adb())) == []
+    args.package = "name.boyle.chris.sgtpuzzles"
+    steps = await android.steps_for(args, AndroidSurface(Adb()))
+    assert steps == [{"launch": "name.boyle.chris.sgtpuzzles"}, {"wait_ms": android.LAUNCH_WAIT_MS}]
+    # the same request started afresh stops the app first, and --resume holds any run to the screen as it stands
+    args.asked = {"goal": GoalSpec("levels", 3, scope=Scope.NEW_GAME), "hint": None}
+    assert next(iter((await android.steps_for(args, AndroidSurface(Adb())))[0])) == "force_stop"
+    resumed = game_args(tmp_path, "--package", "com.example.game", "--resume")
+    resumed.asked = None
+    assert await android.steps_for(resumed, AndroidSurface(Adb())) == []
+    assert measure.goal_and_budget(resumed)[0].scope == "current_game"
+
+
+async def test_a_game_played_on_from_the_screen_is_handed_back_with_where_it_stopped(tmp_path, quick):
+    game, adb, kept = screen_device(tmp_path)
+    await kept()
+    args = game_args(tmp_path, "--objective", "actions", "--target", "3", "--resume", "--allow", "boosters", "--stop", "lost")
+    args.asked = None
+    surface = AndroidSurface(adb, package="com.example.game")
+    result = await android.play_one(args, 1, surface, "com.example.game", Recorded(Author(game, [])),
+                                    steps=await android.steps_for(args, surface))
+    assert (result["outcome"], result["reason"]) == ("goal_reached", "actions"), result
+    # nothing was stopped or started: the app was in front
+    assert not any(run[1:3] in (["am", "force-stop"], ["am", "start"]) for run in adb.ran)
+    handback = result["work"]
+    assert handback["goal"]["scope"] == "current_game" and handback["goal"]["allowed_meta_actions"] == ["boosters"]
+    assert handback["goal"]["stop_conditions"] == ["lost"] and handback["spent"]["inputs"] == 3
+    assert handback["stopped_at"]["where"] == "android://com.example.game" and result["told"].startswith("goal_reached")

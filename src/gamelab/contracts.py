@@ -20,12 +20,33 @@ class Outcome(StrEnum):
     # a model saw nothing more it could do, or its inputs ran out
     GAVE_UP = "gave_up"
     UNSUPPORTED = "unsupported"
+    # a condition the person set for stopping was met (PLAN §25, R1): the work is handed back there
+    STOPPED = "stopped"
 
 
 class Scope(StrEnum):
+    """Where the work starts (PLAN §25, R1 and R4)."""
+    # the screen as it stands: nothing is started again, the game or level on it is played on (이어받기)
     CURRENT_GAME = "current_game"
+    # the app or page started again first, by the host, as a person opening it would
     NEW_GAME = "new_game"
-    CURRENT_LEVEL = "current_level"
+
+
+# what the person may ask for: the game on the screen to its end, a score or tile the family reads, a number of
+# confirmed moves, or a number of levels cleared one after another (PLAN §25, R1)
+OBJECTIVES = ("play_until_end", "reach_value", "actions", "levels")
+# the things beside the board that cost or use up something of the player's, each done only when the person allowed
+# it by name (PLAN §25, R2). Nothing that costs real money is among them: that is never done
+META_ACTIONS = {
+    "boosters": "use a booster, power-up or other helper the game holds or offers outside the board's own pieces",
+    "currency": "spend coins, gems or another of the game's currencies",
+    "continue": "take extra moves, time or a life to keep a level going after it ran out",
+    "retry": "play a lost level again (it may cost a life)",
+}
+# a stop condition the code checks itself: the work ends at the first level or game lost, even when `retry` is
+# allowed. Any other condition is the person's own words, told to every model that looks at the screen, which may
+# answer that it is met
+LOST = "lost"
 
 
 # why a game ends when its board is found but some of its cells are a look the reading does not know: nothing
@@ -69,14 +90,20 @@ class NeedObservation:
 @dataclass(frozen=True)
 class GoalSpec:
     # play_until_end: the game on the screen until it ends; reach_value: a score or tile the family can read;
-    # actions: a number of confirmed moves (one move is target_value 1)
+    # actions: a number of confirmed moves (one move is target_value 1); levels: that many levels cleared
     objective: str
     target_value: int | None = None
     scope: Scope | str = Scope.CURRENT_GAME
+    # when to stop and hand the work back short of the objective: LOST, or the person's own words
     stop_conditions: tuple[str, ...] = ()
-    # extension: the meta actions the person allowed, by name; a family declares which exist
+    # the meta actions the person allowed, by name (META_ACTIONS); none unless they said so
     allowed_meta_actions: frozenset[str] = frozenset()
     budget_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        unknown = set(self.allowed_meta_actions) - set(META_ACTIONS)
+        if unknown:
+            raise ValueError(f"unknown meta actions: {sorted(unknown)}")
 
     def to_json(self) -> dict[str, Any]:
         return {"objective": str(self.objective), "target_value": self.target_value, "scope": str(self.scope),

@@ -8,6 +8,10 @@ the screen looked at again by the code, and play goes on by the code as soon as 
 
 The model never picks a move of the game. An input that brought play back is kept with a small picture of
 the screen it was sent on, and sent again without asking when a screen like it comes back.
+
+The model is told what the person allowed beyond the board and when they want to stop (PLAN §25, R1 and R2):
+an input that uses up something of the player's says so (`uses`) and is sent only when each such thing is
+allowed, and the model may answer that a stop condition is met (`stop`).
 """
 from __future__ import annotations
 
@@ -19,12 +23,16 @@ import logging
 from typing import Any
 
 from . import catalog, resources
+from .contracts import META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
 log = logging.getLogger("gamelab.recovery")
 
-TAP, KEY, SWIPE, WAIT, NONE, GIVE_UP, BACK = "tap", "key", "swipe", "wait", "none", "give_up", "back"
+TAP, KEY, SWIPE, WAIT, NONE, GIVE_UP, BACK, STOP = "tap", "key", "swipe", "wait", "none", "give_up", "back", "stop"
+# why play stopped when the level on the screen ended before any move of this part of the work, and the work goes
+# on to the next (`agent.Agent.onward`)
+NEXT_LEVEL = "next_level"
 # what a model giving up may say of the game itself: its own end screen, won or lost, stands where the board was
 ENDS = ("won", "lost")
 # what an input of the model's is carried out with (`Surface.kinds`)
@@ -48,7 +56,8 @@ REPLAY_DISTANCE = 8.0
 # why play stopped when the screen showed no board the code could use (something in the way): only there is
 # an input that got past a screen before sent again unasked. Where the board was read whole and the moves made
 # no sense, a look that resembles an old notice may well be the board itself, and a tap on it a move
-REPLAYED_REASONS = frozenset({"label_failed", "board_not_found", "board_covered", "unreadable", "surface_unsettled"})
+REPLAYED_REASONS = frozenset({"label_failed", "board_not_found", "board_covered", "unreadable", "surface_unsettled",
+                              NEXT_LEVEL})
 # what is told the model of the inputs it already tried on this screen, and kept of those that worked
 TRIED_KEPT, KNOWN_KEPT = 8, 32
 
@@ -115,9 +124,18 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
         return {"kind": WAIT, "ms": action["ms"]}
     if kind == GIVE_UP and action.get("end") in ENDS:
         return {"kind": kind, "end": action["end"]}
-    if kind in (NONE, GIVE_UP, BACK):
+    if kind in (NONE, GIVE_UP, BACK, STOP):
         return {"kind": kind}
     return None
+
+
+def uses(action: Any) -> list[str] | None:
+    """What an answer's input says it uses up beyond the board (`META_ACTIONS` names), or None when what it says
+    is no such list."""
+    said = action.get("uses", []) if isinstance(action, dict) else []
+    if not isinstance(said, list) or not all(isinstance(name, str) and name in META_ACTIONS for name in said):
+        return None
+    return sorted(set(said))
 
 
 async def send(surface: Any, action: dict[str, Any]) -> None:
@@ -135,9 +153,16 @@ async def send(surface: Any, action: dict[str, Any]) -> None:
 
 class Recovery:
     def __init__(self, model: Model, family_id: str | None, *, known: list[dict[str, Any]] | None = None,
-                 accept_consent: bool = False) -> None:
+                 accept_consent: bool = False, allowed: frozenset[str] = frozenset(), stops: tuple[str, ...] = (),
+                 account: dict[str, dict[str, int]] | None = None) -> None:
         # `family_id` None: the game is not known yet (a screen before any board was seen)
         self.model, self.family_id, self.accept_consent = model, family_id, accept_consent
+        # what the person allowed beyond the board (`META_ACTIONS` names) and the conditions they stop at
+        self.allowed, self.stops = frozenset(allowed), tuple(stops)
+        # what the inputs sent used up, and what inputs not sent would have: the game's own account when it
+        # gives one, so that a recovery made anew for another family adds to the same
+        account = account if account is not None else {"used": {}, "refused": {}}
+        self.used, self.refused = account.setdefault("used", {}), account.setdefault("refused", {})
         # inputs that brought play back, each with the small picture of the screen it was sent on
         self.known: list[dict[str, Any]] = list(known or [])
         # every time the code was stuck and what was done about it, for whoever measures the run
@@ -154,14 +179,23 @@ class Recovery:
         entry: dict[str, Any] = {"reason": reason, "source": "model", "situation": None, "action": None, "changed": None}
         self.log.append(entry)
         self._forget()
-        action = self._replay(seen) if reason in REPLAYED_REASONS else None
+        action = self._replay(seen, reason) if reason in REPLAYED_REASONS else None
         if action is not None:
             entry["source"] = "replay"
         else:
             action = await self._ask(png, reason, context, surface.kinds, entry, timeout_s)
         entry["action"] = action
-        if action is None or action["kind"] in (NONE, GIVE_UP):
+        if action is None or action["kind"] in (NONE, GIVE_UP, STOP):
             return False
+        refused = [name for name in action.get("uses", []) if name not in self.allowed]
+        if refused:
+            # not sent: the model is told so with its next question, which this stop still is
+            entry["refused"] = refused
+            for name in refused:
+                self.refused[name] = self.refused.get(name, 0) + 1
+            self.tried.append({"action": action, "screen_changed": False, "signature": seen, "replayed": entry["source"] == "replay",
+                               "reason": reason, "refused": f"not sent: the person did not allow {', '.join(refused)}"})
+            return True
         try:
             await send(surface, action)
             await asyncio.sleep(SETTLE_S)
@@ -169,6 +203,8 @@ class Recovery:
         except Exception:
             log.exception("recovery input failed: %s", action)
             return False
+        for name in action.get("uses", []):
+            self.used[name] = self.used.get(name, 0) + 1
         self.tried.append({"action": action, "screen_changed": entry["changed"], "signature": seen,
                            "replayed": entry["source"] == "replay", "reason": reason})
         return True
@@ -179,12 +215,14 @@ class Recovery:
             self.known = [known for known in self.known if known["action"] != self.tried[-1]["action"]
                           or _distance(known["signature"], self.tried[-1]["signature"]) > REPLAY_DISTANCE]
 
-    def _replay(self, seen: list[int]) -> dict[str, Any] | None:
+    def _replay(self, seen: list[int], reason: str) -> dict[str, Any] | None:
         """The input that got past a screen like this one before; never twice on one screen, so one that
-        no longer works is followed by a question."""
+        no longer works is followed by a question. An input that opened the next level is sent again only to
+        open the next level: the same end screen after a level played here is that level's end, not in the way."""
         if self.tried:
             return None
-        near = [known for known in self.known if _distance(known["signature"], seen) <= REPLAY_DISTANCE]
+        near = [known for known in self.known if _distance(known["signature"], seen) <= REPLAY_DISTANCE
+                and bool(known.get("next")) == (reason == NEXT_LEVEL)]
         return min(near, key=lambda known: _distance(known["signature"], seen))["action"] if near else None
 
     async def _ask(self, png: bytes, reason: str, context: dict[str, Any], kinds: frozenset[str],
@@ -197,8 +235,11 @@ class Recovery:
         asked = {"family": catalog.descriptor(self.family_id) if self.family_id else None, "reason": reason,
                  "screen": list(size),
                  "inputs": sorted(kind for kind, needs in NEEDS.items() if needs in kinds) + [WAIT],
-                 "keys": sorted(KEYS), "accept_consent": self.accept_consent, **context,
-                 "tried": [{"action": tried["action"], "screen_changed": tried["screen_changed"]}
+                 "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
+                 "allowed_meta_actions": sorted(self.allowed), **({"stop_conditions": list(self.stops)} if self.stops else {}),
+                 **context,
+                 "tried": [{"action": tried["action"], "screen_changed": tried["screen_changed"],
+                            **({"refused": tried["refused"]} if "refused" in tried else {})}
                            for tried in self.tried[-TRIED_KEPT:]]}
         prompt = (resources.FRAGMENT / "prompts" / "recover.md").read_text(encoding="utf-8")
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -217,7 +258,13 @@ class Recovery:
             return None
         if isinstance(answer.get("situation"), str):
             entry["situation"] = answer["situation"][:300]
-        action = check(answer.get("action"), size, kinds)
+        action, used = check(answer.get("action"), size, kinds), uses(answer.get("action"))
+        if action is None or used is None:
+            return None
+        if used:
+            action["uses"] = used
+        if action["kind"] == STOP and isinstance(answer["action"].get("because"), str):
+            entry["because"] = answer["action"]["because"][:200]
         # the model answered in the pixels of the picture it was shown: the input is sent in the screen's
         return action if action is None or scale == 1.0 else {
             key: [part / scale for part in value] if key in ("at", "from", "to") else value for key, value in action.items()}
@@ -232,7 +279,8 @@ class Recovery:
                 entry["restored"] = True
                 break
         if not last["replayed"] and last["action"]["kind"] != WAIT and last["reason"] in REPLAYED_REASONS:
-            self.known = [*self.known, {"action": last["action"], "signature": last["signature"]}][-KNOWN_KEPT:]
+            self.known = [*self.known, {"action": last["action"], "signature": last["signature"],
+                                        **({"next": True} if last["reason"] == NEXT_LEVEL else {})}][-KNOWN_KEPT:]
         self.tried = []
 
     def summary(self, since: int = 0) -> dict[str, Any]:
@@ -240,4 +288,5 @@ class Recovery:
         return {"stuck": len(entries), "inputs": sum(entry["changed"] is not None for entry in entries),
                 "replayed": sum(entry["source"] == "replay" for entry in entries),
                 "restored": sum(bool(entry.get("restored")) for entry in entries),
-                "questions": sum(entry["source"] == "model" for entry in entries)}
+                "questions": sum(entry["source"] == "model" for entry in entries),
+                **({"used": dict(self.used)} if self.used else {}), **({"refused": dict(self.refused)} if self.refused else {})}

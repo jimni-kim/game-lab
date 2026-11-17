@@ -16,7 +16,11 @@ enough moves are confirmed to write an adapter from; the adapter then reads unti
 its moves stop making sense, where the model reads that screen and the adapter is checked against it and
 written again if it must be. When no adapter passes, the game goes on read by the model. Nothing here waits
 for a person: a game ends at its goal, its own end, a budget (inputs, time, the tokens of its model
-questions), or when a model sees nothing more to do (`gave_up`, with what it said of the screen).
+questions), when a model sees nothing more to do (`gave_up`, with what it said of the screen), or when a model
+says a condition the person set for stopping is met (`stopped`).
+
+One game is one part of the work a person asked for (`work`): when more levels follow (`onward`), a level the
+screen shows ended before any move here is passed for the next one, not taken for this game's end.
 """
 from __future__ import annotations
 
@@ -42,7 +46,7 @@ from . import motion
 from .carry import _boxes as carry_boxes
 from .motion import Steady
 from .run import Run, check
-from .recovery import GIVE_UP, MAX_TRIES, NONE, Recovery
+from .recovery import GIVE_UP, MAX_TRIES, NEXT_LEVEL, NONE, STOP, Recovery
 
 log = logging.getLogger("gamelab.agent")
 
@@ -190,7 +194,11 @@ class Agent:
     def __init__(self, surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-                 writer: Model | None = None, direct: bool = True, light: Any = None) -> None:
+                 writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False) -> None:
+        # more levels follow this one (`work`): a level shown ended before any move here is passed for the next
+        self.onward = onward
+        # what the inputs sent used up beyond the board, and what inputs not sent would have (PLAN §25, R2)
+        self.account: dict[str, dict[str, int]] = {"used": {}, "refused": {}}
         # what names a single cell cut out of the screen when the family's reader and the rules cannot (`checker`:
         # a light model); None: such a cell is the reading model's
         self.light = light
@@ -323,7 +331,7 @@ class Agent:
             except Exception as error:
                 log.exception("the game's loop failed")
                 outcome, reason, detail = Outcome.GAVE_UP, "error", f"{type(error).__name__}: {error}"[:2000]
-            if outcome in (Outcome.GOAL_REACHED, Outcome.GAME_OVER):
+            if outcome in (Outcome.GOAL_REACHED, Outcome.GAME_OVER, Outcome.STOPPED):
                 await self._keep_for_next()
             if self.game is not None:
                 self.found["made"] = self.game.summary()
@@ -351,6 +359,10 @@ class Agent:
                 "digest": self.adapter.digest if self.adapter else None,
                 "calls": self.adapter.calls if self.adapter else None,
                 "kit": self._kit_summary(),
+                # what was used up beyond the board, and where the game stood when it ended: what the work hands back
+                "account": {kind: dict(counts) for kind, counts in self.account.items()},
+                "scene": self.state.get("scene") if isinstance(self.state, dict) else None,
+                "situation": self.player.situation if self.player is not None and self.policy == "model" else self._situation(),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
     def _kit_summary(self) -> dict[str, Any] | None:
@@ -409,7 +421,7 @@ class Agent:
         (a gateway's timeout is not the game's end)."""
         for attempt in range(1 + IDENTIFY_RETRIES):
             try:
-                recovery = Recovery(self.model, None, known=[], accept_consent=self.accept_consent)
+                recovery = self._recovery(None, [])
                 return await self._asking(identify(self.seen, self.model, recovery, hint=self.hint))
             except Exception as error:
                 log.info("the game could not be asked about: %s", error)
@@ -431,8 +443,7 @@ class Agent:
         self.adapter = self.trace = self.made = self.board = self.carried = self.unproven = self.unread_move = None
         try:
             self.policy = check(self.goal, self.budget, family_id, self.asked_policy)
-            self.recovery = Recovery(self.model, family_id, accept_consent=self.accept_consent,
-                                     known=self.store.recoveries(self.site, family_id) if self.store else None)
+            self.recovery = self._recovery(family_id, self.store.recoveries(self.site, family_id) if self.store else None)
             self.adaptation = Adaptation(self.model, family_id, policy=self.policy, compute=self.budget.compute,
                                          writer=self.writer)
             if kits.has(family_id):
@@ -469,6 +480,10 @@ class Agent:
         if "identified" in self.found:
             self.found["identified"]["family"] = family_id
         return True
+
+    def _recovery(self, family_id: str | None, known: list[dict[str, Any]] | None) -> Recovery:
+        return Recovery(self.model, family_id, known=known, accept_consent=self.accept_consent, account=self.account,
+                        allowed=self.goal.allowed_meta_actions, stops=self.goal.stop_conditions)
 
     def _restore(self, family_id: str, profile: dict[str, Any]) -> bool:
         """The family's reader as it was kept for this site: the game is read by it from the first screen, and
@@ -616,6 +631,10 @@ class Agent:
             if held is not None and self._effect(held[0].state, held[1], before.state) == "absent":
                 self._spent(held[0].id, held[1])
         self.state = before.state
+        if self._passed(before.state):
+            # the level on the screen ended before any move here, and the work goes on to the next
+            await self._unstick(NEXT_LEVEL)
+            return
         self._judge(before.state)
         excluded = self.ineffective["actions"] if self.ineffective and self.ineffective["state"] == before.id else []
         action = self.family.choose(before.state, self.policy, self.budget.compute, tuple(excluded))
@@ -832,6 +851,17 @@ class Agent:
 
     def _effect(self, before: dict[str, Any], action: dict[str, Any], after: dict[str, Any]) -> str:
         return self.family.model.assess(before, action, after, self.family.rules)["effect"]
+
+    def _before_any(self) -> bool:
+        """Whether more levels follow and nothing was played here yet: what the screen shows ended is the last's."""
+        return self.onward and not self.confirmed
+
+    def _passed(self, state: dict[str, Any]) -> bool:
+        if not self._before_any():
+            return False
+        seen = self.family.model.status(state, self.family.rules, {"objective": str(self.goal.objective),
+                                                                   "target_value": self.goal.target_value})
+        return seen["terminal"] or seen["goal"] == "reached"
 
     def _judge(self, state: dict[str, Any]) -> None:
         objective = str(self.goal.objective)
@@ -1464,6 +1494,9 @@ class Agent:
         to do, or MAX_TRIES inputs in a row brought no confirmed move."""
         if reason == "inconsistent" and (await self._rules_again() or await self._other_family()):
             return
+        if self._before_any():
+            # whatever stands in the way, the next level is what is looked for
+            reason = NEXT_LEVEL
         if self.tries >= MAX_TRIES:
             if await self._other_family():
                 return
@@ -1473,14 +1506,19 @@ class Agent:
         self.tries += 1
         self.carried = None
         recent = [{key: move[key] for key in ("action_id", "kind", "effect")} for move in self.moves[-HISTORY_KEPT:]]
-        if await self._asking(self.recovery.attempt(self.seen, reason, {"state": self.state, "recent": recent},
-                                                    timeout_s=self._left())):
+        context = {"state": self.state, "recent": recent, **({"onward": True} if self.onward else {})}
+        if await self._asking(self.recovery.attempt(self.seen, reason, context, timeout_s=self._left())):
             if self.blind:
                 self.distrusted = self.blind = False
             # an input of the model's stands between the last move and this screen: it is read for itself
             self.unread_move = None
             return
         action = self.recovery.log[-1]["action"] or {}
+        if action.get("kind") == STOP:
+            raise _End(Outcome.STOPPED, "stop_condition", self.recovery.log[-1].get("because") or self._situation())
+        if action.get("kind") == GIVE_UP and "end" in action and self._before_any():
+            # the end of the level before this part, which was to be passed for the next: no next level was found
+            raise _End(Outcome.GAVE_UP, "next_level_not_found", self._situation())
         if action.get("kind") == GIVE_UP and "end" in action:
             won = action["end"] == WON and self._won_meets_goal()
             raise _End(Outcome.GOAL_REACHED if won else Outcome.GAME_OVER, WON if won else "end_screen", self._situation())
@@ -1562,7 +1600,8 @@ class Agent:
             self.adapter.close()
         self.adapter, self.family_id, self.policy = None, None, "model"
         if self.player is None:
-            self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent)
+            self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent,
+                                        refused=self.account["refused"])
         player = self.player
         self.found["direct"] = told = player.summary()
         self.levels.setdefault(L0, 0)
@@ -1586,7 +1625,8 @@ class Agent:
             left = {"inputs": self.budget.max_actions - self.used,
                     "seconds": None if self._left() is None else round(self._left())}
             try:
-                answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving))
+                answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving,
+                                                       onward=self._before_any()))
             except Exception as error:
                 log.info("the model could not be asked for a move: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -1599,6 +1639,10 @@ class Agent:
                 continue
             silent = 0
             action = answer["action"]
+            if action["kind"] == direct.STOP:
+                raise _End(Outcome.STOPPED, "stop_condition", answer.get("because") or player.situation)
+            if action["kind"] == direct.DONE and self._before_any():
+                raise _End(Outcome.GAVE_UP, "next_level_not_found", player.situation)
             if action["kind"] == direct.DONE:
                 won = action["end"] == WON
                 raise _End(Outcome.GOAL_REACHED if won and objective == "play_until_end" else Outcome.GAME_OVER,
@@ -1609,6 +1653,8 @@ class Agent:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
             carried = await direct.send(self.seen, action, self.carrier, before)
             self.used += 1
+            for name in answer["uses"]:
+                self.account["used"][name] = self.account["used"].get(name, 0) + 1
             if self.watch is not None:
                 await self.watch.sent()
             after = await direct.settled(self.seen)
@@ -1725,12 +1771,12 @@ def _same_level(was: Any, now: Any) -> Any:
 async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalSpec, budget: Budget,
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
-               writer: Model | None = None, direct: bool = True, light: Any = None, **ignored: Any
-               ) -> tuple[Run, dict[str, Any]]:
+               writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
+               **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
     family's reader could not."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
-                       direct=direct, light=light).run()
+                       direct=direct, light=light, onward=onward).run()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 import time
 from typing import Any
 
@@ -160,11 +161,25 @@ class WebSurface:
 
 @asynccontextmanager
 async def browser(*, viewport: list[int], headless: bool = True, scale: float | None = None,
-                  proxy: dict[str, str] | None = None, args: tuple[str, ...] = (), **options: Any):
+                  proxy: dict[str, str] | None = None, args: tuple[str, ...] = (), profile: Path | None = None,
+                  **options: Any):
     """A Chromium page of `viewport` CSS pixels, closed with its browser afterwards. `proxy` and `args` go to
-    Playwright's launch as they are, and `options` to its new context."""
+    Playwright's launch as they are, and `options` to its new context. `profile`: a folder the browser keeps what
+    sites save in (storage, cookies) from one run to the next, as an installed app keeps its data (PLAN §25, R4);
+    without it every run starts with nothing saved."""
     from playwright.async_api import async_playwright
 
+    if profile is not None:
+        profile.mkdir(parents=True, exist_ok=True)
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(
+                str(profile), headless=headless, args=list(args), viewport={"width": viewport[0], "height": viewport[1]},
+                **({"device_scale_factor": scale} if scale else {}), **({"proxy": proxy} if proxy else {}), **options)
+            try:
+                yield context.pages[0] if context.pages else await context.new_page()
+            finally:
+                await context.close()
+        return
     async with async_playwright() as playwright:
         chromium = await playwright.chromium.launch(headless=headless, args=list(args), **({"proxy": proxy} if proxy else {}))
         try:

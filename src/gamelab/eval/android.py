@@ -16,14 +16,18 @@ The device must already be attached (`adb devices`); the emulator this was set u
   .venv/bin/python -m gamelab.eval android --ask "퍼즐 앱에서 Fifteen 끝까지" --compute 200 --out out/ask
       a request in words: the app is one of those installed (`pm list packages -3` with a launcher
       activity), named to the model by its label; the goal and what the words say of the game come
-      from the request too
+      from the request too, and so does how far the work goes (`--objective levels`, `--stop`, `--allow`)
+
+  .venv/bin/python -m gamelab.eval android --ask "꿈의 집 하던 판 이어서 레벨 3개" --compute 200 --out out/ask
+      a request that goes on from the screen as it stands (or any run with `--resume`): the app is not
+      stopped and started again, only brought to the front when another is there (PLAN §25, R4)
 
 `--setup FILE` names a JSON list of steps run before each game, standing in for the person starting it:
 `{"force_stop": PACKAGE}`, `{"clear": PACKAGE}` (`pm clear`: the app's data and progress gone),
 `{"launch": PACKAGE}`, `{"tap": [x, y]}`, `{"swipe": [x0, y0, x1, y1]}`, `{"key": KEYCODE}`, `{"wait_ms": N}`.
 With `--package` alone the app is brought to the front once. An app a request chose is stopped and started
-again before each game; `apps.json` may give an app its name (`label`) and have its data cleared first
-(`clear: true`).
+again before each game, unless the work goes on from the screen as it stands (`resumed`); `apps.json` may give
+an app its name (`label`) and have its data cleared first (`clear: true`).
 
 An app's label is read once from its APK (`aapt2 dump badging`) and kept by package and version under
 `out/apps/`; an app whose label cannot be read is named by its package alone.
@@ -44,8 +48,9 @@ import tempfile
 import time
 from typing import Any, Awaitable, Callable
 
-from .. import agent, request
+from .. import agent, request, work
 from ..adaptation import Store
+from ..contracts import Scope
 from ..environments.android import COMMAND_TIMEOUT_S, SDK, AndroidSurface, Run
 from . import measure
 
@@ -146,6 +151,30 @@ def prepared(package: str, named: dict[str, dict[str, Any]] | None = None) -> li
     return [{"force_stop": package}, *([{"clear": package}] if clear else []), {"launch": package}, {"wait_ms": LAUNCH_WAIT_MS}]
 
 
+async def resumed(surface: AndroidSurface, package: str) -> list[dict[str, Any]]:
+    """The steps before work that goes on from the screen as it stands (PLAN §25, R4): none when the app is in
+    front, else it is brought there as it was left (`am start` on a running app's task does not start it again)."""
+    try:
+        if await surface.foreground() == package:
+            return []
+    except RuntimeError:
+        pass
+    return [{"launch": package}, {"wait_ms": LAUNCH_WAIT_MS}]
+
+
+async def steps_for(args: argparse.Namespace, surface: AndroidSurface) -> list[dict[str, Any]]:
+    """What is done before the first game: the steps of `--setup`, else the app a request chose started again
+    (or only brought to the front when the work goes on from the screen), else the app brought to the front."""
+    goal, _ = measure.goal_and_budget(args)
+    if args.setup:
+        return json.loads(args.setup.read_text(encoding="utf-8"))
+    if args.package and goal.scope == Scope.CURRENT_GAME:
+        return await resumed(surface, args.package)
+    if args.asked:
+        return prepared(args.package)
+    return [{"launch": args.package}, {"wait_ms": LAUNCH_WAIT_MS}] if args.package else []
+
+
 async def device(surface: AndroidSurface, serial: str | None) -> str:
     """The device's serial, the name its lock is held by."""
     try:
@@ -212,20 +241,20 @@ async def play_one(args: argparse.Namespace, number: int, surface: AndroidSurfac
     `watching` may hang another watcher around the game's recorder."""
     goal, budget = measure.goal_and_budget(args)
     # a request in words set the goal and says what it can of the game
-    goal, hint = (args.asked["goal"], args.asked["hint"] or args.hint) if getattr(args, "asked", None) else (goal, args.hint)
+    hint = (args.asked["hint"] or args.hint) if getattr(args, "asked", None) else args.hint
     await setup(surface, steps)
     name = f"{base}-{number:02d}"
     recorder = measure.Recorder(name)
     answered = len(model.answers)
     started = time.monotonic()
-    # read by an adapter a model writes for this app, by the agent's own loop (as `eval web`)
-    # with no family named the agent finds it from the screen, or plays a game it has none for
-    run, adapted = await agent.play(surface, model, None if args.identify else args.family, goal=goal,
+    # read by an adapter a model writes for this app, by the agent's own loop (as `eval web`), as many games of
+    # it as the work asks for; with no family named the agent finds it from the screen, or plays a game it has none for
+    run, adapted = await work.play(surface, model, None if args.identify else args.family, goal=goal,
                                     budget=budget, policy=args.policy, store=Store(args.adapter_store),
                                     fresh=args.regenerate, cancel=cancel, watch=watching(recorder) if watching else recorder,
                                     accept_consent=args.accept_consent, writer=writer, hint=hint,
                                     light=measure.light_model(args))
-    result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, adaptation=adapted)
+    result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, **measure.handed(adapted))
     request = {"family": args.family, "app": await surface.address(),
                "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
     try:
@@ -253,15 +282,17 @@ async def main(args: argparse.Namespace) -> int:
     if args.ask:
         # the app is the request's to say, among those installed; what to play for too
         args.asked = await request.understand(model, args.ask, await installed(surface.run))
-        print(json.dumps({"asked": {"url": args.asked["url"], "app": args.asked["app"], "goal": args.asked["goal"].to_json(),
-                                    "hint": args.asked["hint"]}}, ensure_ascii=False), flush=True)
+        print(json.dumps({"asked": {"url": args.asked["url"], "app": args.asked["app"],
+                                    "goal": measure.goal_and_budget(args)[0].to_json(), "hint": args.asked["hint"]}},
+                         ensure_ascii=False), flush=True)
         if args.asked["url"] is not None:
             raise SystemExit("the request names a page: play it with eval web --ask")
         if args.asked["app"] is None:
             raise SystemExit("the request names no app installed on the device")
         args.package = surface.package = args.asked["app"]
-    steps = json.loads(args.setup.read_text(encoding="utf-8")) if args.setup else prepared(args.package) if args.asked else \
-        ([{"launch": args.package}, {"wait_ms": LAUNCH_WAIT_MS}] if args.package else [])
+    steps = await steps_for(args, surface)
+    # a game after the first starts again as the first did, unless the work goes on from where the last one stopped
+    again = bool(args.setup) or (bool(args.asked) and measure.goal_and_budget(args)[0].scope != Scope.CURRENT_GAME)
     writer_client, writer = measure.writer_model(args, model)
     base = args.package or args.family or "app"
     results = []
@@ -272,7 +303,7 @@ async def main(args: argparse.Namespace) -> int:
                 if cancel.is_set():
                     break
                 result = await play_one(args, number, surface, base, model, writer, cancel=cancel,
-                                        steps=steps if number == 1 or args.setup or args.asked else [])
+                                        steps=steps if number == 1 or again else [])
                 results.append(result)
                 print(json.dumps(result, ensure_ascii=False), flush=True)
     except measure.Busy as busy:

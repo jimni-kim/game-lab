@@ -53,3 +53,28 @@ def test_a_policy_told_nothing_of_a_rule_value_plays_the_same_game_by_the_real_o
     """`--hide`: the game keeps its mines; only the policy is told no count. It ends when the game does."""
     blind = policies.play("minesweeper", "solver", 20000, 0, 200, ("mines",))
     assert blind["won"] in (True, False) and blind["ended"] == "no_move" and blind["moves"] > 0
+
+
+def test_a_page_played_on_from_the_screen_is_opened_with_no_setup_and_keeps_what_it_saved(tmp_path):
+    """PLAN §25, R4 on the web: a page a request named keeps what it saves in its host's browser profile, as an
+    app keeps its data; work that goes on from the screen opens it with no reload and none of a site's setup."""
+    import argparse
+
+    from gamelab.contracts import GoalSpec, Scope
+    from gamelab.eval import web
+
+    parser = argparse.ArgumentParser()
+    web.configure(parser)
+    args = parser.parse_args(["--compute", "1", "--out", str(tmp_path)])
+    asked = {"url": "https://Games.example:8443/match", "goal": GoalSpec("levels", 3, scope=Scope.NEW_GAME), "hint": None}
+    _, site = web.site_for(args, asked)
+    assert {"reload": True} in site["setup"] and web.profile_for(args, site) == web.PROFILES / "games.example"
+    _, site = web.site_for(args, {**asked, "goal": GoalSpec("levels", 3, scope=Scope.CURRENT_GAME)})
+    assert site["setup"] == [{"wait_ms": web.ASKED_WAIT_MS}]
+    # a site of sites.json starts with nothing saved, unless the run goes on from where the last one stopped
+    args = parser.parse_args(["--compute", "1", "--out", str(tmp_path), "--site", "ovolve_2048"])
+    _, site = web.site_for(args, None)
+    assert site["setup"] and web.profile_for(args, site) is None
+    args = parser.parse_args(["--compute", "1", "--out", str(tmp_path), "--site", "ovolve_2048", "--resume"])
+    _, site = web.site_for(args, None)
+    assert site["setup"] == [] and web.profile_for(args, site) == web.PROFILES / "ovolve.github.io"

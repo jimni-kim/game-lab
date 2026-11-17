@@ -21,7 +21,25 @@ async def test_a_request_gives_the_page_the_goal_and_what_it_says_of_the_game():
     asked = await request.understand(model, words)
     assert asked["url"] == "https://ovolve.github.io/2048-AI/" and asked["hint"] == "2048"
     assert (asked["goal"].objective, asked["goal"].target_value) == ("reach_value", 512)
-    assert model.asked[0] == {"request": words, "objectives": ["play_until_end", "reach_value", "actions"]}
+    assert model.asked[0]["request"] == words and model.asked[0]["objectives"] == ["play_until_end", "reach_value", "actions", "levels"]
+    assert set(model.asked[0]["meta_actions"]) == {"boosters", "currency", "continue", "retry"}
+    # nothing said of where to start, when to stop or what may be spent: the game started again, nothing allowed
+    goal = asked["goal"]
+    assert (goal.scope, goal.stop_conditions, goal.allowed_meta_actions) == ("new_game", (), frozenset())
+
+
+async def test_a_request_for_levels_from_the_screen_as_it_stands_with_its_stops_and_permissions():
+    words = "하던 판 이어서 레벨 3개 깨줘. 부스터는 써도 되고, 지면 멈춰"
+    model = Says({"url": None, "objective": "levels", "target_value": 3, "scope": "current_game",
+                  "stop": ["lost", " 하트가 없으면 ", "lost"], "allowed": ["boosters", "buy_gems", {"x": 1}], "game": None})
+    goal = (await request.understand(model, words))["goal"]
+    assert (goal.objective, goal.target_value, goal.scope) == ("levels", 3, "current_game")
+    # the same condition once; a permission the host does not know is none
+    assert goal.stop_conditions == ("lost", "하트가 없으면") and goal.allowed_meta_actions == frozenset({"boosters"})
+    # levels with no number are not levels; a scope the host does not know starts the game again
+    goal = (await request.understand(Says({"objective": "levels", "target_value": None, "scope": "everything",
+                                           "stop": "lost", "allowed": "all"}), "레벨 깨줘"))["goal"]
+    assert (goal.objective, goal.scope, goal.stop_conditions, goal.allowed_meta_actions) == ("play_until_end", "new_game", (), frozenset())
 
 
 async def test_an_answer_the_request_does_not_bear_out_is_not_taken():

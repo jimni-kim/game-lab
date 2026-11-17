@@ -331,7 +331,7 @@ class Demo:
                        "actions": summary["actions_used"], "confirmed": summary["confirmed_actions"],
                        "tokens": adapted.get("tokens") or summary.get("model_tokens"), "seconds": summary["seconds"],
                        "family": (adapted.get("identified") or {}).get("family"), "generations": adapted.get("generations"),
-                       "name": summary["name"]})
+                       "name": summary["name"], **({"told": summary["told"]} if summary.get("told") else {})})
         except guard.Refused:
             self.tell({"kind": "refused", "reason": "not_public"})
         except measure.Busy as busy:
@@ -355,7 +355,8 @@ class Demo:
             raise guard.Refused(site["url"])
         self.tell({"kind": "opening", "where": "web"})
         async with web.guarded(site, self.look, self.connect) as held:
-            async with browser(viewport=site["viewport"], headless=not self.args.headed, **held) as page:
+            async with browser(viewport=site["viewport"], headless=not self.args.headed, profile=web.profile_for(args, site),
+                               **held) as page:
                 await screencast(page, self.show)
                 return await web.play_one(args, 1, page, name, site["url"], None, site, self.model, self.writer,
                                           cancel=cancel, watching=self.watching)
@@ -370,7 +371,8 @@ class Demo:
             idle = asyncio.get_running_loop().create_task(shown.idle())
             try:
                 return await android.play_one(args, 1, shown, name, self.model, self.writer,
-                                              steps=android.prepared(asked["app"]), cancel=cancel, watching=self.watching)
+                                              steps=await android.steps_for(args, surface), cancel=cancel,
+                                              watching=self.watching)
             finally:
                 idle.cancel()
 

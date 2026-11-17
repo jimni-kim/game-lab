@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import contextmanager
+from dataclasses import replace
 import fcntl
 import json
 import re
@@ -14,8 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .. import catalog, checker, model
-from ..contracts import Budget, GoalSpec
+from .. import catalog, checker, model, work
+from ..contracts import META_ACTIONS, OBJECTIVES, Budget, GoalSpec, Scope
 from ..run import Run
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -39,8 +40,17 @@ def revision() -> str:
 def game_arguments(parser: argparse.ArgumentParser) -> None:
     """The arguments every screen evaluation takes: what to play for, with what budget and which model."""
     parser.add_argument("--games", type=int, default=1)
-    parser.add_argument("--objective", choices=("play_until_end", "reach_value", "actions"), default="play_until_end")
+    parser.add_argument("--objective", choices=OBJECTIVES, default="play_until_end",
+                        help="levels: --target levels cleared one after another, with nothing started again between them")
     parser.add_argument("--target", type=int)
+    parser.add_argument("--stop", action="append", default=[], metavar="CONDITION",
+                        help="stop and hand the work back when this is met (repeatable): 'lost' at a level or game lost, "
+                             "anything else in words, told to the models that look at the screen")
+    parser.add_argument("--allow", action="append", default=[], choices=sorted(META_ACTIONS),
+                        help="a thing beside the board the work may use (repeatable); none unless given")
+    parser.add_argument("--resume", action="store_true",
+                        help="go on from the screen as it stands: nothing is started again before the first game, "
+                             "and later games go on from where the last one stopped")
     parser.add_argument("--policy")
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
@@ -67,7 +77,15 @@ def model_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
-    return (GoalSpec(args.objective, args.target),
+    """The run's goal and budget: the goal a request in words gave (`args.asked`) when there is one, held to
+    `--resume` when it is given."""
+    asked = getattr(args, "asked", None)
+    goal = asked["goal"] if asked else GoalSpec(
+        args.objective, args.target, scope=Scope.NEW_GAME, stop_conditions=tuple(getattr(args, "stop", None) or ()),
+        allowed_meta_actions=frozenset(getattr(args, "allow", None) or ()))
+    if getattr(args, "resume", False):
+        goal = replace(goal, scope=Scope.CURRENT_GAME)
+    return (goal,
             Budget(max_actions=args.max_actions, compute=args.compute, max_seconds=args.max_seconds,
                    max_input_tokens=getattr(args, "max_input_tokens", None) or None))
 
@@ -191,6 +209,14 @@ def result(name: str, run: Run, recorder: Recorder, recorded: model.Recorded | N
             "actions_used": record.get("actions_used"), "confirmed_actions": record.get("confirmed_actions"),
             "seconds": round(seconds, 1), "model_questions": (run.vision or {}).get("asked", 0),
             **({"model_tokens": recorded.tokens()} if recorded else {}), **more, **measure(run, recorder, final)}
+
+
+def handed(adapted: dict[str, Any]) -> dict[str, Any]:
+    """A game's `result` fields from what its work handed back: how it was read, and the work's own account
+    (`work.play`) beside it, in a line for a person too."""
+    account = adapted.get("work")
+    return {"adaptation": {key: value for key, value in adapted.items() if key != "work"},
+            **({"work": account, "told": work.told(account)} if account else {})}
 
 
 def write_game(out: Path, name: str, summary: dict[str, Any], request: dict[str, Any], run: Run, recorder: Recorder,

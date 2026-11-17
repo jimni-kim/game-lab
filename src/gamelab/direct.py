@@ -16,7 +16,13 @@ a longer one sets the shortest press for the rest of the game. A drag that misse
 missed its place, not its press, and the model is told so.
 
 The game ends when the model says its own end screen stands there, when it sees nothing more to do, when its
-inputs keep changing nothing, or at a budget.
+inputs keep changing nothing, when it says a condition the person set for stopping is met (`stop`), or at a
+budget.
+
+An input that uses up something of the player's beyond the board (a booster, coins, extra moves, another try at
+a lost level) is one the model must say so of (`uses`, by the names of `contracts.META_ACTIONS`), and it is sent
+only when the person allowed each of them (PLAN §25, R2): one that is not allowed is not sent, and the model is
+told it was refused. What was used is counted for the work's account.
 """
 from __future__ import annotations
 
@@ -27,10 +33,11 @@ import time
 from typing import Any
 
 from . import carry, frames, motion, recovery, resources
+from .contracts import META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
-TAP, KEY, SWIPE, TEXT, WAIT, DONE, GIVE_UP = "tap", "key", "swipe", "text", "wait", "done", "give_up"
+TAP, KEY, SWIPE, TEXT, WAIT, DONE, GIVE_UP, STOP = "tap", "key", "swipe", "text", "wait", "done", "give_up", "stop"
 DOUBLE_TAP, LONG_PRESS, DRAG, SCROLL, BACK = "double_tap", "long_press", "drag", "scroll", "back"
 RIGHT_TAP, RELAUNCH, SEQUENCE = "right_tap", "relaunch", "sequence"
 # how a game the model says is over ended
@@ -131,7 +138,12 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
         return {"kind": DONE, "end": action["end"]}
     if kind == GIVE_UP:
         return {"kind": GIVE_UP}
+    if kind == STOP:
+        return {"kind": STOP}
     return None
+
+
+uses = recovery.uses
 
 
 def scaled(action: dict[str, Any], scale: float) -> dict[str, Any]:
@@ -228,7 +240,8 @@ async def settled(surface: Any) -> bytes:
 class Direct:
     """One game played by a model's own inputs."""
 
-    def __init__(self, model: Model, *, hint: str | None = None, accept_consent: bool = False) -> None:
+    def __init__(self, model: Model, *, hint: str | None = None, accept_consent: bool = False,
+                 refused: dict[str, int] | None = None) -> None:
         self.model, self.hint, self.accept_consent = model, hint, accept_consent
         # what the model wants kept from one question to the next, and what it last said the screen shows
         self.notes, self.situation = "", ""
@@ -241,12 +254,16 @@ class Direct:
         self.relaunches = 0
         # the shortest press before a drag moves that this game takes, once a drag showed it (ms)
         self.hold_ms = 0
+        # inputs not sent because they used what the person did not allow, by what they would have used (the
+        # game's own account when it gives one)
+        self.refused: dict[str, int] = refused if refused is not None else {}
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
-                  moving: list[list[int]] | None = None) -> dict[str, Any] | None:
-        """The model's answer for the screen as it is: `{"action", "expect"}` with the action in the screen's
-        pixels, or None when it gave none the surface can be given. `moving`: where something kept moving
-        over the screen, left out of the picture."""
+                  moving: list[list[int]] | None = None, onward: bool = False) -> dict[str, Any] | None:
+        """The model's answer for the screen as it is: `{"action", "expect", "uses"}` with the action in the
+        screen's pixels, or None when it gave none the surface can be given or one that uses what `goal` does
+        not allow. `moving`: where something kept moving over the screen, left out of the picture. `onward`:
+        the work goes on past the level the screen shows ended, to the next (`agent.Agent.onward`)."""
         shown, scale = recovery.view(png)
         size = recovery._size(shown)
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
@@ -255,7 +272,8 @@ class Direct:
                  **({"drag_hold_ms_at_least": self.hold_ms} if self.hold_ms else {}),
                  "inputs": sorted(kind for kind in NEEDS if can(kind, kinds)
                                   and (kind != RELAUNCH or self.relaunches < RELAUNCHES_MOST)) + [WAIT],
-                 "keys": sorted(KEYS), "accept_consent": self.accept_consent, "notes": self.notes,
+                 "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
+                 **({"onward": True} if onward else {}), "notes": self.notes,
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(shown).decode("ascii")}}
@@ -277,8 +295,16 @@ class Direct:
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
             self.first_score = self.score if self.first_score is None else self.first_score
-        action = check(answer.get("action"), size, kinds)
-        if action is None or (action["kind"] == RELAUNCH and self.relaunches >= RELAUNCHES_MOST):
+        action, used = check(answer.get("action"), size, kinds), uses(answer.get("action"))
+        if action is None or used is None or (action["kind"] == RELAUNCH and self.relaunches >= RELAUNCHES_MOST):
+            return None
+        refused = [name for name in used if name not in set(goal.get("allowed_meta_actions") or ())]
+        if refused:
+            # not sent: the model is told so with its next question, as it is told what any input did
+            self.history.append({"action": action, "expected": answer.get("expect"), "screen_changed": False,
+                                 "refused": f"not sent: the person did not allow {', '.join(refused)}"})
+            for name in refused:
+                self.refused[name] = self.refused.get(name, 0) + 1
             return None
         self.relaunches += action["kind"] == RELAUNCH
         if action["kind"] == DRAG and action["hold_ms"] < self.hold_ms:
@@ -287,7 +313,9 @@ class Direct:
         if scale != 1.0:
             action = scaled(action, scale)
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
-        return {"action": action, "told": told, "expect": expect, "scale": scale}
+        because = answer["action"].get("because") if action["kind"] == STOP else None
+        return {"action": action, "told": told, "expect": expect, "scale": scale, "uses": used,
+                **({"because": because[:200]} if isinstance(because, str) else {})}
 
     def saw(self, answer: dict[str, Any], before: bytes, after: bytes, moving: list[list[int]] | None = None,
             carried: dict[str, Any] | None = None) -> bool:
@@ -297,7 +325,8 @@ class Direct:
         scale = answer["scale"]
         places = sorted(motion.outside(carry._boxes(before, after), moving or []),
                         key=lambda box: -box[2] * box[3])[:PLACES_TOLD]
-        entry = {"action": answer["told"], "expected": answer["expect"], "screen_changed": bool(places),
+        entry = {"action": answer["told"], "expected": answer["expect"], **({"uses": answer["uses"]} if answer.get("uses") else {}),
+                 "screen_changed": bool(places),
                  "changed_at": [[round(part * scale) for part in box] for box in places]}
         if carried:
             # whether the thing was seen held on the way, the press it was given, and how far its drawing's middle
@@ -314,4 +343,4 @@ class Direct:
 
     def summary(self) -> dict[str, Any]:
         return {"questions": self.questions, "score_first": self.first_score, "score_last": self.score,
-                "notes": self.notes, "situation": self.situation}
+                "notes": self.notes, "situation": self.situation, **({"refused": dict(self.refused)} if self.refused else {})}

@@ -54,6 +54,8 @@ eval/                       평가 CLI (policies, web, android, offline, serve)
 .venv/bin/python -m gamelab.eval android --check --out out/device        # 연결 확인과 캡처 한 장
 .venv/bin/python -m gamelab.eval android --package PKG --hint "어느 게임인지" --compute 500 --out out/app
 .venv/bin/python -m gamelab.eval android --ask "퍼즐 앱에서 Fifteen 끝까지" --compute 200 --out out/ask   # 설치된 앱 가운데서 고름
+.venv/bin/python -m gamelab.eval android --ask "꿈의 집 하던 판 이어서 레벨 3개 깨줘, 지면 멈춰" --compute 200 --out out/ask   # 범위: 이어받기, 레벨 N개, 멈춤
+.venv/bin/python -m gamelab.eval android --package PKG --resume --objective levels --target 3 --allow retry --compute 200 --out out/app
 
 .venv/bin/python -m gamelab.eval offline --vision-model MODEL --out out/offline/MODEL   # 사이트 없이 보관된 화면으로 모델을 잼
 .venv/bin/python -m gamelab.eval web --ask "https://… 에서 이 퍼즐을 끝까지 풀어줘" --compute 200 --out out/ask   # 말로 한 요청: 주소와 목표를 거기서 읽음
@@ -66,7 +68,8 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 옛 명령의 `--generate`는 받기만 한다(이제 늘 어댑터를 쓴다). `--profile`, `--unregistered`, `--loop`는 없앴다.
 
 - 사이트 설정과 정답키: `src/gamelab/eval/sites.json`. 옵션 설명은 각 명령의 `--help`.
-- 결과: 판마다 `NAME-NN.json`과 `NAME-NN-final.png`, 실행마다 `summary.json`. `out/`은 git에 넣지 않는다.
+- 범위(PLAN §25): `--objective levels --target N`은 레벨 N개를 같은 화면에서 잇고, `--stop`(`lost` 또는 말), `--allow`(`boosters`, `currency`, `continue`, `retry`, 기본은 없음), `--resume`(앱을 다시 띄우지 않고 지금 화면에서)을 받는다. 말로 한 요청은 이것을 말에서 읽는다.
+- 결과: 판마다 `NAME-NN.json`과 `NAME-NN-final.png`, 실행마다 `summary.json`. 결과의 `work`는 돌려주기(끝난 까닭, 깬 레벨, 쓴 것, 멈춘 곳)이고 `told`는 그 한 줄이다. `out/`은 git에 넣지 않는다.
 
 ## 데모 페이지
 

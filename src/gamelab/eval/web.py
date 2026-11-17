@@ -32,7 +32,10 @@ would; the harness is not told:
 N counts every input the harness sent, never the setup's.
 
 A page a request names (`--ask`) is opened only when its address is a public one, and everything it loads
-afterwards is held to the same rule (`guard`).
+afterwards is held to the same rule (`guard`). Such a page keeps what it saves from one run to the next in a
+browser profile of its host (`out/browser/HOST`), as an installed app keeps its data; a run of a site of
+sites.json starts with nothing saved unless it goes on from where the last stopped (`--resume`). Work that goes
+on from the screen as it stands opens the page without reloading it and without the site's setup (PLAN §25, R4).
 
 The site's answer key (`sites.json`, read from the page's DOM) only scores the run; the harness never
 sees it. A site whose board the page does not expose (a canvas) may name instead where the page states
@@ -53,8 +56,11 @@ from typing import Any, Callable
 
 from pathlib import Path
 
-from .. import agent, request
+from urllib.parse import urlsplit
+
+from .. import agent, request, work
 from ..adaptation import Store
+from ..contracts import Scope
 from ..environments.web import WebSurface, browser
 from . import guard, measure
 
@@ -67,6 +73,8 @@ SETUP_DRAG_STEPS = 20
 SETUP_DRAG_STEP_MS = 25
 # a page a request named, which nobody set up: the window it is opened at and how long it is left to load
 ASKED_VIEWPORT, ASKED_WAIT_MS = (1280, 900), 4000
+# where a page's host keeps what it saves, from one run to the next (`profile_for`)
+PROFILES = measure.ROOT / "out" / "browser"
 # a resized page redraws its game: wait this long before the harness looks
 RESIZE_WAIT_MS = 2500
 # what --perturb can do, and the argument each takes: required, optional, or none
@@ -305,7 +313,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
     another watcher around the game's recorder."""
     goal, budget = measure.goal_and_budget(args)
     # a request in words set the goal and says what it can of the game
-    goal, hint = (args.asked["goal"], args.asked["hint"]) if getattr(args, "asked", None) else (goal, None)
+    hint = args.asked["hint"] if getattr(args, "asked", None) else None
     name = f"{name}-{number:02d}"
     answered = len(model.answers)
     started = time.monotonic()
@@ -316,7 +324,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
     try:
         # the game is read by an adapter a model wrote for this site: the one kept for it or one made now
         # from the game's first moves, and made again whenever play stops at a screen it cannot read
-        run, adapted = await agent.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
+        run, adapted = await work.play(WebSurface(page), model, family_id, goal=goal, budget=budget, policy=args.policy,
                                         store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
                                         watch=watching(recorder) if watching else recorder,
                                         accept_consent=args.accept_consent, writer=writer, hint=hint,
@@ -327,7 +335,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
     stated = await game.page_end() if site.get("ending") else None
     summary = measure.result(
         name, run, recorder, model, seconds=elapsed, final=await game.oracle(), perturbed=perturbed(game, recorder),
-        adaptation=adapted,
+        **measure.handed(adapted),
         **({"page_end": stated, "end_agrees": end_agrees(run.record.get("outcome"), stated)} if site.get("ending") else {}))
     request = {"family": family_id, "url": url, "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}
     measure.write_game(args.out, name, summary, request, run, recorder, model.answers[answered:],
@@ -335,9 +343,19 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
     return summary
 
 
+def profile_for(args: argparse.Namespace, site: dict[str, Any]) -> Path | None:
+    """The browser profile a run keeps a page's saved data in: its host's, for a page a request named or a run that
+    goes on from where the last stopped; None (nothing saved, nothing kept) for any other."""
+    if not (site.get("asked") or getattr(args, "resume", False)):
+        return None
+    host = (urlsplit(site["url"]).hostname or "unknown").lower()
+    return PROFILES / "".join(letter if letter.isalnum() or letter in ".-" else "_" for letter in host)
+
+
 def site_for(args: argparse.Namespace, asked: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
     """The site a run plays and the name its games are called by: `--site`'s entry in sites.json, else the
-    page a request named, opened as it is (`asked`)."""
+    page a request named, opened as it is (`asked`). Work that goes on from the screen as it stands opens the
+    page with none of the site's setup and no reload."""
     site = json.loads(SITES.read_text(encoding="utf-8")).get(args.site) if args.site else None
     if site is None and args.site:
         raise SystemExit(f"no evaluation setup for {args.site} in sites.json")
@@ -351,6 +369,9 @@ def site_for(args: argparse.Namespace, asked: dict[str, Any] | None) -> tuple[st
         name = "asked"
     if getattr(args, "viewport", None):
         site = {**site, "resize": args.viewport}
+    goal = asked["goal"] if asked else None
+    if getattr(args, "resume", False) or (goal is not None and goal.scope == Scope.CURRENT_GAME):
+        site = {**site, "setup": [{"wait_ms": ASKED_WAIT_MS}] if site.get("asked") else []}
     return name, site
 
 
@@ -364,7 +385,8 @@ async def main(args: argparse.Namespace) -> int:
     if args.ask:
         # what to play for is the request's to say; the page too, unless --site names it
         args.asked = await request.understand(model, args.ask)
-        print(json.dumps({"asked": {"url": args.asked["url"], "goal": args.asked["goal"].to_json(), "hint": args.asked["hint"]}},
+        print(json.dumps({"asked": {"url": args.asked["url"], "goal": measure.goal_and_budget(args)[0].to_json(),
+                                    "hint": args.asked["hint"]}},
                          ensure_ascii=False), flush=True)
     args.site, site = site_for(args, args.asked)
     # with --identify nobody says which game the page shows: the harness finds out from the screen
@@ -375,7 +397,8 @@ async def main(args: argparse.Namespace) -> int:
     try:
         # each run has a browser of its own, so runs side by side do not meet (only a device is locked)
         async with guarded(site) as held:
-            async with browser(viewport=site["viewport"], headless=not args.headed, scale=args.scale, **held) as page:
+            async with browser(viewport=site["viewport"], headless=not args.headed, scale=args.scale,
+                               profile=profile_for(args, site), **held) as page:
                 for number in range(1, args.games + 1):
                     result = await play_one(args, number, page, args.site, site["url"], family_id, site, model, writer)
                     results.append(result)
