@@ -94,25 +94,35 @@ class Match3Kit(Valued):
         self._place(image, fit(image, board, self.rows, self.cols))
         self.looks = Looks(self.near, self.apart)
         self.holes = {(r, c) for r in range(self.rows) for c in range(self.cols) if grid[r][c] == EMPTY}
-        cells = [(grid[r][c], self._look(image, box)) for r, c, box in self._cells()
-                 if grid[r][c] is not None and (r, c) not in self.holes]
-        for value, seen in cells:
+        under = state.get("under")
+        layers = under if self._shaped(under) else None
+        cells = [(grid[r][c], self._look(image, box), bool(layers and isinstance(layers[r][c], int) and layers[r][c] > 0))
+                 for r, c, box in self._cells() if grid[r][c] is not None and (r, c) not in self.holes]
+        for value, seen, _ in cells:
             if not self._plain(value):
                 self.looks.add(value, seen)
-        pieces = [(value, seen) for value, seen in cells if self._plain(value)]
-        kinds = groups([seen for _, seen in pieces], self.near)
         free = [number for number in range(1, len(COLOURS) + 1)]
-        for kind in kinds:
-            said = [pieces[index][0] for index in kind]
-            number = max(set(said), key=said.count)
-            if number not in free:
-                if not free:
-                    break                    # more kinds than the rules have numbers for: the rest are no pieces
-                number = free[0]
-            free.remove(number)
-            for index in kind:
-                self.looks.add(number, pieces[index][1])
-        under = state.get("under")
+        # a piece on a layer seen through (jelly) looks otherwise than one of its colour with none: the pieces with
+        # none are gathered first, and a kind on a layer that the reading called the colour of one of those is that
+        # kind's (2026-11-17, a board most of whose cells had jelly: its pieces were taken for other colours than
+        # the same pieces beside it, and no line across the jelly's edge was seen)
+        given: dict[int, int] = {}
+        for layered in (False, True):
+            pieces = [(value, seen) for value, seen, on in cells if self._plain(value) and on == layered]
+            for kind in groups([seen for _, seen in pieces], self.near):
+                said = [pieces[index][0] for index in kind]
+                colour = max(set(said), key=said.count)
+                number = given.get(colour) if layered else None
+                if number is None:
+                    number = colour
+                    if number not in free:
+                        if not free:
+                            break            # more kinds than the rules have numbers for: the rest are no pieces
+                        number = free[0]
+                    free.remove(number)
+                    given.setdefault(colour, number)
+                for index in kind:
+                    self.looks.add(number, pieces[index][1])
         self.unders = None
         self.layered = self._shaped(under) and any(isinstance(cell, int) and cell > 0 for row in under for cell in row)
         if self.layered:

@@ -639,8 +639,9 @@ JELLY, JELLY_GOAL = (120, 200, 250), [560, 100, 48, 48]
 
 
 class Jellied(gems.Gems):
-    """A game some of whose cells have a layer laid under their piece (drawn as the cell's own colour, which shows
-    at its corners), cleared by clearing the piece on it; its goal, beside the board, is to clear them all."""
+    """A game some of whose cells have a layer laid under their piece, seen through over the whole cell (the piece
+    on it looks otherwise than one with none), cleared by clearing the piece on it; its goal, beside the board, is
+    to clear them all."""
     LAYERED = [(r, c) for r in (5, 6, 7) for c in range(2, 6)]
 
     def __init__(self, **options):
@@ -656,9 +657,10 @@ class Jellied(gems.Gems):
         for r, row in enumerate(self.state["under"]):
             for c, layers in enumerate(row):
                 if layers:
+                    # the layer is seen through: over the whole cell, the piece on it too
                     x, y = gems.BOARD[0] + c * gems.CELL, gems.BOARD[1] + r * gems.CELL
-                    for corner in ((x, y), (x + gems.CELL - 9, y), (x, y + gems.CELL - 9), (x + gems.CELL - 9, y + gems.CELL - 9)):
-                        draw.rectangle((*corner, corner[0] + 8, corner[1] + 8), fill=JELLY)
+                    cell = image.crop((x, y, x + gems.CELL, y + gems.CELL))
+                    image.paste(Image.blend(cell, Image.new("RGB", cell.size, JELLY), 0.4), (x, y))
         left, top, width, height = JELLY_GOAL
         draw.rectangle((left, top, left + width - 1, top + height - 1), fill=JELLY)
         out = BytesIO()
