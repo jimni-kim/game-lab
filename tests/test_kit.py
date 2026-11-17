@@ -531,3 +531,31 @@ async def test_a_carry_let_go_unlooked_at_whose_move_fails_brings_the_look_back_
     # one not let go unlooked at leaves the rest as it was
     carrier.doubt()
     assert carrier._rest_s == 2 * carry.UNCHECKED_REST_S
+
+
+class Tutoring(Dealer):
+    """A model that reads a tutorial's tray of one piece as a list of one, and says nothing of how many the
+    game's tray holds."""
+
+    async def complete(self, request):
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if "state" in answer:
+            answer["rules"] = {"rows": 8, "cols": 8}
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_tutorials_tray_of_one_piece_is_a_tray_of_one_until_the_game_shows_more():
+    fake = Centred()
+    one = fake.state["tray"][1]
+    whole = fake.state["tray"]
+    fake.state = {**fake.state, "tray": [one]}
+    fake.source = lambda slot: Centred.source(fake, slot)
+    tool = adaptation.Adaptation(Tutoring(fake, []), "block_placement")
+    # the fake lays its only piece in the first slot; the reading is taken, with a tray of one
+    png, state, board, rules = await tool._label(fake, None, None)
+    assert rules["tray_size"] == 1 and state["tray"] == [one]
+    # the game proper shows three: the tray grows
+    fake.state = {**fake.state, "tray": whole}
+    _, state, _, grown = await tool._label(fake, board, rules)
+    assert grown["tray_size"] == 3 and state["tray"] == whole

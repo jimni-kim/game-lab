@@ -388,6 +388,8 @@ class Adaptation:
             if chosen is None:
                 problem = "rules_refused"
                 continue
+            if rules is None:
+                chosen = self._counted(chosen, answer)
             self._arranged(answer, chosen)
             resized = rules is not None and (chosen := self._resized(rules, answer, found, loose, png)) != rules
             family = catalog.family(self.family_id).bind({"rules": chosen})
@@ -430,6 +432,21 @@ class Adaptation:
             return None
         boxes = [box if entry else None for box, entry in zip(seen, listed)]
         return boxes if all(_box(box, size) for box, entry in zip(boxes, listed) if entry) else None
+
+    def _counted(self, rules: dict[str, Any], answer: dict[str, Any]) -> dict[str, Any]:
+        """A game's first reading that does not say how many dragged things the game has places for has as many
+        as it lists: a tutorial shows one piece where the game will show three, and held to the family's usual
+        three the reading would be refused and the family with it (2026-11-17: a web game's tutorial, then twenty
+        moves of the model's own). The count grows when a later screen shows more (`_resized`)."""
+        controls = self.controls
+        count, listed = controls.get("count"), answer["state"].get(controls.get("source", ""))
+        if not count or rules.get(count) is not None or not isinstance(listed, list) or not listed:
+            return rules
+        grown = {**rules, count: len(listed)}
+        allowed = self.descriptor.get("discovery", {}).get("rules", {})
+        if count in allowed and resources.validate(grown[count], allowed[count]):
+            return rules
+        return grown
 
     def _arranged(self, answer: dict[str, Any], rules: dict[str, Any]) -> None:
         """A reading that lists fewer dragged things than the game has places for them (only the pieces left, not

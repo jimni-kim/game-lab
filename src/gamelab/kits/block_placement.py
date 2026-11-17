@@ -234,8 +234,9 @@ class BlockKit:
     # ── the tray ──────────────────────────────────────────────────────
 
     def _tray_from(self, image: Any, tray: Any, sources: list[Any] | None) -> None:
-        """Where the pieces wait, from the boxes a reading gave around them: slots side by side (or one above
-        the other), each as wide as the pieces lie apart and reaching SLOT_REACH blocks from their middle."""
+        """Where the pieces wait, from the boxes a reading gave around them: how large one block of a waiting piece
+        is drawn, which way the slots lie (side by side, or one above the other), and where each piece seen
+        waited. The slots themselves are laid from every place a piece was seen to wait (`_lay`)."""
         if not isinstance(tray, list) or not isinstance(sources, list):
             return
         seen = [(slot, box, piece) for slot, (piece, box) in enumerate(zip(tray, sources))
@@ -249,92 +250,60 @@ class BlockKit:
         across = max(x for _, x, _ in middles) - min(x for _, x, _ in middles)
         down = max(y for _, _, y in middles) - min(y for _, _, y in middles)
         level = len(middles) < 2 or across >= down
-        along = [(slot, x if level else y) for slot, x, y in middles]
         other = sorted((y if level else x) for _, x, y in middles)[len(middles) // 2]
-        left, top, width, height = self.board
-        start, span = (left, width) if level else (top, height)
-        if len(along) >= 2 and along[-1][0] != along[0][0]:
-            # pieces wait in the middle of their slots: the slots lie as far apart as the pieces seen do
-            apart = (along[-1][1] - along[0][1]) / (along[-1][0] - along[0][0])
-            first = along[0][1] - along[0][0] * apart
-        else:
-            apart = span / self.slots
-            first = start + apart / 2
-            # the one piece seen says where its slot's middle is, when that is not where an even split puts it
-            if abs(along[0][1] - (first + along[0][0] * apart)) > apart / 4:
-                first = along[0][1] - along[0][0] * apart
-        if apart < mini * 2:
-            return
-        reach, limit = SLOT_REACH * mini, image.size
-        boxes = []
-        for slot in range(self.slots):
-            middle = first + slot * apart
-            if level:
-                box = [middle - apart / 2, other - reach, apart, 2 * reach]
-            else:
-                box = [other - reach, middle - apart / 2, 2 * reach, apart]
-            x0, y0 = max(0, round(box[0])), max(0, round(box[1]))
-            x1, y1 = min(limit[0], round(box[0] + box[2])), min(limit[1], round(box[1] + box[3]))
-            # the tray does not reach into the board
-            if level and y0 < top + height <= y1 and other > top + height:
-                y0 = top + height + 1
-            if x1 - x0 < mini or y1 - y0 < mini:
-                return
-            boxes.append([x0, y0, x1 - x0, y1 - y0])
-        if self.tray is not None and self.tray.get("board") == self.board and len(self.tray["slots"]) == len(boxes) \
-                and abs(self.tray["mini"] - mini) <= 0.2 * mini:
-            # the same tray seen again: a slot reaches as far as any piece seen in it did (pieces that do not wait
-            # in the middle of their slot)
-            grown = []
-            for old, new in zip(self.tray["slots"], boxes):
-                x0, y0 = min(old[0], new[0]), min(old[1], new[1])
-                grown.append([x0, y0, max(old[0] + old[2], new[0] + new[2]) - x0, max(old[1] + old[3], new[1] + new[3]) - y0])
-            boxes = grown
-        middles = self.tray.get("middles", {}) if self.tray is not None and self.tray.get("board") == self.board else {}
-        self.tray = {"slots": boxes, "mini": round(mini, 2), "board": list(self.board), "middles": middles}
-        self._centre_slots(image.size)
+        same = self.tray is not None and self.tray.get("board") == self.board and self.tray.get("level") == level \
+            and len(self.tray["slots"]) == self.slots and abs(self.tray["mini"] - mini) <= 0.2 * mini
+        # the same tray seen again keeps where its pieces were seen to wait, and what was measured of it by the
+        # reader itself (a reading's boxes are a few pixels out)
+        kept = self.tray if same else {"slots": [], "middles": {}}
+        self.tray = {"slots": kept["slots"], "mini": kept.get("mini", round(mini, 2)), "board": list(self.board),
+                     "level": level, "other": kept.get("other", round(other, 1)), "middles": kept["middles"]}
+        for slot, box, _ in seen:
+            self._waited(slot, [round(part) for part in box])
+        if not self._lay(image.size):
+            self.tray = kept if same else None
 
     def _waited(self, slot: int, source: list[int]) -> None:
-        """Where a piece read whole waited in its slot: its middle, along the way the slots lie."""
-        level = self._level()
+        """Where a piece waited in its slot: its middle, along the way the slots lie, and how long it is that way."""
+        level = self.tray["level"]
         seen = [round(source[0] + source[2] / 2, 1), source[2]] if level else [round(source[1] + source[3] / 2, 1), source[3]]
-        kept = self.tray.setdefault("middles", {}).setdefault(str(slot), [])
+        kept = self.tray["middles"].setdefault(str(slot), [])
         # the same piece still waiting says nothing new
         if not kept or abs(kept[-1][0] - seen[0]) > 1 or abs(kept[-1][1] - seen[1]) > 1:
             kept.append(seen)
             del kept[:-MIDDLES_KEPT]
 
-    def _level(self) -> bool:
-        slots = self.tray["slots"]
-        return len(slots) < 2 or abs(slots[1][0] - slots[0][0]) >= abs(slots[1][1] - slots[0][1])
-
-    def _centre_slots(self, size: tuple[int, int]) -> None:
-        """The slots laid where the pieces were seen to wait. A reading gives the slots from one screen's boxes,
-        a few pixels out, and a game's slots are often wider than a third of its board (2026-11-17: a piece five
-        blocks long reached 6 pixels past the slot it was given and was not read, 7 times in one game). A slot
-        whose pieces of different widths all waited about one middle has its middle there; the slots lie as far
-        apart as those middles do. A game whose pieces do not wait in the middle of their slots shows no such
-        middle, and its slots stay as they were."""
-        middles = self.tray.get("middles") or {}
-        mini, level = self.tray["mini"], self._level()
-        known = {int(slot): _median([middle for middle, _ in kept]) for slot, kept in middles.items()
-                 if len(kept) >= 2 and max(middle for middle, _ in kept) - min(middle for middle, _ in kept) <= mini / 2}
+    def _lay(self, size: tuple[int, int]) -> bool:
+        """The slots laid where the pieces were seen to wait: each slot's middle at the middle of the pieces seen
+        in it, the slots as far apart as those middles are (a game's slots are often wider than a third of its
+        board: 2026-11-17, laid a third of the board apart, a web game's slots cut its longer pieces off and they
+        were left unread move after move). With one slot seen only, they are a share of the board's side apart.
+        False when nothing is known to lay them by."""
+        tray = self.tray
+        mini, level = tray["mini"], tray["level"]
+        known = {int(slot): _median([middle for middle, _ in kept]) for slot, kept in tray["middles"].items() if kept}
         if not known:
-            return
-        axis = 0 if level else 1
-        slots = self.tray["slots"]
-        apart = slots[1][axis] - slots[0][axis] if len(slots) > 1 else slots[0][axis + 2]
+            return False
+        left, top, width, height = self.board
         steps = [(known[one] - known[other]) / (one - other) for one in known for other in known if one > other]
-        if steps:
-            apart = _median(steps)
-        first = _median([middle - slot * apart for slot, middle in known.items()])
+        apart = _median(steps) if steps else (width if level else height) / self.slots
         if apart < 2 * mini:
-            return
-        for slot, box in enumerate(slots):
-            start = max(0, round(first + slot * apart - apart / 2))
-            end = min(size[axis], round(first + slot * apart + apart / 2))
-            if end - start >= mini and (abs(start - box[axis]) > 1 or abs(end - start - box[axis + 2]) > 1):
-                box[axis], box[axis + 2] = start, end - start
+            return False
+        first = _median([middle - slot * apart for slot, middle in known.items()])
+        reach, other, boxes = SLOT_REACH * mini, tray["other"], []
+        for slot in range(self.slots):
+            middle = first + slot * apart
+            box = [middle - apart / 2, other - reach, apart, 2 * reach] if level else [other - reach, middle - apart / 2, 2 * reach, apart]
+            x0, y0 = max(0, round(box[0])), max(0, round(box[1]))
+            x1, y1 = min(size[0], round(box[0] + box[2])), min(size[1], round(box[1] + box[3]))
+            # the tray does not reach into the board
+            if level and y0 < top + height <= y1 and other > top + height:
+                y0 = top + height + 1
+            if x1 - x0 < mini or y1 - y0 < mini:
+                return False
+            boxes.append([x0, y0, x1 - x0, y1 - y0])
+        tray["slots"] = boxes
+        return True
 
     def _slot(self, image: Any, box: list[int]) -> tuple[Any, list[int] | None]:
         """The piece waiting in one slot and the box around it: None when the slot is empty, [] when what is
@@ -512,7 +481,7 @@ class BlockKit:
                 if tray[slot]:
                     self.sources[slot] = source
                     self._waited(slot, source)
-            self._centre_slots(image.size)
+            self._lay(image.size)
         if isinstance(left_tray, list) and len(left_tray) == self.slots and not dealt:
             # the pieces that wait are the ones that waited: a slot seen unclearly holds what it held
             tray = [left if seen == [] else seen for seen, left in zip(tray, left_tray)]
@@ -600,5 +569,7 @@ class BlockKit:
                 or not kept.get("board") or not kept.get("empties"):
             return False
         self.size, self.board, self.cut, self.tray = kept["size"], kept["board"], kept["cut"], kept.get("tray")
+        if self.tray is not None and not {"level", "other", "middles", "slots", "mini"} <= set(self.tray):
+            self.tray = None                 # kept before the slots were laid from where pieces waited: learned anew
         self.empties = [bytes.fromhex(look) for look in kept["empties"]]
         return True
