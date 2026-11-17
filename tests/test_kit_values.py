@@ -690,6 +690,7 @@ async def test_layers_under_pieces_are_read_by_the_cells_corners_and_a_goal_to_c
     assert played.record["outcome"] == "goal_reached", (played.record, made)
     goal = made["kit"]["goals"][0]
     assert (goal["kind"], goal["target"]) == ("collect", UNDER), made["kit"]["goals"]
+    assert made["kit"]["goals_seen"][0]["goals"][0]["target"] == UNDER
     left = sum(map(sum, fake.state["under"]))
     # the moves went for the layers: most are cleared, and the count kept is what the screen shows
     assert left <= 1 and goal["count"] <= left, (left, goal)        # with no goal about them, 3 were left

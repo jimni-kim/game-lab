@@ -76,6 +76,8 @@ UNSTABLE_GAP_S = 0.4
 # moves whose lines hit things fixed, none of which looked otherwise after, before such things are taken not to
 # break beside a line
 BESIDE_UNMOVED = 3
+# the readings of a level's goals kept for the game's summary
+GOALS_KEPT = 8
 # after its trial moves a still game waits the longest of them plus this margin, then looks once
 ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
@@ -242,6 +244,7 @@ class Agent:
         # how often a screen the model read gave the level's goals anew (`_take_goals`), and the moves in a row
         # whose lines hit things fixed that did not change (`_learn_beside`)
         self.goals_read = self.unbroken = 0
+        self.goals_seen: list[dict[str, Any]] = []
         self.kit_demoted = False
         # the game's rule values were taken anew from a screen (a board of another size, a tray grown): what they
         # were and what the reader had learned, until RESIZE_TRIAL moves by the new ones are confirmed (`_resize`);
@@ -358,6 +361,7 @@ class Agent:
                 **({"light": {**self.light_told, **self.light.spent.summary()}} if self.light is not None else {}),
                 **({"goals": self.family.rules.get("goals"), "goals_read": self.goals_read}
                    if self.family is not None and self.family.rules.get("goals") else {}),
+                **({"goals_seen": self.goals_seen} if self.goals_seen else {}),
                 "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
 
     def _keep_profile(self) -> None:
@@ -588,6 +592,9 @@ class Agent:
         self.trace.rules = {**self.trace.rules, "goals": goals}
         self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
         self.goals_read += 1
+        # what each reading of them gave, the move it came at: a level's end clears them, and what they were is
+        # what a game is looked back on by
+        self.goals_seen = [*self.goals_seen, {"at_action": self.used, "goals": goals}][-GOALS_KEPT:]
 
     # ── one move ──────────────────────────────────────────────────────
 
