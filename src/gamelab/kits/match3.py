@@ -35,6 +35,10 @@ DOUBTS = 2
 # each side (a picture drawn larger or smaller than a cell), and is that value when it is within this many times
 # `near` of its looks and no other value's are within `apart` further
 GOAL_INSETS, GOAL_NEAR = (0.2, 0.3, 0.4), 1.8
+# a picture drawn otherwise than the cells (larger, shaded) may lie further from its value's looks than that: it is
+# still that value's when within this many times `near` and every other value lies this many times as far
+# (2026-11-17, a game's green cup: 20.3 from the green cups on the board, 72.9 from the next value)
+GOAL_FAR, GOAL_RATIO = 3.0, 2.0
 GOAL_KINDS = ("collect", "bring_down", "other")
 # what lies under a cell's piece (`under`) is told by the cell's corners, where the piece does not reach: a square
 # this share of a cell a side, this share in from each corner, each made this many pixels a side; corners nearer
@@ -336,11 +340,14 @@ class Match3Kit(Valued):
             for value in self.looks.kept:
                 far[value] = min(far.get(value, 255.0), self.looks.far(seen, value))
         ranked = sorted((distance_, value) for value, distance_ in far.items() if value != EMPTY)
-        if not ranked or ranked[0][0] > GOAL_NEAR * self.near:
+        if not ranked:
             return None
-        if len(ranked) > 1 and ranked[1][0] - ranked[0][0] < self.apart:
-            return None
-        return ranked[0][1]
+        best, second = ranked[0][0], ranked[1][0] if len(ranked) > 1 else 255.0
+        if best <= GOAL_NEAR * self.near and second - best >= self.apart:
+            return ranked[0][1]
+        if best <= GOAL_FAR * self.near and second >= GOAL_RATIO * best:
+            return ranked[0][1]
+        return None
 
     def summary(self) -> dict[str, Any]:
         return {**super().summary(), **({"unders": {str(value): len(looks) for value, looks in self.unders.kept.items()},

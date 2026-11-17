@@ -695,3 +695,27 @@ async def test_layers_under_pieces_are_read_by_the_cells_corners_and_a_goal_to_c
     # the moves went for the layers: most are cleared, and the count kept is what the screen shows
     assert left <= 1 and goal["count"] <= left, (left, goal)        # with no goal about them, 3 were left
     assert [kind for kind, _ in model.asked] == ["label"], model.asked
+
+
+def test_a_goals_picture_drawn_shaded_is_still_the_value_its_looks_are_nearest_by_far_and_one_like_none_is_none():
+    import asyncio
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+    from gamelab import kits
+    from gamelab.kits import grid
+    from gamelab.kits.match3 import GOAL_NEAR
+
+    fake = gems.Gems()
+    png = asyncio.run(fake.capture())
+    kit = kits.make("match3", {"rows": 8, "cols": 8})
+    assert kit.calibrate(png, gems.BOARD, fake.state)
+    image = Image.open(BytesIO(png)).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    shaded, box = tuple(round(part * 0.8) for part in gems.INKS[4]), [560, 100, 60, 60]       # a green piece, darker
+    draw.rectangle((560, 100, 619, 159), fill=gems.WELL)
+    draw.ellipse((566, 106, 613, 153), fill=shaded)
+    draw.rectangle((560, 200, 619, 259), fill=(150, 100, 50))                                 # nothing on the board
+    picture = grid.open_picture((lambda out: (image.save(out, format="PNG"), out.getvalue())[1])(BytesIO()))
+    seen = grid.look(picture, box, 0.3, kit.side)
+    assert kit.looks.far(seen, 4) > GOAL_NEAR * kit.near           # too far for the plain test
+    assert kit._pictured(picture, box) == 4 and kit._pictured(picture, [560, 200, 60, 60]) is None
