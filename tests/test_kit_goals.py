@@ -222,3 +222,12 @@ def test_a_move_read_as_taken_whose_pieces_stand_where_they_stood_and_whose_coun
     # the pieces moved, the count changed, or the count is not one the reader believes: the move stands
     assert not taken_back(True, False, moved) and not taken_back(True, True, elsewhere)
     assert not taken_back(False, False, elsewhere) and not taken_back(True, None, elsewhere)
+
+
+async def test_what_the_family_made_of_each_level_is_handed_back_with_the_part():
+    from gamelab import work
+
+    fake = Lawn()
+    played, made = await work.play(fake, Gardener(fake), "match3", goal=GoalSpec("actions", 4), budget=Budget(20, 200, 120))
+    part = made["work"]["parts"][0]
+    assert part["goals_seen"][0]["goals"][0]["kind"] == "cover" and part["ways"]["spread"] is True

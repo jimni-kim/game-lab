@@ -157,6 +157,10 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         "parts": [{"outcome": run.record["outcome"], "reason": run.record["reason"], "family": run.record.get("family"),
                    "actions": run.record["actions_used"], "confirmed": run.record["confirmed_actions"],
                    "level_moves": run.record.get("level_moves"),
+                   # what the family made of the level: its goals as read, the ways it learned, the moves a model
+                   # picked among the code's (PLAN §31)
+                   **{name: (adapted.get("kit") or {})[name] for name in ("goals_seen", "ways", "picks")
+                      if (adapted.get("kit") or {}).get(name)},
                    "used": (adapted.get("account") or {}).get("used") or {}} for run, adapted in parts],
         "spent": {"inputs": used, "moves": confirmed, "used": account["used"], "refused": account["refused"],
                   "tokens": {"input": tokens_in, "output": tokens_out}, "questions": questions,
