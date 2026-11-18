@@ -51,6 +51,31 @@ HELD = 20
 UNDER = 13
 # the kinds of goal about how many of something: things to take off the board, and a layer to lay under more cells
 COUNTED = ("collect", "cover")
+# what a goal is about, as the model that read it says in properties (PLAN §31): pieces of the colour pictured
+# (the code finds which by the picture), the layer under the pieces, things fixed (and what they hold inside,
+# freed by breaking them), pieces held in place, things that fall to be brought down; each but `pieces` the value
+# a state gives such cells
+ABOUT = {"layer": UNDER, "fixed": BLOCK, "held": HELD, "falls": LOOSE}
+
+
+def unseen(goals, state: dict) -> list[str]:
+    """What a level's goals are about that a reading of its board does not show (PLAN §31): a goal still to go
+    about the layer under the pieces where the state gives no cell one, about things fixed where it has none, about
+    pieces held in place where it holds none, about things that fall where none is. Such a reading has left out
+    what the level is played for. `goals` as a model listed them (each with `about`)."""
+    missing = []
+    grid, under = state.get("grid") or [], state.get("under")
+    cells = [cell for row in grid for cell in row]
+    for goal in goals if isinstance(goals, list) else ():
+        about, count = goal.get("about") if isinstance(goal, dict) else None, goal.get("count") if isinstance(goal, dict) else None
+        if about not in ABOUT or count == 0 or about in missing:
+            continue
+        shown = {"layer": isinstance(under, list) and any(cell for row in under for cell in row if isinstance(cell, int)),
+                 "fixed": BLOCK in cells, "held": any(isinstance(cell, int) and HELD < cell < POWERED for cell in cells),
+                 "falls": LOOSE in cells}[about]
+        if not shown:
+            missing.append(about)
+    return missing
 # a piece with a power is POWERED * its kind + its colour (0: none)
 POWERED = 100
 LINE, SEEKER, AREA, COLOUR, POWER = 1, 2, 3, 4, 5

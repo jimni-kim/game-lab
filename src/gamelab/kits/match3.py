@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..rules.match3 import AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, UNDER, power_of
+from ..rules.match3 import ABOUT, AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, UNDER, power_of
 from .grid import CHANGED_SHARE, Looks, Valued, distance, fit, groups, look, open_picture
 
 # a reading agrees with a model's when this share of the cells both call pieces are gathered alike by both
@@ -325,16 +325,22 @@ class Match3Kit(Valued):
                 continue
             count = thing.get("count")
             count = count if type(count) is int and count >= 0 else None
-            kind = thing["kind"]
-            target = self._pictured(image, thing["box"]) if kind not in ("other", "cover") else None
+            kind, about = thing["kind"], thing.get("about")
+            target = self._pictured(image, thing["box"]) if kind not in ("other", "cover") and about in (None, "pieces") else None
             if kind == "cover":
                 target = UNDER              # a layer to lay under more cells: the goal says what it is about
+            elif about in ABOUT and kind != "other":
+                # what the goal is about, as the model said it in properties: no picture is matched (a cherry held in
+                # a bubble, a box's picture beside the board, is like no cell's look) (PLAN §31)
+                target = ABOUT[about]
+                if about == "layer" and kind not in ("collect", "cover"):
+                    kind = "collect"
             elif target is None and layered and (kind == "collect" or (count is not None and count <= self.rows * self.cols)):
                 # a goal whose picture is like no cell's on a board with layers under its pieces is about those:
                 # also one a model could not put a kind to, when it counts no more than the board has cells (a
                 # score counts more)
                 kind, target = "collect", UNDER
-            found.append({"kind": kind, "target": target, "count": count})
+            found.append({"kind": kind, "target": target, "count": count, **({"about": about} if about in ABOUT else {})})
         return found
 
     def _pictured(self, image: Any, box: list[int]) -> int | None:

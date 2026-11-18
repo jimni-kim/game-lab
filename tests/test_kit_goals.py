@@ -231,3 +231,101 @@ async def test_what_the_family_made_of_each_level_is_handed_back_with_the_part()
     played, made = await work.play(fake, Gardener(fake), "match3", goal=GoalSpec("actions", 4), budget=Budget(20, 200, 120))
     part = made["work"]["parts"][0]
     assert part["goals_seen"][0]["goals"][0]["kind"] == "cover" and part["ways"]["spread"] is True
+
+
+def test_what_a_reading_leaves_out_of_what_the_goals_are_about():
+    goals = [{"kind": "cover", "count": 50, "about": "layer"}, {"kind": "collect", "count": 9, "about": "fixed"},
+             {"kind": "collect", "count": 4, "about": "held"}, {"kind": "collect", "count": 0, "about": "falls"},
+             {"kind": "collect", "count": 30, "about": "pieces"}]
+    bare = {"grid": BOARD}
+    assert rules.unseen(goals, bare) == ["layer", "fixed", "held"]
+    full = [list(row) for row in BOARD]
+    full[0][0], full[0][1] = rules.BLOCK, HELD + B
+    assert rules.unseen(goals, {"grid": full, "under": LAYER}) == []
+    # a layer given as no cell's is not shown; a goal met asks for nothing; a list that is none says nothing
+    assert rules.unseen(goals[:1], {"grid": BOARD, "under": [[0] * 5] * 4}) == ["layer"]
+    assert rules.unseen(None, bare) == [] and rules.unseen([{"kind": "other", "count": 3}], bare) == []
+
+
+class Boxed(gems.Gems):
+    """A game with boxes fixed in its middle row, each holding a thing the goal beside the board pictures (drawn
+    unlike any cell), and a model that says what the goal is about."""
+
+    def __init__(self):
+        super().__init__(rules={"square": True, "swap_power": False, "pair_power": False, "tap_power": False, "beside": True})
+        for c in (2, 3, 4, 5):
+            self.state["grid"][4][c] = rules.BLOCK
+
+    async def capture(self, region=None):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+
+        image = Image.open(BytesIO(await super().capture())).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        left, top, width, height = JELLY_GOAL
+        draw.rectangle((left, top, left + width - 1, top + height - 1), fill=(240, 240, 240))
+        draw.polygon([(left + 24, top + 4), (left + 44, top + 44), (left + 4, top + 44)], fill=(150, 30, 120))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+class Boxer(gems.Jeweller):
+    def __init__(self, fake, first_blind=False):
+        super().__init__(fake)
+        self.first_blind, self.notes = first_blind, []
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            self.notes.append(context.get("note"))
+            left = sum(1 for row in self.fake.state["grid"] for cell in row if cell == rules.BLOCK)
+            answer["panel"] = {"goals": [{"box": JELLY_GOAL, "count": left, "kind": "collect", "about": "fixed"}]}
+            if self.first_blind and len(self.notes) == 1:
+                # the boxes taken for places with no cell: what the goal is about left out
+                answer["state"]["grid"][4][2:6] = [rules.EMPTY] * 4
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_goal_about_things_fixed_is_about_them_whatever_its_picture_and_a_reading_without_them_is_asked_again():
+    fake = Boxed()
+    model = Boxer(fake, first_blind=True)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 6), budget=Budget(30, 200, 120))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    # the first reading gave no box: read once more, told what it left out, and the boxes were there
+    assert model.notes[0] is None and "things fixed on the board" in model.notes[1], model.notes
+    goal = made["kit"]["goals"][0]
+    assert (goal["target"], goal["about"]) == (rules.BLOCK, "fixed"), made["kit"]["goals"]
+    # the code weighs that goal: no model was asked to pick among its moves
+    assert "picks" not in made["kit"]
+
+
+class Forgetful(Gardener):
+    """A model that leaves the lawn out of its first reading of the board, and says the goal is about a layer."""
+
+    def __init__(self, fake):
+        super().__init__(fake)
+        self.notes = []
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        result = await super().complete(request)
+        answer = json.loads(result.text)
+        if answer.get("state"):
+            self.notes.append(context.get("note"))
+            answer["panel"]["goals"][0].update(kind="cover", about="layer")
+            if len(self.notes) == 1:
+                answer["state"].pop("under")
+        return type(result)(text=json.dumps(answer))
+
+
+async def test_a_first_reading_that_leaves_out_the_layer_the_goal_is_about_is_asked_again_and_the_lawn_spread_from_the_start():
+    fake = Lawn()
+    model = Forgetful(fake)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 16), budget=Budget(40, 200, 120))
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    assert model.notes[0] is None and "layer under the pieces" in model.notes[1]
+    assert made["kit"]["goals_seen"][0]["at_action"] == 0 and made["kit"]["ways"]["spread"] is True
+    assert 64 - fake.bare() >= 4 + 12, fake.bare()

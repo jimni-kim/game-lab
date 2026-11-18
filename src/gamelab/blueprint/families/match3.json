@@ -1,6 +1,6 @@
 {
   "id": "match3",
-  "revision": 5,
+  "revision": 6,
   "summary": "A grid of pieces of a few colours, not always a rectangle. A move swaps two neighbouring pieces so that three or more of one colour line up; those are removed, pieces above fall, new ones come in, and lines that form so are removed too. A swap that lines nothing up is undone. An obstacle is never swapped and lines up with nothing. A piece held in place (chained, frozen) is not swapped but lines up by its colour, which frees it. Four or more in a line, or four in a square, leave a piece with a power. A layer under the pieces (jelly, grass) is taken off by clearing or spread by lines on it.",
   "state_schema": "match3.v1",
   "board": {
@@ -28,7 +28,7 @@
     "grid": "rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is its colour's number (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; always the same for one kind of piece); a piece with a power (striped, a rocket, a bomb) is 500 plus its colour's number, or 500 with no colour; a piece held in place that still shows its colour (chained, frozen) is 20 plus its colour's number; 11 something fixed that shows no piece (a box, a locked cell), 12 such a thing that falls; 0 no cell or nothing in it; null a cell nobody read",
     "score": "the game's score as read, or null",
     "scene": "the id of the scene the screen shows",
-    "under": "only when some cell of the board has something laid under its piece (jelly, grass, carpet, a tinted tile; whether clearing the piece takes it off or a line spreads it): the rows of the same rectangle, each cell the number of such layers under it (0 none); leave the field out when no cell has any"
+    "under": "only when some cell has a layer under its piece (jelly, grass, carpet, a tinted tile), drawn beneath the piece and seen around it: the rows of the same rectangle, each cell the number of such layers (0 none); leave the field out when no cell has one. Something over a cell that hides or holds what is in it (a bubble, a box, a cage around a thing that is no piece) is no layer: that cell is 11"
   },
   "actions": [
     {
@@ -208,7 +208,7 @@
     "tolerance": 4,
     "panel": {
       "moves": "the tight box [left, top, width, height] in whole-screen image pixels around the number of moves (or the time) left in this level, the digits alone",
-      "goals": "a list with one entry per goal of the level the screen shows (beside or above the board): {\"box\": the tight box [left, top, width, height] in whole-screen image pixels around the goal's picture alone, \"count\": the number shown with it, how many are still to go (0 when it shows a tick), \"kind\": \"collect\" (clear or collect that many of the thing pictured), \"cover\" (lay the thing pictured, a layer such as grass or carpet, under that many more cells of the board by making lines on it), \"bring_down\" (bring the thing pictured to the bottom of the board) or \"other\" (a score to reach, or anything else)}"
+      "goals": "a list with one entry per goal of the level the screen shows (beside or above the board): {\"box\": the tight box [left, top, width, height] in whole-screen image pixels around the goal's picture alone, \"count\": the number shown with it, how many are still to go (0 when it shows a tick), \"kind\": \"collect\" (clear or collect that many), \"cover\" (lay the layer pictured, such as grass or carpet, under that many more cells by making lines on it), \"bring_down\" (bring what is pictured to the bottom) or \"other\" (a score, or anything else), \"about\": what on the board the goal is about: \"pieces\" (the board's pieces of the colour pictured), \"layer\" (a layer under the pieces: jelly, grass, carpet), \"fixed\" (things fixed in cells that a line beside or on them breaks: boxes, bubbles, stones, and anything held inside them), \"held\" (pieces held in place: chained, frozen), \"falls\" (things that fall and are no piece), or \"other\"}"
     }
   },
   "policies": [

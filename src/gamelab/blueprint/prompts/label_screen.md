@@ -14,4 +14,6 @@ When the context has `sources`, it names a state field that lists things dragged
 
 When the context has `panel`, it names things the game shows beside the board (such as how many moves are left) and says what to give for each. Then also set panel to an object with exactly those names, each as its description says, or null where the screen does not show it.
 
+When the context has `note`, it says what an earlier reading of this same screen left out: read the screen again with it in mind.
+
 Output no Markdown, explanation, executable code or additional keys.

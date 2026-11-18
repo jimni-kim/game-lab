@@ -46,6 +46,11 @@ EXPLORE_MOVES = 6
 HELD_BACK = 2
 # readings of one screen asked for again when the rule model refuses what the model read
 LABEL_RETRIES = 2
+# what a model reading a board again is told an earlier reading of the screen left out (`rules.unseen`)
+NOTE = ("An earlier reading of this screen gave no cell of what the level's goals are about: {missing}. Look at the board "
+        "again for it, cell by cell, and give it in the state as the family says; leave it out only if it is truly not there.")
+UNSEEN = {"layer": "the layer under the pieces (the state's `under`)", "fixed": "things fixed on the board (11)",
+          "held": "pieces held in place (20 plus their colour)", "falls": "things that fall (12)"}
 # adapters written for one site before giving up
 MAX_GENERATIONS = 5
 # how long a played move is left to finish before its result is looked at
@@ -282,6 +287,8 @@ class Adaptation:
         self.frames: list[bytes] = []
         # what each screen read said of the rule values a game may be played without knowing (`_told`)
         self.told: list[dict[str, Any]] = []
+        # readings asked again because they left out what the level's goals are about
+        self.unseen_asked = 0
         # the first screen as read already (`probe`), for the exploring to start from
         self.first: tuple[bytes, dict[str, Any], list[int], dict[str, Any]] | None = None
         # where the last screen read shows each thing that may be dragged (`Look.sources`)
@@ -313,15 +320,18 @@ class Adaptation:
 
     # ── explore ───────────────────────────────────────────────────────
 
-    async def label(self, png: bytes, board: list[int] | None, shape: tuple[int, int] | None) -> dict[str, Any] | None:
+    async def label(self, png: bytes, board: list[int] | None, shape: tuple[int, int] | None,
+                    note: str | None = None) -> dict[str, Any] | None:
         """What the model reads on one screen: `{"board", "rules", "state"}` or None when it shows no board
-        or the answer is no answer. The rule model checks the state afterwards."""
+        or the answer is no answer. The rule model checks the state afterwards. `note`: what an earlier reading of
+        this screen left out, told to the model."""
         # a large screen is shown smaller (`view`): boxes go to the model and come back in what it is shown
         shown, scale = view(png)
         context = {"family": self.descriptor, **({"board": [round(value * scale) for value in board]} if board else {}),
                    **({"sources": self.controls["source"]} if "source" in self.controls else {}),
                    **({"places": self.controls["places"]} if "places" in self.controls else {}),
-                   **({"panel": self.descriptor["discovery"]["panel"]} if "panel" in self.descriptor.get("discovery", {}) else {})}
+                   **({"panel": self.descriptor["discovery"]["panel"]} if "panel" in self.descriptor.get("discovery", {}) else {}),
+                   **({"note": note} if note else {})}
         content = [{"type": "text", "text": json.dumps(context)}, _image(shown)]
         if board and shape:
             content.append(_image(overlay(png, board, *shape)))
@@ -405,7 +415,12 @@ class Adaptation:
         another was laid on) is not lost for want of a second reading. `anew`: the board is likely another than
         the one the game had (most of its cells looked like nothing known): the screen is shown with no grid drawn."""
         problem = "no_board"
-        for _ in range(1 + retries):
+        # what an earlier reading of the screen left out of what the level's goals are about, told to the next
+        note: str | None = None
+        unseen = getattr(catalog.family(self.family_id).model, "unseen", None)
+        # a reading asked again for what it left out is one more than `retries` allows
+        attempt = -1
+        while (attempt := attempt + 1) < 1 + retries + (note is not None):
             png = await surface.capture()
             size = _size(png)
             shape = None
@@ -417,7 +432,7 @@ class Adaptation:
             counted = self.gauge(png, board) if rules is not None and board and self.gauge is not None else None
             loose = anew and board is not None or (
                 counted is not None and "rows" in rules and counted != (rules["rows"], rules["cols"]))
-            answer = await self.label(png, None if loose else board, None if loose else shape)
+            answer = await self.label(png, None if loose else board, None if loose else shape, note)
             if answer is None:
                 problem = "no_board"
                 if not patient:
@@ -476,7 +491,16 @@ class Adaptation:
                 if self.sources is None:
                     problem = "places_refused"
                     continue
-            self.panel = self._panel(answer.get("panel"), size)
+            panel = self._panel(answer.get("panel"), size)
+            missing = unseen(panel.get("goals"), state.payload) if unseen is not None and isinstance(panel, dict) else []
+            if missing and note is None:
+                # the level is played for something the reading left out (a layer under the pieces, things fixed or
+                # held): read once more, told so; a second reading is taken as it is (PLAN §31)
+                log.info("the reading leaves out what the goals are about: %s", missing)
+                problem, note = "goal_unseen", NOTE.format(missing=", ".join(UNSEEN[name] for name in missing))
+                self.unseen_asked += 1
+                continue
+            self.panel = panel
             self.told.append(self._told(answer.get("rules")))
             return png, state.payload, found, chosen
         raise AdaptationFailed("label_failed", problem)
