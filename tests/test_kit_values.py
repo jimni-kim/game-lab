@@ -725,3 +725,29 @@ def test_a_goals_picture_drawn_shaded_is_still_the_value_its_looks_are_nearest_b
     seen = grid.look(picture, box, 0.3, kit.side)
     assert kit.looks.far(seen, 4) > GOAL_NEAR * kit.near           # too far for the plain test
     assert kit._pictured(picture, box) == 4 and kit._pictured(picture, [560, 200, 60, 60]) is None
+
+
+async def test_a_power_the_reading_model_put_no_kind_to_is_named_by_the_light_model_not_kept_as_no_kind():
+    """A level that begins with pieces with a power (paper planes): the reading model says only that they have a
+    power. The family's reader does not learn them as that: their look is put to the light model, which names
+    the kind, and a later reading that again says only "a power" agrees with the kind learned."""
+    from gamelab import kits
+    from gamelab.kits.match3 import UNKNOWN
+    from gamelab.rules.match3 import POWERED, SEEKER
+
+    fake = gems.Gems(powers=True)
+    fake.state["grid"][2][3] = UNKNOWN
+    png = await fake.capture()
+    kit = kits.make("match3", {"rows": 8, "cols": 8})
+    assert kit.calibrate(png, gems.BOARD, fake.state)
+    assert kit.read(png)[0]["grid"][2][3] == UNKNOWN            # a power, until it is named
+    asked = kit.settle(png, None)
+    assert [cells for cells, _ in asked] == [[(2, 3)]]
+    kit.name(png, [(2, 3)], "seeker")
+    state = kit.read(png)[0]
+    assert state["grid"][2][3] == POWERED * SEEKER and kit.settle(png, None) == []
+    assert kit.same(state, fake.state)                          # the model's "a power" is the seeker learned here
+    other = json.loads(json.dumps(fake.state))
+    other["grid"][2][3] = 1
+    assert not kit.same(state, other)
+

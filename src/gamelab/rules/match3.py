@@ -300,6 +300,16 @@ def learned(before: dict, action: dict, effect: str, rules: dict) -> dict:
     anything, and only of a way not settled yet."""
     if effect not in ("confirmed", "absent"):
         return rules
+    if action.get("kind") == "pop" and rules.get("tap_power") is None:
+        # a tap lines nothing up: the game taking it (the thing tapped went off) says it takes taps, whatever the
+        # thing's colour or kind; one it did not take says so only of a thing known to have a power
+        try:
+            kind = power_of(before["grid"][action["cell"][0]][action["cell"][1]])
+        except (KeyError, IndexError, TypeError):
+            return rules
+        if effect == "confirmed" and kind:
+            return {**rules, "tap_power": True}
+        return {**rules, "tap_power": False} if kind and kind != POWER else rules
     try:
         made = way(before, rules, action)
     except (KeyError, IndexError, TypeError, ValueError):

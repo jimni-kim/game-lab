@@ -178,3 +178,15 @@ def test_the_answers_of_an_end_of_lives_a_level_s_moves_left_and_a_name_made_are
     assert recovery.check({"kind": "give_up", "end": "won", "moves_left": -1}, size, kinds) == {"kind": "give_up", "end": "won"}
     assert recovery.profile({"kind": "tap", "at": [1, 1], "profile": " Player "}) == "Player"
     assert recovery.profile({"kind": "tap", "at": [1, 1]}) is None
+
+
+def test_a_tap_the_game_took_on_a_power_of_no_known_kind_or_colour_says_it_takes_taps():
+    state = {"grid": SPARSE, "score": None, "scene": "playing"}
+    pop = {"kind": "pop", "cell": [1, 1]}
+    assert match3.learned(state, pop, "confirmed", RULES)["tap_power"] is True
+    # not taken: a thing nobody knew the kind of may be no power at all, so nothing is learned
+    assert match3.learned(state, pop, "absent", RULES)["tap_power"] is None
+    lined = [row[:] for row in SPARSE]
+    lined[1][1] = match3.POWERED * match3.LINE + 2
+    assert match3.learned({**state, "grid": lined}, pop, "absent", RULES)["tap_power"] is False
+    assert match3.learned(state, pop, "confirmed", {**RULES, "tap_power": False})["tap_power"] is False

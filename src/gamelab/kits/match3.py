@@ -24,7 +24,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..rules.match3 import ABOUT, AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, UNDER, power_of
+from ..rules.match3 import (ABOUT, AREA, BLOCK, COLOUR, COLOURS, EMPTY, LINE, LOOSE, POWER, POWERED, SEEKER, UNDER, colour_of,
+                             power_of)
 from .grid import CHANGED_SHARE, Looks, Valued, distance, fit, groups, look, open_picture
 
 # a reading agrees with a model's when this share of the cells both call pieces are gathered alike by both
@@ -103,7 +104,11 @@ class Match3Kit(Valued):
         cells = [(grid[r][c], self._look(image, box), bool(layers and isinstance(layers[r][c], int) and layers[r][c] > 0))
                  for r, c, box in self._cells() if grid[r][c] is not None and (r, c) not in self.holes]
         for value, seen, _ in cells:
-            if not self._plain(value):
+            # a piece with a power the model could not put a kind to (one the level began with) is not learned as
+            # that: its look stays one to be named, and the light model is asked which kind it is (`settle`); it
+            # reads as such a piece until then (2026-11-18, a level's paper planes read as powers of no kind all
+            # the level long, and how the game sets them off was never learned)
+            if not self._plain(value) and value != UNKNOWN:
                 self.looks.add(value, seen)
         free = [number for number in range(1, len(COLOURS) + 1)]
         # a piece on a layer seen through (jelly) looks otherwise than one of its colour with none: the pieces with
@@ -189,6 +194,15 @@ class Match3Kit(Valued):
 
     def unread(self, png: bytes) -> list[tuple[tuple[int, int], bytes]]:
         return [(cell, seen) for cell, seen in super().unread(png) if cell not in self.holes]
+
+    def same(self, state: dict[str, Any], said: dict[str, Any]) -> bool:
+        """Whether a screen read here is read as a model read it: a piece with a power the model put no kind to
+        is the same as one of a kind learned here, of the same colour."""
+        mine, theirs = state.get(self.field), said.get(self.field)
+        if not self._shaped(mine) or not self._shaped(theirs):
+            return mine == theirs
+        return all(one == other or (power_of(other) == POWER and power_of(one) and colour_of(one) == colour_of(other))
+                   for row, told in zip(mine, theirs) for one, other in zip(row, told))
 
     @staticmethod
     def _plain(value: Any) -> bool:
