@@ -45,7 +45,7 @@ from .checker import CHOICE, Check
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
-from .model import Model, TurnRequest, TurnResult
+from .model import Model, Msg, TurnRequest, TurnResult
 from . import motion
 from .carry import _boxes as carry_boxes
 from .motion import Steady
@@ -116,6 +116,12 @@ IDENTIFY_RETRIES, IDENTIFY_RETRY_S = 2, 2.0
 MAX_VISITS = 3
 # moves kept in the record and told to a model asked about a screen
 HISTORY_KEPT = 8
+# moves in a row, chosen by the code for a level whose goals it weighs, that gained nothing towards them: from
+# then on a model picks among the code's best moves, until one gains (PLAN §31, L3)
+AIMLESS_MOST = 3
+PICK_TOKENS, PICK_TIMEOUT_S = 1500, 60.0
+# the names a model is told for the powers a move leaves (`rules.match3.KINDS`)
+POWERS = {1: "line", 2: "seeker", 3: "area", 4: "colour", 5: "power"}
 # a direction key on a surface without keys is a swipe across the board
 SWIPES = {"ArrowLeft": (-1, 0), "ArrowRight": (1, 0), "ArrowUp": (0, -1), "ArrowDown": (0, 1)}
 SWIPE_SPAN, SWIPE_MS = 0.6, 120
@@ -213,6 +219,14 @@ class Agent:
         # one input it sent among them when it was one a kept recovery can send again, and the input count a
         # family tried again on a screen named a board did not read it at
         self.trail = scenes.Trail()
+        # moves in a row that gained nothing towards the level's goals (`AIMLESS_MOST`), and what a model was
+        # asked to pick among the code's moves: the questions, the picks that were not the code's own first, the
+        # answers that picked none
+        self.aimless = 0
+        self.picks = {"questions": 0, "other": 0, "none": 0}
+        self.picked: dict[str, Any] | None = None
+        # whether the game's count of moves left changed with the last move, as the family's reader saw it
+        self.ticked: bool | None = None
         self.passage: dict[str, Any] | None = None
         self.unread_at: int | None = None
         # what the inputs sent used up beyond the board, and what inputs not sent would have (PLAN §25, R2)
@@ -394,6 +408,7 @@ class Agent:
                 **({"goals": self.family.rules.get("goals"), "goals_read": self.goals_read}
                    if self.family is not None and self.family.rules.get("goals") else {}),
                 **({"goals_seen": self.goals_seen} if self.goals_seen else {}),
+                **({"picks": dict(self.picks)} if self.picks["questions"] else {}),
                 "hang": self.carrier.hang.to_json()[-6:], "restored": self.kit_restored, "resizes": self.resizes}
 
     def _keep_profile(self) -> None:
@@ -401,7 +416,9 @@ class Agent:
         if self.store is None or not isinstance(self.adapter, KitAdapter) or self.adapter.layout is None or not self.site:
             return
         # a level's goals are that level's: the next game reads its own
-        rules = {name: value for name, value in (self.trace.rules if self.trace else {}).items() if name != "goals"}
+        # and whether its layer spreads is read with them (`meant`)
+        rules = {name: value for name, value in (self.trace.rules if self.trace else {}).items()
+                 if name not in ("goals", "spread")}
         self.store.save_profile(self.site, self.family_id, {
             "family": self.family_id, "rules": rules,
             "kit": self.adapter.record(), "hang": self.carrier.hang.to_json(), "hold_s": self.carrier.hold_s})
@@ -613,6 +630,9 @@ class Agent:
         except (ValueError, KeyError, IndexError, TypeError):
             return
         advanced = model.advance(goals, taken)
+        # whether the move got on with a goal the code weighs: moves that keep gaining nothing are aimless
+        weighed = any(goal.get("target") is not None and goal.get("count") for goal in goals)
+        self.aimless = 0 if advanced != goals or not weighed else self.aimless + 1
         if advanced != goals:
             self.trace.rules = {**self.trace.rules, "goals": advanced}
             self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
@@ -625,11 +645,20 @@ class Agent:
             return
         goals = self.adapter.goals(self.trace.looks)
         goals = _same_level(self.trace.rules.get("goals"), goals)
-        if goals is None or goals == self.trace.rules.get("goals"):
+        if goals is None:
             return
-        log.info("the level's goals: %s", goals)
-        self.trace.rules = {**self.trace.rules, "goals": goals}
+        # what the goals say of the game's ways (a layer asked to be laid under more cells than have one spreads)
+        meant = getattr(self.family.model, "meant", None)
+        changed = {"goals": goals}
+        if meant is not None and self.trace.looks:
+            changed.update(meant(goals, self.trace.looks[-1].state, self.trace.rules))
+        if all(self.trace.rules.get(name) == value for name, value in changed.items()):
+            return
+        goals = changed["goals"]
+        log.info("the level's goals: %s", changed)
+        self.trace.rules = {**self.trace.rules, **changed}
         self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+        self.ways = {**self.ways, **{name: value for name, value in changed.items() if name != "goals"}}
         self.goals_read += 1
         # what each reading of them gave, the move it came at: a level's end clears them, and what they were is
         # what a game is looked back on by
@@ -665,6 +694,9 @@ class Agent:
             # every move this board offers was tried without effect, or the game waits at a message of its own
             await self._unstick("absent" if action is None else action["kind"])
             return
+        why, self.picked = self._blind_to_goals(), None
+        if why is not None:
+            action = await self._pick(before, action, tuple(excluded), why) or action
         sent = self._aim(action, before)
         if sent is None:
             self._doubt()
@@ -694,12 +726,20 @@ class Agent:
             self.carried, self.state = after, after.state
             return
         effect = "unknown" if after is None else self._effect(before.state, action, after.state)
+        self.ticked = self.adapter.ticked(before.png, after.png) if isinstance(self.adapter, KitAdapter) \
+            and after is not None and after.by == L3 else None
+        if effect == "confirmed" and self._taken_back(before, action, after):
+            # the board reads otherwise than before, yet the two pieces stand where they stood and the game's count
+            # of moves left did not change: the game did not take the move, and what reads otherwise is the
+            # reading's (PLAN §31, L4)
+            effect = "absent"
         if isinstance(self.adapter, KitAdapter) and effect == "confirmed" and after.by == L3:
             # a move the game took: whether the count of moves left it shows changed with it
-            self.adapter.tally(self.adapter.ticked(before.png, after.png))
+            self.adapter.tally(self.ticked)
         if effect == "confirmed":
             self._advance_goals(before, action)
             self._learn_beside(before, action, after)
+            self._learn_seen(before, action, after)
         self._learn_ways(before, action, effect)
         if after is not None and after.by == L3 and effect == "confirmed":
             await self._settle(after, (before, action))
@@ -746,6 +786,40 @@ class Agent:
         if L3 in (before.by, after.by if after else None) and not self.taught and (
                 self.stalled >= MAX_STALLED or (self.trial > 0 and not carried_unsure)):
             self._doubt()
+
+    def _taken_back(self, before: Reading, action: dict[str, Any], after: Reading) -> bool:
+        """Whether a move read as taken was not: the family's reader believes the game's count of moves left,
+        that count did not change with the move, and every cell the move names reads as it did before."""
+        if not isinstance(self.adapter, KitAdapter) or after.by != L3 or before.by != L3 \
+                or not self.adapter.counts or self.ticked is not False:
+            return False
+        field = getattr(self.adapter.kit, "field", "grid")
+        try:
+            cells = [action[name] for name in ("cell", "to") if name in action]
+            return bool(cells) and all(after.state[field][r][c] == before.state[field][r][c] for r, c in cells)
+        except (KeyError, IndexError, TypeError):
+            return False
+
+    def _learn_seen(self, before: Reading, action: dict[str, Any], after: Reading) -> None:
+        """What a move the game took shows of its ways by the screens either side of it, where the family's
+        rules leave that open (`observed`: whether a layer under the pieces spreads)."""
+        observed = getattr(self.family.model, "observed", None)
+        if observed is None or self.trace is None:
+            return
+        try:
+            rules = observed(before.state, action, after.state, self.family.rules)
+        except (ValueError, KeyError, IndexError, TypeError):
+            return
+        changed = {name: value for name, value in rules.items() if self.family.rules.get(name) != value}
+        if not changed:
+            return
+        log.info("the game's ways as the screen showed them: %s", changed)
+        meant = getattr(self.family.model, "meant", None)
+        if meant is not None and self.family.rules.get("goals"):
+            changed.update(meant(self.family.rules["goals"], after.state, {**self.family.rules, **changed}))
+        self.trace.rules = {**self.trace.rules, **changed}
+        self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
+        self.ways = {**self.ways, **{name: value for name, value in changed.items() if name != "goals"}}
 
     def _learn_ways(self, before: Reading, action: dict[str, Any], effect: str) -> None:
         """What a move's outcome says of how the game is played, where the family's rules leave that open until
@@ -815,6 +889,72 @@ class Agent:
         state, _ = self._observe(after.png)
         if state is not None:
             after.state = state.payload
+
+    def _blind_to_goals(self) -> str | None:
+        """Why the code's own choice of move is not to be trusted with this level (PLAN §31, L3), or None: the
+        level has goals and the code weighs none of them (`goals_not_weighed`), or the moves it chose gained
+        nothing towards them AIMLESS_MOST times in a row (`no_progress`)."""
+        goals = self.family.rules.get("goals") if self.family is not None else None
+        if not goals or not self.direct or self.policy in (None, "model"):
+            return None
+        if all(goal.get("target") is None for goal in goals):
+            return "goals_not_weighed"
+        return "no_progress" if self.aimless >= AIMLESS_MOST else None
+
+    async def _pick(self, before: Reading, chosen: dict[str, Any], excluded: tuple[dict[str, Any], ...], why: str
+                    ) -> dict[str, Any] | None:
+        """One of the code's best moves as a model picks it, shown the screen and what the rules say each does;
+        None when there is nothing to pick among, the model cannot be asked or it picked none (the code's own
+        choice stands). The model never gives a move of its own: only a move the rules allow is sent."""
+        import base64
+
+        from . import recovery as told, resources
+
+        board = self.adapter.layout["board"] if before.by == L3 and self.adapter is not None and self.adapter.layout \
+            else self.board
+        if board is None or not self._affordable():
+            return None
+        try:
+            ranked = self.family.rank(before.state, self.budget.compute, excluded)
+        except (ValueError, KeyError, IndexError, TypeError):
+            return None
+        if len(ranked) < 2:
+            return None
+        shown, scale = told.view(before.png)
+        shape = _shape(self.family, before.state)
+
+        def middle(cell: list[int]) -> list[int]:
+            left, top, width, height = adaptation.cell_box(board, shape, cell)
+            return [round((left + width / 2) * scale), round((top + height / 2) * scale)]
+        moves = [{"id": number, "from": middle(entry["action"]["cell"]),
+                  **({"to": middle(entry["action"]["to"])} if "to" in entry["action"] else {}),
+                  "clears": entry["cleared"], "makes": POWERS.get(entry["made"]),
+                  "frees": entry["taken"].get(20, 0), "towards_goals": round(entry["towards_goals"], 2)}
+                 for number, entry in enumerate(ranked, 1)]
+        goals = [{"kind": goal.get("kind"), "count": goal.get("count"), "weighed": goal.get("target") is not None}
+                 for goal in self.family.rules.get("goals") or []]
+        asked = {"pick": True, "family": self.family.descriptor["summary"], "screen": list(told._size(shown)),
+                 "goals": goals, "why": why, "moves": moves, **({"hint": self.hint} if self.hint else {})}
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                              "data": base64.b64encode(shown).decode("ascii")}}
+        prompt = (resources.FRAGMENT / "prompts" / "pick_move.md").read_text(encoding="utf-8")
+        self.picks["questions"] += 1
+        try:
+            result = await self._asking(self.model.complete(TurnRequest(
+                system_stable=prompt, max_tokens=PICK_TOKENS, timeout_s=PICK_TIMEOUT_S,
+                messages=[Msg("user", [{"type": "text", "text": json.dumps(asked)}, image])])))
+            answer = json.loads(result.text or "")
+        except Exception as error:
+            log.info("no move was picked: %s", error)
+            return None
+        pick = answer.get("pick") if isinstance(answer, dict) else None
+        if type(pick) is not int or not 1 <= pick <= len(ranked):
+            self.picks["none"] += 1
+            return None
+        self.picks["other"] += pick != 1
+        self.picked = {"pick": pick, "of": len(ranked), "why": why,
+                       **({"because": answer["because"][:200]} if isinstance(answer.get("because"), str) else {})}
+        return ranked[pick - 1]["action"]
 
     def _spent(self, state: str, action: dict[str, Any]) -> None:
         """A move this board did not take: left out when the next is chosen from the same board."""
@@ -904,6 +1044,8 @@ class Agent:
         self.moves.append({"action_id": f"a{self.used}", "kind": action.get("kind"), "action": action, "level": before.by,
                            "read_after_by": after.by if after else None, "delivery": "delivered", "effect": effect,
                            **({"carried": self.carried_as} if action is not None and self.carried_as else {}),
+                           **({"ticked": self.ticked} if self.ticked is not None else {}),
+                           **({"picked": self.picked} if self.picked else {}),
                            # a result the rules did not expect is kept as it was read, with what it was played
                            # from: why it was none is looked for afterwards
                            **({"before_state": before.state, "after_state": after.state}

@@ -39,7 +39,7 @@ GOAL_INSETS, GOAL_NEAR = (0.2, 0.3, 0.4), 1.8
 # still that value's when within this many times `near` and every other value lies this many times as far
 # (2026-11-17, a game's green cup: 20.3 from the green cups on the board, 72.9 from the next value)
 GOAL_FAR, GOAL_RATIO = 3.0, 2.0
-GOAL_KINDS = ("collect", "bring_down", "other")
+GOAL_KINDS = ("collect", "cover", "bring_down", "other")
 # what lies under a cell's piece (`under`) is told by the cell's corners, where the piece does not reach: a square
 # this share of a cell a side, this share in from each corner, each made this many pixels a side; corners nearer
 # than UNDER_NEAR (mean difference a channel, of 255) are one look
@@ -325,11 +325,16 @@ class Match3Kit(Valued):
                 continue
             count = thing.get("count")
             count = count if type(count) is int and count >= 0 else None
-            target = self._pictured(image, thing["box"]) if thing["kind"] != "other" else None
-            if target is None and thing["kind"] == "collect" and layered:
-                # a goal whose picture is like no cell's on a board with layers under its pieces is about those
-                target = UNDER
-            found.append({"kind": thing["kind"], "target": target, "count": count})
+            kind = thing["kind"]
+            target = self._pictured(image, thing["box"]) if kind not in ("other", "cover") else None
+            if kind == "cover":
+                target = UNDER              # a layer to lay under more cells: the goal says what it is about
+            elif target is None and layered and (kind == "collect" or (count is not None and count <= self.rows * self.cols)):
+                # a goal whose picture is like no cell's on a board with layers under its pieces is about those:
+                # also one a model could not put a kind to, when it counts no more than the board has cells (a
+                # score counts more)
+                kind, target = "collect", UNDER
+            found.append({"kind": kind, "target": target, "count": count})
         return found
 
     def _pictured(self, image: Any, box: list[int]) -> int | None:

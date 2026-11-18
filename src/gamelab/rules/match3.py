@@ -14,7 +14,8 @@ A cell is one whole number, and what the rules ask of it is what it does, not wh
     1..10        a piece of that colour: it is swapped, lines up and falls
     11 (BLOCK)   something fixed: not swapped, lines up with nothing, does not fall, pieces rest on it
     12 (LOOSE)   something that falls and is neither swapped nor lined up (an obstacle that drops)
-    20 + colour  a piece held in place (chained, frozen): it lines up as its colour, and is not swapped nor falls
+    20 + colour  a piece held in place (chained, frozen): it lines up as its colour, and is not swapped nor falls.
+                 A line it stands in sets it free: it stays, a piece of its colour from then on
     100 * kind + colour   a piece with a power (`KINDS`), of that colour or of none (0): swapped and falls like
                  a piece, lines up as its colour when it has one
 
@@ -44,8 +45,12 @@ LOOSE = BLOCK + 1
 HELD = 20
 # what a goal about the layers laid under pieces (jelly, grass) is about, and what a move takes of them is counted
 # as: no cell holds it. A state may say how many such layers lie under each cell (`under`, a grid like `grid`): the
-# piece cleared at a cell takes one off it
+# piece cleared at a cell takes one off it. In some games the layer is laid, not taken (grass or carpet to be
+# spread: rule value `spread`): a line with a cell on the layer lays it under the line's other cells, and what a
+# move takes of UNDER is then the cells it newly lays it under (PLAN §31, L2)
 UNDER = 13
+# the kinds of goal about how many of something: things to take off the board, and a layer to lay under more cells
+COUNTED = ("collect", "cover")
 # a piece with a power is POWERED * its kind + its colour (0: none)
 POWERED = 100
 LINE, SEEKER, AREA, COLOUR, POWER = 1, 2, 3, 4, 5
@@ -57,7 +62,7 @@ WAYS = ("square", "swap_power", "pair_power", "tap_power")
 # whether something fixed (BLOCK) is broken by a line cleared beside it, unknown (None) until the screen showed it
 # (PLAN §23, Y3): each is hit once by each wave of lines that clears a cell above, below or beside it
 DEFAULT_RULES = {"rows": 8, "cols": 8, "colours": 6, "square": None, "swap_power": None, "pair_power": None, "tap_power": None,
-                 "goals": None, "beside": None}
+                 "goals": None, "beside": None, "spread": None}
 # what comes in at the top is drawn by the game: it can be sampled, not listed
 CAPABILITIES = ("chance_sampled", "hidden")
 STEPS = ((0, 1), (1, 0))
@@ -336,7 +341,10 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
     until nothing known lines up. Where a power goes off, what it reaches is left unread from there up. `cleared`
     counts the pieces removed, those a power is taken to reach among them; `made` is the power the move earns;
     `taken` what was taken off by what a goal may be about (a piece by its colour), each thing fixed hit beside a
-    line counted as BLOCK; `hit` the things fixed the move's own lines hit."""
+    line counted as BLOCK; `hit` the things fixed the move's own lines hit. A piece held in place that a line or a
+    power reaches is set free and stays (counted as HELD in `taken`). Where the layer under the pieces is one
+    that spreads (`spread`), each line with a cell on it lays it under its other cells, and a power set off on
+    it under what it reaches."""
     grid = state["grid"]
     _require_known(grid)
     made_by = way(state, rules, action)
@@ -352,6 +360,9 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
             if power_of(grid[cell[0]][cell[1]]):
                 partner = next((colour_of(grid[y][x]) for y, x in moved if (y, x) != cell), 0)
                 blown |= _reach(grid, cell, partner)
+    spreads = rules.get("spread") is True and under is not None
+    # a power set off by the move itself lays the layer it stands on under what it reaches
+    laid = spreads and any(power_of(grid[r][c]) and under[r][c] > 0 for r, c in moved)
     first = True
     while True:
         removed = _runs(grid) | (_squares(grid) if first and made_by == "square" else set())
@@ -368,8 +379,19 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
                 blown |= _reach(grid, (r, c))
         gone = (removed | (blown if first else set())) - set(kept)
         gone = {(r, c) for r, c in gone if grid[r][c] is not None and grid[r][c] not in (EMPTY, BLOCK)}
+        # a piece held in place is set free by what reaches it, and stays
+        freed = {(r, c) for r, c in gone if HELD < grid[r][c] < POWERED}
+        gone -= freed
+        if freed:
+            taken[HELD] = taken.get(HELD, 0) + len(freed)
         cleared += len(gone)
-        if under is not None:
+        if spreads:
+            for part in _parts(removed):
+                if any(under[r][c] > 0 for r, c in part):
+                    _lay(under, part, taken)
+            if first and laid:
+                _lay(under, {cell for cell in blown if grid[cell[0]][cell[1]] not in (None, EMPTY)}, taken)
+        elif under is not None:
             # each piece cleared takes one layer off what lies under it (the layer stays where it is: it does not fall)
             for r, c in gone | (removed & set(kept)):
                 if under[r][c] > 0:
@@ -390,6 +412,8 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
         grid = [list(row) for row in grid]
         for (r, c), earned in kept.items():
             grid[r][c] = earned
+        for r, c in freed:
+            grid[r][c] -= HELD
         for what, rows in _lowering(grid, gone).items():
             lowered[what] = lowered.get(what, 0) + rows
         grid = _fall(grid, gone)
@@ -404,6 +428,74 @@ def apply(state: dict, rules: dict, action: dict) -> dict:
         taken.pop(BLOCK, None)
     return {"state": {**state, "grid": grid, **({"under": under} if under is not None else {})}, "cleared": cleared,
             "made": made, "taken": taken, "hit": hit, "lowered": lowered}
+
+
+def _parts(cells: set) -> list[set]:
+    """The cells gathered into those that touch one another by a side."""
+    left, parts = set(cells), []
+    while left:
+        part, edge = set(), [left.pop()]
+        while edge:
+            r, c = edge.pop()
+            part.add((r, c))
+            for cell in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                if cell in left:
+                    left.discard(cell)
+                    edge.append(cell)
+        parts.append(part)
+    return parts
+
+
+def _lay(under: list, cells: set, taken: dict) -> None:
+    """The layer laid under each of `cells` that has none, counted as UNDER taken."""
+    for r, c in cells:
+        if under[r][c] == 0:
+            under[r][c] = 1
+            taken[UNDER] = taken.get(UNDER, 0) + 1
+
+
+def _layered(state: dict) -> int | None:
+    """How many cells have a layer under them; None for a state that says nothing of layers."""
+    under = state.get("under")
+    if not isinstance(under, list):
+        return None
+    return sum(1 for row in under for cell in row if isinstance(cell, int) and cell > 0)
+
+
+def meant(goals, state: dict, rules: dict) -> dict:
+    """What a level's goals as read say of the game's ways, with the goals as they are then meant (PLAN §31, L1):
+    a goal about the layer under the pieces that asks for more cells than have one cannot be about taking it
+    off: the layer is one that spreads, and the goal is to lay it under that many more (`cover`). A goal read as
+    `cover` says so itself. Returns the rule values to set (none when nothing is settled)."""
+    if not isinstance(goals, list):
+        return {}
+    layered, spread = _layered(state), rules.get("spread")
+    out = []
+    for goal in goals:
+        if goal.get("target") == UNDER and goal.get("kind") in COUNTED:
+            asks = goal.get("count")
+            if goal["kind"] == "cover" or (spread is None and layered is not None and type(asks) is int and asks > layered):
+                spread = True
+            goal = {**goal, "kind": "cover" if spread is True else "collect"}
+        out.append(goal)
+    changed = {}
+    if out != goals:
+        changed["goals"] = out
+    if spread is not None and spread != rules.get("spread"):
+        changed["spread"] = spread
+    return changed
+
+
+def observed(before: dict, action: dict, after: dict, rules: dict) -> dict:
+    """The rule values as a move the game took settles them by what the screen showed after it: whether the layer
+    under the pieces spreads, by whether more cells or fewer had one after the move (by two at least: a single
+    cell is as often a misreading). Only a value not settled yet is set."""
+    if rules.get("spread") is not None:
+        return rules
+    was, now = _layered(before), _layered(after)
+    if was is None or now is None or abs(now - was) < 2 or not was:
+        return rules
+    return {**rules, "spread": now > was}
 
 
 def _lowering(grid, gone) -> dict:
@@ -425,14 +517,14 @@ def _lowering(grid, gone) -> dict:
 
 def progress(goals, taken: dict, lowered: dict | None = None, rows: int = 8) -> float:
     """How far a move's `taken` and `lowered` (`apply`) go towards a level's goals: the things a goal to collect
-    is about that it takes, each goal's counted no further than what it still needs (a goal met gains nothing
+    is about that it takes (for a layer to spread, the cells it lays it under), each goal's counted no further than what it still needs (a goal met gains nothing
     more); and for a goal to bring something down, the rows that thing comes down, a board's height counting as
     one brought down."""
     gained = 0.0
     for goal in goals or ():
         if goal.get("target") is None or goal.get("count") == 0:
             continue
-        if goal.get("kind") == "collect":
+        if goal.get("kind") in COUNTED:
             gained += min(taken.get(goal["target"], 0), goal["count"] if goal.get("count") is not None else len(COLOURS) ** 2)
         elif goal.get("kind") == "bring_down":
             gained += (lowered or {}).get(goal["target"], 0) / max(1, rows)
@@ -444,7 +536,7 @@ def advance(goals, taken: dict):
     if not goals:
         return goals
     return [{**goal, "count": max(0, goal["count"] - taken.get(goal["target"], 0))}
-            if goal.get("kind") == "collect" and goal.get("target") is not None and goal.get("count") is not None else goal
+            if goal.get("kind") in COUNTED and goal.get("target") is not None and goal.get("count") is not None else goal
             for goal in goals]
 
 
@@ -544,8 +636,13 @@ def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
         if not removed:
             break
         cleared += len(removed)
-        for r, c in removed if under is not None else ():
-            under[r][c] = max(0, under[r][c] - 1)
+        if under is not None and rules.get("spread") is True:
+            for part in _parts(removed):
+                if any(under[r][c] > 0 for r, c in part):
+                    _lay(under, part, {})
+        else:
+            for r, c in removed if under is not None else ():
+                under[r][c] = max(0, under[r][c] - 1)
         grid = _fall(grid, removed)
     if not legal_actions({"grid": grid}, rules):
         grid = _deal(rules, numbers)

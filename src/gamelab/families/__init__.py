@@ -72,6 +72,12 @@ class GridFamily:
             return solvers.GENERIC[policy].choose(payload, self.rules, self.model, compute, list(excluded))["action"]
         return self.solver.choose(payload, self.rules, policy, compute, list(excluded))["action"]
 
+    def rank(self, payload: dict[str, Any], compute: int, excluded: tuple[dict[str, Any], ...] = ()) -> list[dict[str, Any]]:
+        """The best moves on a fully read state as the family's solver weighs them, best first, each with what
+        the rules say it does (`action`, `cleared`, `made`, `taken`, `towards_goals`); none when the solver ranks none."""
+        rank = getattr(self.solver, "rank", None)
+        return rank(payload, self.rules, compute, list(excluded)) if rank is not None else []
+
     def unread_state(self, scene: str) -> dict[str, Any]:
         """The state of a screen whose board's place the game's own `scene` message fills."""
         return self.model.unread_state(self.rules, scene)

@@ -694,7 +694,13 @@ async def test_layers_under_pieces_are_read_by_the_cells_corners_and_a_goal_to_c
     left = sum(map(sum, fake.state["under"]))
     # the moves went for the layers: most are cleared, and the count kept is what the screen shows
     assert left <= 1 and goal["count"] <= left, (left, goal)        # with no goal about them, 3 were left
-    assert [kind for kind, _ in model.asked] == ["label"], model.asked
+    # read by a model once; when the moves the code chose stopped gaining on the goal, a model was asked to pick
+    # among them (PLAN §31, L3), and with no pick the code's own choice stood
+    assert [kind for kind, context in model.asked if not context.get("pick")] == ["label"], model.asked
+    picks = [context for _, context in model.asked if context.get("pick")]
+    assert all(context["why"] == "no_progress" and context["goals"][0]["weighed"] and len(context["moves"]) >= 2
+               for context in picks)
+    assert made["kit"].get("picks", {"questions": 0})["questions"] == len(picks)
 
 
 def test_a_goals_picture_drawn_shaded_is_still_the_value_its_looks_are_nearest_by_far_and_one_like_none_is_none():

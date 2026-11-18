@@ -1,7 +1,7 @@
 {
   "id": "match3",
-  "revision": 4,
-  "summary": "A grid of pieces of a few colours, not always a rectangle. Each move swaps two neighbouring pieces so that three or more of one colour stand in a line. Those are removed, the pieces above fall and new ones come in at the top; lines that form as they fall are removed too. A swap that lines nothing up is undone. A cell may hold something that is not a piece (an obstacle): it is never swapped and lines up with nothing. A move that lines up four or more, or four in a square, leaves a piece with a power, which clears more when it is lined up, swapped or tapped.",
+  "revision": 5,
+  "summary": "A grid of pieces of a few colours, not always a rectangle. A move swaps two neighbouring pieces so that three or more of one colour line up; those are removed, pieces above fall, new ones come in, and lines that form so are removed too. A swap that lines nothing up is undone. An obstacle is never swapped and lines up with nothing. A piece held in place (chained, frozen) is not swapped but lines up by its colour, which frees it. Four or more in a line, or four in a square, leave a piece with a power. A layer under the pieces (jelly, grass) is taken off by clearing or spread by lines on it.",
   "state_schema": "match3.v1",
   "board": {
     "shape": "grid",
@@ -25,10 +25,10 @@
     ]
   },
   "state_fields": {
-    "grid": "the rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is the number of its colour (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; the nearest, and always the same number for the same kind of piece); a piece with a power (striped, wrapped, a rocket, a bomb, a propeller, a colour ball) is 500 plus its colour's number, or 500 with no colour; 11 something fixed that is no piece (an obstacle, a covered or locked cell), 12 such a thing that falls; 0 no cell or nothing in it; null a cell nobody read",
+    "grid": "rows of the grid's bounding rectangle from the top, each a list of cells from the left: a piece is its colour's number (1 red, 2 orange, 3 yellow, 4 green, 5 blue, 6 purple, 7 pink, 8 white, 9 cyan, 10 brown; always the same for one kind of piece); a piece with a power (striped, a rocket, a bomb) is 500 plus its colour's number, or 500 with no colour; a piece held in place that still shows its colour (chained, frozen) is 20 plus its colour's number; 11 something fixed that shows no piece (a box, a locked cell), 12 such a thing that falls; 0 no cell or nothing in it; null a cell nobody read",
     "score": "the game's score as read, or null",
     "scene": "the id of the scene the screen shows",
-    "under": "only when some cell of the board has something laid under its piece that clearing the piece breaks (jelly, grass, a tinted tile): the rows of the same rectangle, each cell the number of such layers under it (0 none); leave the field out when no cell has any"
+    "under": "only when some cell of the board has something laid under its piece (jelly, grass, carpet, a tinted tile; whether clearing the piece takes it off or a line spreads it): the rows of the same rectangle, each cell the number of such layers under it (0 none); leave the field out when no cell has any"
   },
   "actions": [
     {
@@ -122,7 +122,7 @@
       }
     },
     "goals": {
-      "description": "the level's goals as the screen showed them: each its kind (collect, bring_down, other), the value of the cells it is about (null when nothing on the board looks like its picture) and how many are still to go; null until a screen showed them",
+      "description": "the level's goals as the screen showed them: each its kind (collect, cover, bring_down, other), the value of the cells it is about (null when nothing on the board looks like its picture) and how many are still to go; null until a screen showed them",
       "values": {
         "type": [
           "array",
@@ -139,6 +139,7 @@
             "kind": {
               "enum": [
                 "collect",
+                "cover",
                 "bring_down",
                 "other"
               ]
@@ -162,6 +163,15 @@
     },
     "beside": {
       "description": "whether something fixed that is no piece (an obstacle, a box) is broken, a layer at a time, by a line cleared beside it; null until the game showed it",
+      "values": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "spread": {
+      "description": "whether the layer under the pieces is one a line spreads (a line with a cell on it lays it under its other cells) and not one clearing takes off; null until a goal or the game showed it",
       "values": {
         "type": [
           "boolean",
@@ -198,7 +208,7 @@
     "tolerance": 4,
     "panel": {
       "moves": "the tight box [left, top, width, height] in whole-screen image pixels around the number of moves (or the time) left in this level, the digits alone",
-      "goals": "a list with one entry per goal of the level the screen shows (beside or above the board): {\"box\": the tight box [left, top, width, height] in whole-screen image pixels around the goal's picture alone, \"count\": the number shown with it, how many are still to go (0 when it shows a tick), \"kind\": \"collect\" (clear or collect that many of the thing pictured), \"bring_down\" (bring the thing pictured to the bottom of the board) or \"other\" (a score to reach, or anything else)}"
+      "goals": "a list with one entry per goal of the level the screen shows (beside or above the board): {\"box\": the tight box [left, top, width, height] in whole-screen image pixels around the goal's picture alone, \"count\": the number shown with it, how many are still to go (0 when it shows a tick), \"kind\": \"collect\" (clear or collect that many of the thing pictured), \"cover\" (lay the thing pictured, a layer such as grass or carpet, under that many more cells of the board by making lines on it), \"bring_down\" (bring the thing pictured to the bottom of the board) or \"other\" (a score to reach, or anything else)}"
     }
   },
   "policies": [

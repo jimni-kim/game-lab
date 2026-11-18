@@ -11,8 +11,8 @@ board only parts moves otherwise alike.
 """
 from __future__ import annotations
 
-from ..rules.match3 import (AREA, BLOCK, COLOUR, LINE, POWERED, SEEKER, _line, _piece, _square_through, _swapped,
-                            apply, colour_of, legal_actions, progress, way)
+from ..rules.match3 import (AREA, BLOCK, COLOUR, COUNTED, HELD, LINE, POWERED, SEEKER, _line, _piece, _square_through,
+                            _swapped, apply, colour_of, legal_actions, progress, way)
 
 POLICIES = ("first", "greedy")
 # what a piece with a power is counted as when a move earns one: about the pieces it clears when used
@@ -20,6 +20,10 @@ WORTH = {LINE: 6, SEEKER: 3, AREA: 7, COLOUR: 10}
 # a move that meets every goal; one goal's thing taken; a piece with a power, by what it is worth (WORTH: 6 a line);
 # two set off together; a piece cleared
 WIN, GOAL, POWER, PAIR, PIECE = 100_000.0, 100.0, 2.5, 60.0, 1.0
+# a piece held in place set free: more than a piece cleared, since it opens the board
+FREED = 3.0
+# the moves a model is shown to pick among when the goals are none the code can weigh (`rank`)
+RANKED = 6
 # a move is also worth this share of the best move it leaves among the pieces known, of the best moves it was
 # found among this many
 AHEAD, AHEAD_MOST = 0.5, 12
@@ -41,6 +45,18 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
         return {"action": None, "nodes": 0}
     if policy == "first":
         return {"action": moves[0], "nodes": 1}
+    ranked, nodes = _ranked(state, rules, moves, budget)
+    return {"action": ranked[0]["action"], "nodes": nodes}
+
+
+def rank(state: dict, rules: dict, budget: int, excluded: list[dict] = (), most: int = RANKED) -> list[dict]:
+    """The best moves as the greedy policy weighs them, best first, each with what the rules say it does: for
+    whoever picks among them knowing what the code does not (PLAN §31, L3)."""
+    moves = [action for action in legal_actions(state, rules) if action not in excluded]
+    return _ranked(state, rules, moves, budget)[0][:most] if moves else []
+
+
+def _ranked(state: dict, rules: dict, moves: list[dict], budget: int) -> tuple[list[dict], int]:
     goals = rules.get("goals") or []
     rows = len(state["grid"])
     scored, nodes = [], 0
@@ -54,15 +70,16 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
             worth += PAIR
         scored.append((worth, index, action, result))
     scored.sort(key=lambda entry: (-entry[0], entry[1]))
-    best, best_key = None, None
+    ranked = []
     for worth, index, action, result in scored[:AHEAD_MOST] if nodes < budget else scored[:1]:
         nodes += 1
         later = _ahead(result["state"]["grid"], rules, goals)
         low = (action["cell"][0] + action.get("to", action["cell"])[0]) / (2 * rows)
-        key = worth + AHEAD * later + LOW * low
-        if best_key is None or key > best_key:
-            best, best_key = action, key
-    return {"action": best, "nodes": nodes}
+        ranked.append({"action": action, "key": worth + AHEAD * later + LOW * low, "index": index,
+                       "cleared": result["cleared"], "made": result["made"] // POWERED, "taken": result["taken"],
+                       "towards_goals": progress(goals, result["taken"], result["lowered"], rules.get("rows", 8))})
+    ranked.sort(key=lambda entry: (-entry["key"], entry["index"]))
+    return ranked, nodes
 
 
 def _worth(taken: dict, cleared: int, made: int, goals: list, rules: dict, lowered: dict | None = None) -> float:
@@ -73,7 +90,8 @@ def _worth(taken: dict, cleared: int, made: int, goals: list, rules: dict, lower
     worth = GOAL * gained + POWER * WORTH.get(made // POWERED, 0) + PIECE * cleared
     if not any(goal.get("target") == BLOCK for goal in goals):
         worth += PIECE * taken.get(BLOCK, 0)
-    collect = [goal for goal in goals if goal.get("kind") == "collect" and goal.get("target") is not None
+    worth += FREED * taken.get(HELD, 0)
+    collect = [goal for goal in goals if goal.get("kind") in COUNTED and goal.get("target") is not None
                and goal.get("count") is not None]
     if collect and all(taken.get(goal["target"], 0) >= goal["count"] for goal in collect) \
             and len(collect) == len([goal for goal in goals if goal.get("kind") != "other"]):
