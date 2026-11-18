@@ -276,11 +276,22 @@ def legal_actions(state: dict, rules: dict) -> list[dict]:
                 action = {"kind": "swap", "cell": [r, c], "to": [r2, c2]}
                 if way(state, rules, action) is not None:
                     found.append(action)
-    # a power is tapped only by a game seen to take it, or when it can be used no other way
+    # a power is tapped only by a game seen to take it, or when it can be used no other way: the game takes no
+    # power swapped, or nothing beside this one can be swapped with it (empty places, pieces held in place, things
+    # fixed all round it: 2026-11-18, a sparse board whose every power stood so offered no move at all)
     powers = [[r, c] for r in range(len(grid)) for c in range(len(grid[0])) if power_of(grid[r][c])]
     if rules.get("tap_power") or (rules.get("tap_power") is None and rules.get("swap_power") is False):
         found.extend({"kind": "pop", "cell": cell} for cell in powers)
+    elif rules.get("tap_power") is None:
+        found.extend({"kind": "pop", "cell": cell} for cell in powers if _boxed(grid, cell))
     return found
+
+
+def _boxed(grid, cell) -> bool:
+    """Whether nothing beside `cell` holds a piece it could be swapped with."""
+    r, c = cell
+    return not any(0 <= r + dr < len(grid) and 0 <= c + dc < len(grid[0]) and _piece(grid[r + dr][c + dc])
+                   for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)))
 
 
 def learned(before: dict, action: dict, effect: str, rules: dict) -> dict:

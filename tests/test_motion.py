@@ -304,7 +304,7 @@ async def test_a_family_whose_board_a_tutorial_hid_is_gone_back_to_once_the_mode
     fake = Tutorial()
     model = Guide(fake)
     played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(6, COMPUTE, 60))
-    assert made["resumes"] == [{"family": "minesweeper", "at_action": 1, "taken": True}], (played.record, made)
+    assert made["resumes"] == [{"family": "minesweeper", "at_action": 1, "taken": True, "read_by": "model"}], (played.record, made)
     assert played.record["family"] == "minesweeper" and played.record["levels"]["L0"] == 1
     assert played.record["levels"]["L2"] >= 1 and fake.played >= 1
 
@@ -333,7 +333,7 @@ async def test_the_family_is_tried_again_after_some_of_the_models_own_moves_even
     fake = Mines(draw=0)
     model = Slow(fake)
     played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(8, COMPUTE, 60))
-    assert made["resumes"] == [{"family": "minesweeper", "at_action": 4, "taken": True}], (played.record, made)
+    assert made["resumes"] == [{"family": "minesweeper", "at_action": 4, "taken": True, "read_by": "model"}], (played.record, made)
     assert played.record["levels"]["L0"] == 4 and played.record["levels"]["L2"] >= 1
 
 

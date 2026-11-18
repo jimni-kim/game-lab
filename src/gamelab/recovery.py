@@ -30,6 +30,11 @@ from .model import Model, Msg, TurnRequest
 log = logging.getLogger("gamelab.recovery")
 
 TAP, KEY, SWIPE, WAIT, NONE, GIVE_UP, BACK, STOP = "tap", "key", "swipe", "wait", "none", "give_up", "back", "stop"
+# the game will not open a level until time gives back its lives (hearts, energy): the work is handed back with how
+# long until the next one, nothing waited for or bought (PLAN §26, C2-4)
+OUT_OF_LIVES = "out_of_lives"
+# the longest wait for a life a model may tell, in minutes
+LIFE_MINUTES_MOST = 24 * 60
 # why play stopped when the level on the screen ended before any move of this part of the work, and the work goes
 # on to the next (`agent.Agent.onward`)
 NEXT_LEVEL = "next_level"
@@ -123,10 +128,30 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
     if kind == WAIT and type(action.get("ms")) is int and 0 < action["ms"] <= MAX_WAIT_MS:
         return {"kind": WAIT, "ms": action["ms"]}
     if kind == GIVE_UP and action.get("end") in ENDS:
-        return {"kind": kind, "end": action["end"]}
+        return {"kind": kind, "end": action["end"], **left_of(action)}
+    if kind == OUT_OF_LIVES:
+        return {"kind": kind, "minutes": minutes(action.get("minutes"))}
     if kind in (NONE, GIVE_UP, BACK, STOP):
         return {"kind": kind}
     return None
+
+
+def minutes(value: Any) -> float | None:
+    """How long until the next life, as a model read it off the screen; None when it gave no such number."""
+    return value if type(value) in (int, float) and 0 <= value <= LIFE_MINUTES_MOST else None
+
+
+def left_of(action: dict[str, Any]) -> dict[str, int]:
+    """The moves a level ended with, as the model saw them on the screen of its end (PLAN §26, C2-6)."""
+    left = action.get("moves_left")
+    return {"moves_left": left} if type(left) is int and 0 <= left <= 999 else {}
+
+
+def profile(action: Any) -> str | None:
+    """What an input made of a name or profile the game would not go on without (PLAN §26, C2-5), as the model
+    marked it; None for an input that made none."""
+    made = action.get("profile") if isinstance(action, dict) else None
+    return made.strip()[:40] if isinstance(made, str) and made.strip() else None
 
 
 def uses(action: Any) -> list[str] | None:
@@ -154,7 +179,7 @@ async def send(surface: Any, action: dict[str, Any]) -> None:
 class Recovery:
     def __init__(self, model: Model, family_id: str | None, *, known: list[dict[str, Any]] | None = None,
                  accept_consent: bool = False, allowed: frozenset[str] = frozenset(), stops: tuple[str, ...] = (),
-                 account: dict[str, dict[str, int]] | None = None) -> None:
+                 account: dict[str, dict[str, int]] | None = None, profiles: list[dict[str, Any]] | None = None) -> None:
         # `family_id` None: the game is not known yet (a screen before any board was seen)
         self.model, self.family_id, self.accept_consent = model, family_id, accept_consent
         # what the person allowed beyond the board (`META_ACTIONS` names) and the conditions they stop at
@@ -163,6 +188,8 @@ class Recovery:
         # gives one, so that a recovery made anew for another family adds to the same
         account = account if account is not None else {"used": {}, "refused": {}}
         self.used, self.refused = account.setdefault("used", {}), account.setdefault("refused", {})
+        # the names and profiles the game made its player make, for the work to tell (shared with the game's own)
+        self.profiles = profiles if profiles is not None else []
         # inputs that brought play back, each with the small picture of the screen it was sent on
         self.known: list[dict[str, Any]] = list(known or [])
         # every time the code was stuck and what was done about it, for whoever measures the run
@@ -185,7 +212,7 @@ class Recovery:
         else:
             action = await self._ask(png, reason, context, surface.kinds, entry, timeout_s)
         entry["action"] = action
-        if action is None or action["kind"] in (NONE, GIVE_UP, STOP):
+        if action is None or action["kind"] in (NONE, GIVE_UP, STOP, OUT_OF_LIVES):
             return False
         refused = [name for name in action.get("uses", []) if name not in self.allowed
                    and not (action.get("forced_free") and name in FORCED_FREE)]
@@ -206,6 +233,8 @@ class Recovery:
             return False
         for name in action.get("uses", []):
             self.used[name] = self.used.get(name, 0) + 1
+        if action.get("profile"):
+            self.profiles.append({"made": action["profile"], "situation": entry["situation"] or ""})
         if action.get("forced_free"):
             self.used["forced_free"] = self.used.get("forced_free", 0) + 1
         self.tried.append({"action": action, "screen_changed": entry["changed"], "signature": seen,
@@ -295,6 +324,8 @@ class Recovery:
                 action["forced_free"] = True
         if action["kind"] == STOP and isinstance(answer["action"].get("because"), str):
             entry["because"] = answer["action"]["because"][:200]
+        if action["kind"] in (TAP, KEY) and (made := profile(answer["action"])) is not None:
+            action["profile"] = made
         # the model answered in the pixels of the picture it was shown: the input is sent in the screen's
         return action if action is None or scale == 1.0 else {
             key: [part / scale for part in value] if key in ("at", "from", "to") else value for key, value in action.items()}

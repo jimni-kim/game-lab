@@ -44,6 +44,7 @@ from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
 TAP, KEY, SWIPE, TEXT, WAIT, DONE, GIVE_UP, STOP = "tap", "key", "swipe", "text", "wait", "done", "give_up", "stop"
+OUT_OF_LIVES = recovery.OUT_OF_LIVES
 DOUBLE_TAP, LONG_PRESS, DRAG, SCROLL, BACK = "double_tap", "long_press", "drag", "scroll", "back"
 RIGHT_TAP, RELAUNCH, SEQUENCE = "right_tap", "relaunch", "sequence"
 # how a game the model says is over ended
@@ -148,7 +149,9 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
             and set(action["text"]) <= TYPED:
         return {"kind": TEXT, "text": action["text"]}
     if kind == DONE and action.get("end") in ENDS:
-        return {"kind": DONE, "end": action["end"]}
+        return {"kind": DONE, "end": action["end"], **recovery.left_of(action)}
+    if kind == OUT_OF_LIVES:
+        return {"kind": OUT_OF_LIVES, "minutes": recovery.minutes(action.get("minutes"))}
     if kind == GIVE_UP:
         return {"kind": GIVE_UP}
     if kind == STOP:
@@ -338,9 +341,11 @@ class Direct:
             action = scaled(action, scale)
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
         because = answer["action"].get("because") if action["kind"] == STOP else None
+        made = recovery.profile(answer["action"]) if action["kind"] in (TAP, TEXT, KEY, SEQUENCE) else None
         return {"action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
-                **({"because": because[:200]} if isinstance(because, str) else {})}
+                **({"because": because[:200]} if isinstance(because, str) else {}),
+                **({"profile": made} if made is not None else {})}
 
     def saw(self, answer: dict[str, Any], before: bytes, after: bytes, moving: list[list[int]] | None = None,
             carried: dict[str, Any] | None = None, repeated: dict[str, Any] | None = None) -> bool:

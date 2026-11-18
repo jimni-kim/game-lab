@@ -38,6 +38,8 @@ log = logging.getLogger("gamelab.work")
 LEVELS = "levels"
 # a part that ended without a move of its own, a level counted for nothing: the work does not go round again on it
 EMPTY_MOST = 1
+# the times a family was tried again, or let go, told of each part
+RESUMES_TOLD = 8
 
 
 class _Numbered:
@@ -83,6 +85,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     if levels and (type(goal.target_value) is not int or goal.target_value < 1):
         raise ValueError("goal_target_missing")
     parts: list[tuple[Run, dict[str, Any]]] = []
+    # each part's own seconds, from its start to its end (between-level screens before its level included)
+    lasted: list[float] = []
     used = confirmed = tokens_in = tokens_out = questions = 0
     won = lost = empty = 0
     ended: tuple[str, str, str] | None = None
@@ -101,10 +105,12 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         part = replace(goal, scope=Scope.CURRENT_GAME) if not levels else GoalSpec(
             "play_until_end", scope=Scope.CURRENT_GAME, stop_conditions=goal.stop_conditions,
             allowed_meta_actions=goal.allowed_meta_actions)
+        began = time.monotonic()
         run, adapted = await agent.play(surface, model, family_id, goal=part, budget=left, cancel=cancel,
                                         watch=_Numbered(watch, used) if watch is not None and parts else watch,
                                         fresh=fresh and not parts, onward=levels, **{**options, "notes": notes})
         parts.append((run, adapted))
+        lasted.append(round(time.monotonic() - began, 1))
         record = run.record
         used, confirmed = used + record["actions_used"], confirmed + record["confirmed_actions"]
         tokens_in, tokens_out = tokens_in + adapted["tokens"]["input"], tokens_out + adapted["tokens"]["output"]
@@ -151,17 +157,11 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
                 stopped = {"screen": named["scene"], "situation": named["situation"]}
         except Exception as error:
             log.info("the last screen could not be named: %s", error)
+    profiles = [made for _, adapted in parts for made in adapted.get("profiles") or ()]
     handback = {
         "goal": goal.to_json(), "outcome": outcome, "reason": reason, "detail": detail,
         "levels": {"wanted": goal.target_value, "won": won, "lost": lost} if levels else None,
-        "parts": [{"outcome": run.record["outcome"], "reason": run.record["reason"], "family": run.record.get("family"),
-                   "actions": run.record["actions_used"], "confirmed": run.record["confirmed_actions"],
-                   "level_moves": run.record.get("level_moves"),
-                   # what the family made of the level: its goals as read, the ways it learned, the moves a model
-                   # picked among the code's (PLAN §31)
-                   **{name: (adapted.get("kit") or {})[name] for name in ("goals_seen", "ways", "picks")
-                      if (adapted.get("kit") or {}).get(name)},
-                   "used": (adapted.get("account") or {}).get("used") or {}} for run, adapted in parts],
+        "parts": [_part(run, adapted, seconds) for (run, adapted), seconds in zip(parts, lasted)],
         "spent": {"inputs": used, "moves": confirmed, "used": account["used"], "refused": account["refused"],
                   "tokens": {"input": tokens_in, "output": tokens_out}, "questions": questions,
                   "seconds": round(time.monotonic() - started, 1)},
@@ -171,6 +171,10 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
                        "in_play": last.get("scene") == "playing"
                        and outcome not in (Outcome.GOAL_REACHED, Outcome.GAME_OVER)},
         "resume": {"where": site, "scope": str(Scope.CURRENT_GAME)},
+        # the game opens no level until time gives a life back: how long until the next (PLAN §26, C2-4)
+        **({"out_of_lives": last["out_of_lives"]} if reason == agent.OUT_OF_LIVES and last.get("out_of_lives") else {}),
+        # names and profiles the game would not go on without, and what they were made as (C2-5)
+        **({"profiles": profiles} if profiles else {}),
     }
     moves = [{**move, "part": number} for number, (run, _) in enumerate(parts, 1) for move in run.moves]
     record = {**last_run.record, "outcome": outcome, "reason": reason, "detail": detail, "goal": goal.to_json(),
@@ -184,11 +188,33 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
                  "seconds": round(sum(adapted["seconds"] for _, adapted in parts), 1), "account": account, "work": handback}
 
 
+def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
+    """One part of the work as handed back: how it ended and what it spent (PLAN §26, C2-6), what the family made
+    of the level (its goals as read, the ways it learned, the moves a model picked among the code's: PLAN §31), and
+    each time the family's play was handed to the model and why (C2-1)."""
+    record, kit = run.record, adapted.get("kit") or {}
+    return {"outcome": record["outcome"], "reason": record["reason"], "family": record.get("family"),
+            "actions": record["actions_used"], "confirmed": record["confirmed_actions"],
+            "level_moves": record.get("level_moves"),
+            "seconds": seconds, "input_tokens": (adapted.get("tokens") or {}).get("input"),
+            "questions": adapted.get("questions"),
+            **({"moves_left": adapted["moves_left"]} if adapted.get("moves_left") is not None else {}),
+            **{name: kit[name] for name in ("goals_seen", "ways", "picks") if kit.get(name)},
+            **({"resumes": adapted["resumes"][-RESUMES_TOLD:]} if adapted.get("resumes") else {}),
+            **({"let_go": adapted["let_go"][-RESUMES_TOLD:]} if adapted.get("let_go") else {}),
+            "used": (adapted.get("account") or {}).get("used") or {}}
+
+
 def told(handback: dict[str, Any]) -> str:
     """The handback in a few words for a person: why it stopped, what was done and spent, where it stands."""
     spent, levels, stopped = handback["spent"], handback["levels"], handback["stopped_at"]
     done = f"levels won {levels['won']} of {levels['wanted']}, lost {levels['lost']}; " if levels else ""
     used = ", ".join(f"{name} {count}" for name, count in sorted(spent["used"].items())) or "nothing beside the board"
+    lives = handback.get("out_of_lives")
+    waits = "" if lives is None else "; out of lives" + (
+        f", next life in {lives['minutes']:g} min" if lives.get("minutes") is not None else ", time to the next life not shown")
+    names = "; ".join(f"a name or profile window came up and was passed as {made['made']!r}"
+                      for made in handback.get("profiles") or ())
     return (f"{handback['outcome']} ({handback['reason']}): {done}{spent['inputs']} inputs, {spent['moves']} moves, "
             f"used {used}; stopped at {stopped['where']}" + (f" ({stopped['screen']})" if stopped.get("screen") else "")
-            + (f": {stopped['situation']}" if stopped["situation"] else ""))
+            + (f": {stopped['situation']}" if stopped["situation"] else "") + waits + (f"; {names}" if names else ""))

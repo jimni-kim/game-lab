@@ -106,6 +106,8 @@ RESUME_SHARE, RESUMES_MOST = 0.3, 3
 # and when this many of its moves were confirmed since it was last tried: a scene that changes a little at a time
 # (a tutorial's last step giving way to the game's board) shows no such change
 RESUME_EVERY = 4
+# the times play by a family was handed to the model kept for the record
+LET_GO_KEPT = 12
 # moves in a row the game did not take, with none taken between them, after which play by the family's rules is
 # left to the model's own inputs: the rules allow what the game does not (a tutorial that takes one move only, a
 # game taken for another), and leaving out each refused move alone never ends where many moves are allowed
@@ -126,6 +128,7 @@ POWERS = {1: "line", 2: "seeker", 3: "area", 4: "colour", 5: "power"}
 SWIPES = {"ArrowLeft": (-1, 0), "ArrowRight": (1, 0), "ArrowUp": (0, -1), "ArrowDown": (0, 1)}
 SWIPE_SPAN, SWIPE_MS = 0.6, 120
 WON = "won"
+OUT_OF_LIVES = recovering.OUT_OF_LIVES
 # what a light model is asked of one cell cut out of a board, and what it is told of the game
 LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
                   "with a little of its neighbours around it.")
@@ -231,6 +234,8 @@ class Agent:
         self.unread_at: int | None = None
         # what the inputs sent used up beyond the board, and what inputs not sent would have (PLAN §25, R2)
         self.account: dict[str, dict[str, int]] = {"used": {}, "refused": {}}
+        # the names and profiles the game would not go on without, as made by a model's inputs (PLAN §26, C2-5)
+        self.profiles: list[dict[str, Any]] = []
         # what names a single cell cut out of the screen when the family's reader and the rules cannot (`checker`:
         # a light model); None: such a cell is the reading model's
         self.light = light
@@ -345,6 +350,13 @@ class Agent:
         self.resumed = False
         # the model's own moves confirmed since the family was last tried
         self.since_tried = 0
+        # moves the family sent since it was last taken, and whether the screen it was last taken on was one the
+        # model named a level's board (it is then no screen between two levels, whatever the family's reader
+        # makes of it)
+        self.since_taken = 0
+        self.on_board = False
+        # each time play by a family was handed to the model's own inputs, and why (`_let_go`)
+        self.let_go: list[dict[str, Any]] = []
         # moves in a row the game did not take (`FRUITLESS_MOST`)
         self.fruitless = 0
         # the model's own play, kept when play goes back to a family and comes back to it
@@ -397,6 +409,7 @@ class Agent:
                 "scene": self.state.get("scene") if isinstance(self.state, dict) else None,
                 "screen": self.screen,
                 "situation": self.player.situation if self.player is not None and self.policy == "model" else self._situation(),
+                **({"profiles": list(self.profiles)} if self.profiles else {}),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
     def _kit_summary(self) -> dict[str, Any] | None:
@@ -523,7 +536,7 @@ class Agent:
 
     def _recovery(self, family_id: str | None, known: list[dict[str, Any]] | None) -> Recovery:
         return Recovery(self.model, family_id, known=known, accept_consent=self.accept_consent, account=self.account,
-                        allowed=self.goal.allowed_meta_actions, stops=self.goal.stop_conditions)
+                        allowed=self.goal.allowed_meta_actions, stops=self.goal.stop_conditions, profiles=self.profiles)
 
     def _restore(self, family_id: str, profile: dict[str, Any]) -> bool:
         """The family's reader as it was kept for this site: the game is read by it from the first screen, and
@@ -676,7 +689,7 @@ class Agent:
             before = await self._read(held)
             if before is None:
                 self.unread_move = held
-                await self._unstick(self.why)
+                await self._unstick(self.why, "read")
                 return
             if self.fresh_scene:
                 self.fresh_scene, held = False, None
@@ -685,14 +698,14 @@ class Agent:
         self.state = before.state
         if self._passed(before.state):
             # the level on the screen ended before any move here, and the work goes on to the next
-            await self._unstick(NEXT_LEVEL)
+            await self._unstick(NEXT_LEVEL, "ended")
             return
         self._judge(before.state)
         excluded = self.ineffective["actions"] if self.ineffective and self.ineffective["state"] == before.id else []
         action = self.family.choose(before.state, self.policy, self.budget.compute, tuple(excluded))
         if action is None or action["kind"] in self.family.meta_actions:
             # every move this board offers was tried without effect, or the game waits at a message of its own
-            await self._unstick("absent" if action is None else action["kind"])
+            await self._unstick("absent" if action is None else action["kind"], "no_move" if action is None else "message")
             return
         why, self.picked = self._blind_to_goals(), None
         if why is not None:
@@ -708,6 +721,7 @@ class Agent:
         sending_at = time.monotonic()
         await self._send(sent, before, action)
         self.used += 1
+        self.since_taken += 1
         if self.watch is not None:
             await self.watch.sent()
         sent_at = time.monotonic()
@@ -776,7 +790,7 @@ class Agent:
             self._drop_unproven()
         if after is None and self.why == "label_failed":
             # the model saw no board where the move's result should be: what is in the way is dealt with now
-            await self._unstick(self.why)
+            await self._unstick(self.why, "read")
             return
         # the adapter is doubted for a move it read either side of: a board it read wrongly is as often the
         # one after the move (a place it takes for empty) as the one before
@@ -966,6 +980,7 @@ class Agent:
         the family once some of those are confirmed (`_resume`)."""
         log.info("the family is left: %s", reason)
         self.failures.append({"reason": "family_left", "detail": reason})
+        self._let_go(reason, "fruitless")
         self.fruitless = self.since_tried = 0
         if self.resumable is None and (self.game is None or self.family_id != self.game.id):
             self.resumable = self.family_id
@@ -1105,9 +1120,11 @@ class Agent:
                 return None
             if self.rewrites >= MAX_RELEARNS:
                 self._demote("relearn_limit")
-            elif expect is None and self._before_any() and self.direct:
+            elif expect is None and self._before_any() and self.direct and not self.on_board:
                 # no level is open as far as the reader sees, and none was played here yet: the screen is one
-                # between two levels, the model's to look at as that (`_between`), not to read a board from
+                # between two levels, the model's to look at as that (`_between`), not to read a board from.
+                # Not when the family was just taken on a screen the model named a level's board: the model's
+                # reading of it, which the rules check, is played from then (PLAN §26, C2-3)
                 return None
             elif self.unread is None and expect is None:
                 # nothing vouches for what the model will read here until a move from it is confirmed
@@ -1660,13 +1677,16 @@ class Agent:
 
     # ── a screen that stopped play ────────────────────────────────────
 
-    async def _unstick(self, reason: str) -> None:
+    async def _unstick(self, reason: str, stage: str = "") -> None:
         """Play cannot go on from this screen: a model is shown it and sends one input of its own (L0), and
         the screen is looked at again. The game ends when the model sees its end on the screen, sees nothing
-        to do, or MAX_TRIES inputs in a row brought no confirmed move."""
+        to do, or MAX_TRIES inputs in a row brought no confirmed move. `stage`: where the family's play stopped
+        (the screen not read as its board, the level read as ended, no move on it, a message of the game's)."""
         if reason == "inconsistent" and (await self._rules_again() or await self._other_family()):
             return
         if self._before_any():
+            if self.direct:
+                self._let_go(reason, stage)
             # whatever stands in the way, the next level is what is looked for
             reason = NEXT_LEVEL
             if self.direct:
@@ -1693,6 +1713,10 @@ class Agent:
         self.screen = self.recovery.log[-1].get("scene") or self.screen
         if action.get("kind") == STOP:
             raise _End(Outcome.STOPPED, "stop_condition", self.recovery.log[-1].get("because") or self._situation())
+        if action.get("kind") == recovering.OUT_OF_LIVES:
+            self._out_of_lives(action, self._situation())
+        if "moves_left" in action:
+            self.found["moves_left"] = action["moves_left"]
         if action.get("kind") == GIVE_UP and "end" in action and self._before_any():
             # the end of the level before this part, which was to be passed for the next: no next level was found
             raise _End(Outcome.GAVE_UP, "next_level_not_found", self._situation())
@@ -1706,6 +1730,37 @@ class Agent:
         if await self._other_family():
             return
         await self._give_up(reason)
+
+    def _out_of_lives(self, action: dict[str, Any], situation: str) -> None:
+        """The game opens no level until time gives a life back, and buying one or watching an advertisement for
+        it is not done: nothing is waited for, the work is handed back with how long until the next life (PLAN
+        §26, C2-4)."""
+        self.found["out_of_lives"] = {"minutes": action.get("minutes"), "situation": situation}
+        raise _End(Outcome.STOPPED, OUT_OF_LIVES, situation)
+
+    def _let_go(self, why: str, stage: str) -> None:
+        """Play by the family is handed to the model's own inputs: why, kept for the record (PLAN §26, C2-1). A
+        family taken again on a screen the model named a board and let go before a move of its own is tried again
+        only some inputs on, as one that did not read the screen is (C2-2): else the tries a game has are all used
+        up on the level's first screen."""
+        if self.family_id is None or self.policy == "model":
+            return
+        entry = {"at_action": self.used, "family": self.family_id, "stage": stage or "other", "why": why,
+                 "moves": self.since_taken, "resumed": self.resumed, "on_board": self.on_board}
+        if stage == "no_move" and isinstance(self.state, dict) and self.family is not None:
+            # what the rules made of the board that offered no move: the ways of moving still unknown say why
+            rules = self.family.rules
+            entry["ways"] = {name: rules.get(name) for name in ("square", "swap_power", "pair_power", "tap_power")
+                             if name in rules}
+        if stage == "read":
+            entry["read_by"] = "kit" if isinstance(self.adapter, KitAdapter) else "adapter" if self.adapter else "model"
+        self.let_go = [*self.let_go, entry][-LET_GO_KEPT:]
+        self.found["let_go"] = self.let_go
+        if self.found.get("resumes") and self.resumed:
+            self.found["resumes"][-1].setdefault("let_go", entry)
+        if self.resumed and not self.since_taken:
+            self.unread_at = self.used
+        self.on_board = False
 
     async def _between(self) -> None:
         """The screen stands between two levels (PLAN §25, R6): the input that opened the next level from a
@@ -1773,6 +1828,7 @@ class Agent:
             log.info("the family is dropped: %s", reason)
             self.failures.append({"reason": "made_family_dropped" if self._made_plays() else "family_dropped",
                                   "detail": reason})
+            self._let_go(reason, "given_up")
             await self._play_direct(self._situation())
             return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
@@ -1840,6 +1896,10 @@ class Agent:
             level = scene in (None, scenes.BOARD)
             if action["kind"] == direct.STOP:
                 raise _End(Outcome.STOPPED, "stop_condition", answer.get("because") or player.situation)
+            if action["kind"] == direct.OUT_OF_LIVES:
+                self._out_of_lives(action, player.situation)
+            if "moves_left" in action:
+                self.found["moves_left"] = action["moves_left"]
             if action["kind"] == direct.DONE and self._before_any():
                 raise _End(Outcome.GAVE_UP, "next_level_not_found", player.situation)
             if action["kind"] == direct.DONE:
@@ -1854,7 +1914,7 @@ class Agent:
                 # a level is open and takes any move: the family whose board it is plays it, and the model's
                 # move is not sent. One the family does not read is the model's, and the family is tried again
                 # some moves on
-                if await self._resume():
+                if await self._resume(board=True):
                     return
                 self.unread_at = self.used
             if self.watch is not None:
@@ -1870,6 +1930,8 @@ class Agent:
             for name in answer["uses"]:
                 # `forced_free`: of those, a booster the game forced in a tutorial for nothing
                 self.account["used"][name] = self.account["used"].get(name, 0) + 1
+            if answer.get("profile"):
+                self.profiles.append({"made": answer["profile"], "situation": player.situation})
             if self.watch is not None:
                 await self.watch.sent()
             after = await direct.settled(self.seen)
@@ -1951,12 +2013,13 @@ class Agent:
         changed = motion.outside(carry_boxes(before, after), moving)
         return sum(box[2] * box[3] for box in changed) / area
 
-    async def _resume(self) -> bool:
+    async def _resume(self, board: bool = False) -> bool:
         """The family whose play broke off, tried again on the screen as it is now: taken when its board reads.
         A reader kept of the site vouches for nothing here: it must read this screen, else the family is tried
-        by a model's reading of it."""
+        by a model's reading of it. `board`: the model named the screen a level's board: a reader that cannot
+        read it does not make it a screen between two levels (`_read`), the model reads it instead (C2-3)."""
         family_id, self.resumes, self.since_tried = self.resumable, self.resumes + 1, 0
-        tried = {"family": family_id, "at_action": self.used, "taken": False}
+        tried = {"family": family_id, "at_action": self.used, "taken": False, **({"on_board": True} if board else {})}
         self.found.setdefault("resumes", []).append(tried)
         reading = None
         try:
@@ -1970,14 +2033,18 @@ class Agent:
             raise
         except Exception as error:
             log.info("the family could not be tried again: %s", error)
+            tried["error"] = f"{type(error).__name__}: {error}"[:300]
             taken = False
         if not taken:
-            # the model's own play goes on
+            # the model's own play goes on: the model's reading of the screen was no board the rules take
+            tried.setdefault("why", "error" if "error" in tried else "not_read_as_board")
             if self.adapter is not None:
                 self.adapter.close()
             self.adapter, self.family_id, self.policy = None, None, "model"
             return False
         tried["taken"] = self.resumed = True
+        tried["read_by"] = "kit" if reading is not None else "model"
+        self.since_taken, self.on_board = 0, board
         self.tries = self.stalled = self.fruitless = 0
         self.shrugged = False
         self.unread_move = self.ineffective = self.state = None
