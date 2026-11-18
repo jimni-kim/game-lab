@@ -58,10 +58,13 @@ def test_a_goal_about_the_layer_that_asks_for_more_cells_than_have_one_is_to_spr
     plain = {**rules.DEFAULT_RULES, "rows": 4, "cols": 5}
     asked = [{"kind": "collect", "target": UNDER, "count": 12}]
     assert rules.meant(asked, state, plain) == {"goals": [{"kind": "cover", "target": UNDER, "count": 12}], "spread": True}
-    # one that asks for no more than have a layer may be about taking it off: nothing is settled
-    assert rules.meant([{"kind": "collect", "target": UNDER, "count": 1}], state, plain) == {}
-    # a goal a model read as one to cover says so itself; goals about pieces say nothing of the layer
-    assert rules.meant([{"kind": "cover", "target": UNDER, "count": 1}], state, plain)["spread"] is True
+    # one that asks for as many as have a layer is about taking it off, whatever a model called it (2026-11-18:
+    # a lawn to clear, 62 to go on 62 laid, read as one to cover)
+    assert rules.meant([{"kind": "collect", "target": UNDER, "count": 1}], state, plain) == {"spread": False}
+    assert rules.meant([{"kind": "cover", "target": UNDER, "count": 2}], state, plain) == \
+        {"goals": [{"kind": "collect", "target": UNDER, "count": 2}], "spread": False}
+    # a goal a model read as one to cover says so itself where the numbers cannot tell (no layer read)
+    assert rules.meant([{"kind": "cover", "target": UNDER, "count": 9}], {"grid": BOARD}, plain)["spread"] is True
     assert rules.meant([{"kind": "collect", "target": R, "count": 30}], state, plain) == {}
     # a game seen to take its layer off keeps its goal as one to collect
     assert rules.meant(asked, state, {**plain, "spread": False}) == {}
@@ -329,3 +332,32 @@ async def test_a_first_reading_that_leaves_out_the_layer_the_goal_is_about_is_as
     assert model.notes[0] is None and "layer under the pieces" in model.notes[1]
     assert made["kit"]["goals_seen"][0]["at_action"] == 0 and made["kit"]["ways"]["spread"] is True
     assert 64 - fake.bare() >= 4 + 12, fake.bare()
+
+
+
+def test_a_free_booster_the_game_forces_is_used_unasked_and_nothing_else_is():
+    from gamelab import direct
+
+    goal = {"allowed_meta_actions": []}
+    free = {**PRESS_FREE, "uses": ["boosters"], "forced_free": True}
+    assert _asked(free, goal)["uses"] == ["boosters", "forced_free"]
+    # not said to be forced and free, or something else said to be: refused as before
+    assert _asked({**PRESS_FREE, "uses": ["boosters"]}, goal) is None
+    assert _asked({**PRESS_FREE, "uses": ["currency"], "forced_free": True}, goal) is None
+    assert _asked({**PRESS_FREE, "uses": ["boosters", "continue"], "forced_free": True}, goal) is None
+
+
+PRESS_FREE = {"kind": "tap", "at": [300, 325]}
+
+
+def _asked(action, goal):
+    import asyncio
+    from gamelab import direct
+    from test_direct import Lamps
+
+    class Once:
+        async def complete(self, request):
+            return TurnResult(text=json.dumps({"situation": "a tutorial", "scene": "tutorial", "guided": True,
+                                               "action": action, "expect": "the hammer is taken", "notes": ""}))
+    png = asyncio.run(Lamps().capture())
+    return asyncio.run(direct.Direct(Once()).ask(png, Lamps.kinds, goal, {}))

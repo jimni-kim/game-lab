@@ -23,7 +23,7 @@ import logging
 from typing import Any
 
 from . import catalog, resources
-from .contracts import META_ACTIONS
+from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
@@ -187,7 +187,8 @@ class Recovery:
         entry["action"] = action
         if action is None or action["kind"] in (NONE, GIVE_UP, STOP):
             return False
-        refused = [name for name in action.get("uses", []) if name not in self.allowed]
+        refused = [name for name in action.get("uses", []) if name not in self.allowed
+                   and not (action.get("forced_free") and name in FORCED_FREE)]
         if refused:
             # not sent: the model is told so with its next question, which this stop still is
             entry["refused"] = refused
@@ -205,6 +206,8 @@ class Recovery:
             return False
         for name in action.get("uses", []):
             self.used[name] = self.used.get(name, 0) + 1
+        if action.get("forced_free"):
+            self.used["forced_free"] = self.used.get("forced_free", 0) + 1
         self.tried.append({"action": action, "screen_changed": entry["changed"], "signature": seen,
                            "replayed": entry["source"] == "replay", "reason": reason})
         return True
@@ -288,6 +291,8 @@ class Recovery:
             return None
         if used:
             action["uses"] = used
+            if answer["action"].get("forced_free") is True and set(used) <= FORCED_FREE:
+                action["forced_free"] = True
         if action["kind"] == STOP and isinstance(answer["action"].get("because"), str):
             entry["because"] = answer["action"]["because"][:200]
         # the model answered in the pixels of the picture it was shown: the input is sent in the screen's

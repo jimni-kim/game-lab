@@ -39,7 +39,7 @@ import time
 from typing import Any
 
 from . import carry, frames, motion, recovery, resources, scenes
-from .contracts import META_ACTIONS
+from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
 
@@ -320,7 +320,9 @@ class Direct:
         action, used = check(answer.get("action"), size, kinds), uses(answer.get("action"))
         if action is None or used is None or (action["kind"] == RELAUNCH and self.relaunches >= RELAUNCHES_MOST):
             return None
-        refused = [name for name in used if name not in set(goal.get("allowed_meta_actions") or ())]
+        # a booster the game hands over for nothing and will not go on without is used unasked (`FORCED_FREE`)
+        forced = answer["action"].get("forced_free") is True and bool(used) and set(used) <= FORCED_FREE
+        refused = [name for name in used if name not in set(goal.get("allowed_meta_actions") or ()) and not forced]
         if refused:
             # not sent: the model is told so with its next question, as it is told what any input did
             self.history.append({"action": action, "expected": answer.get("expect"), "screen_changed": False,
@@ -336,7 +338,7 @@ class Direct:
             action = scaled(action, scale)
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
         because = answer["action"].get("because") if action["kind"] == STOP else None
-        return {"action": action, "told": told, "expect": expect, "scale": scale, "uses": used,
+        return {"action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {})}
 

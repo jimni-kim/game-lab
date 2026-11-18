@@ -487,11 +487,21 @@ def _layered(state: dict) -> int | None:
     return sum(1 for row in under for cell in row if isinstance(cell, int) and cell > 0)
 
 
+# a goal about the layer that asks for this many cells more or fewer than have one still asks for those (a cell or
+# two misread)
+LAYER_SAME = 2
+
+
 def meant(goals, state: dict, rules: dict) -> dict:
-    """What a level's goals as read say of the game's ways, with the goals as they are then meant (PLAN §31, L1):
-    a goal about the layer under the pieces that asks for more cells than have one cannot be about taking it
-    off: the layer is one that spreads, and the goal is to lay it under that many more (`cover`). A goal read as
-    `cover` says so itself. Returns the rule values to set (none when nothing is settled)."""
+    """What a level's goals as read say of the game's ways, with the goals as they are then meant (PLAN §31, L1),
+    by the numbers before the words: a goal about the layer under the pieces that asks for as many cells as have
+    one (LAYER_SAME either way) is about taking it off; one that asks for more, or for fewer, is about laying it
+    under more cells, a layer that spreads (`cover`). Only when the numbers cannot tell (no layer read, nothing
+    to go) does a goal a model read as `cover` say so. A value settled stands for the level (it is settled at the
+    level's first reading of its goals, where the two kinds of goal differ most: a lawn to spread begins with few
+    cells laid). Returns the rule
+    values to set (none when nothing is settled). (2026-11-18: a model called a lawn to be cleared one to cover, 62
+    cells to go on 62 laid, and the layer was taken to spread.)"""
     if not isinstance(goals, list):
         return {}
     layered, spread = _layered(state), rules.get("spread")
@@ -499,7 +509,9 @@ def meant(goals, state: dict, rules: dict) -> dict:
     for goal in goals:
         if goal.get("target") == UNDER and goal.get("kind") in COUNTED:
             asks = goal.get("count")
-            if goal["kind"] == "cover" or (spread is None and layered is not None and type(asks) is int and asks > layered):
+            if spread is None and layered and type(asks) is int and asks > 0:
+                spread = abs(asks - layered) > LAYER_SAME
+            elif spread is None and goal["kind"] == "cover":
                 spread = True
             goal = {**goal, "kind": "cover" if spread is True else "collect"}
         out.append(goal)

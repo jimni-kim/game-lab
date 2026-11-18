@@ -1868,6 +1868,7 @@ class Agent:
             carried = await direct.send(self.seen, action, self.carrier, before)
             self.used += 1
             for name in answer["uses"]:
+                # `forced_free`: of those, a booster the game forced in a tutorial for nothing
                 self.account["used"][name] = self.account["used"].get(name, 0) + 1
             if self.watch is not None:
                 await self.watch.sent()

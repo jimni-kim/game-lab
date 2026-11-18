@@ -43,6 +43,9 @@ META_ACTIONS = {
     "continue": "take extra moves, time or a life to keep a level going after it ran out",
     "retry": "play a lost level again (it may cost a life)",
 }
+# what the person need not allow: a booster the game hands over for nothing and will not go on without (a
+# tutorial that waits for it to be used), as the model says of the input (`forced_free`). Nothing else is so
+FORCED_FREE = frozenset({"boosters"})
 # a stop condition the code checks itself: the work ends at the first level or game lost, even when `retry` is
 # allowed. Any other condition is the person's own words, told to every model that looks at the screen, which may
 # answer that it is met
