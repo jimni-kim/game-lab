@@ -50,7 +50,7 @@ from . import motion
 from .carry import _boxes as carry_boxes
 from .motion import Steady
 from .run import Run, check
-from .recovery import GIVE_UP, MAX_TRIES, NEXT_LEVEL, NONE, STOP, Recovery
+from .recovery import GIVE_UP, MAX_TRIES, NEW_GAME, NEXT_LEVEL, NONE, STOP, Recovery
 
 log = logging.getLogger("gamelab.agent")
 
@@ -128,6 +128,9 @@ POWERS = {1: "line", 2: "seeker", 3: "area", 4: "colour", 5: "power"}
 SWIPES = {"ArrowLeft": (-1, 0), "ArrowRight": (1, 0), "ArrowUp": (0, -1), "ArrowDown": (0, 1)}
 SWIPE_SPAN, SWIPE_MS = 0.6, 120
 WON = "won"
+# why a game asked for from its start stopped before any move: the one on the screen, still in play, already met
+# the goal (`Agent.anew`)
+MET_BEFORE = "met_before"
 OUT_OF_LIVES = recovering.OUT_OF_LIVES
 # what a light model is asked of one cell cut out of a board, and what it is told of the game
 LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
@@ -208,9 +211,14 @@ class Agent:
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
-                 notes: str = "") -> None:
+                 notes: str = "", anew: bool = False) -> None:
         # more levels follow this one (`work`): a level shown ended before any move here is passed for the next
         self.onward = onward
+        # the person asked for a game from its start, not one to go on with (`Scope.NEW_GAME`, `work`): a game the
+        # first screen shows already ended, or already at the goal, was played before the work and is not its own
+        # (2026-11-19, session Q: a finished Mines game and a 2048 game holding 1024 were each handed back as the
+        # goal reached with no move made)
+        self.anew = anew
         # what a model playing the part before this one by its own inputs kept for itself (how this game gets
         # from one level to the next): the model of this part starts from it
         self.notes = notes
@@ -464,6 +472,10 @@ class Agent:
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
         if not await self._next_family() and not await self._make_family():
+            if self._before_own() and self.family_id in catalog.descriptor_ids() and self.resumable is None:
+                # the model's own inputs open the game asked for (an ended one on the screen is not it), and the
+                # family a model named takes the board once it is one (`_resume`)
+                self.resumable = self.family_id
             await self._play_direct(self.found.get("identified", {}).get("situation") or "")
 
     async def _identify(self) -> dict[str, Any]:
@@ -697,8 +709,9 @@ class Agent:
                 self._spent(held[0].id, held[1])
         self.state = before.state
         if self._passed(before.state):
-            # the level on the screen ended before any move here, and the work goes on to the next
-            await self._unstick(NEXT_LEVEL, "ended")
+            # the level on the screen ended before any move here, and the work goes on to the next; or the game
+            # asked for from its start is to be started again from an ended one
+            await self._unstick(NEXT_LEVEL if self.onward else NEW_GAME, "ended")
             return
         self._judge(before.state)
         excluded = self.ineffective["actions"] if self.ineffective and self.ineffective["state"] == before.id else []
@@ -1037,11 +1050,21 @@ class Agent:
         is the last's, and whatever else it shows stands between that level and the next."""
         return self.onward and not self.level_moves
 
+    def _before_own(self) -> bool:
+        """Whether a game from its start was asked for and no move of it was confirmed here yet: what the screen
+        shows played was played before the work."""
+        return self.anew and not self.onward and not self.level_moves
+
     def _passed(self, state: dict[str, Any]) -> bool:
-        if not self._before_any():
+        if not self._before_any() and not self._before_own():
             return False
         seen = self.family.model.status(state, self.family.rules, {"objective": str(self.goal.objective),
                                                                    "target_value": self.goal.target_value})
+        if self._before_own() and seen["goal"] == "reached" and not seen["terminal"]:
+            # a game in play that met the goal before the work: a new game would throw it away, which is never
+            # pressed unasked. Nothing is sent; the person is told (2026-11-19, the person's choice)
+            raise _End(Outcome.STOPPED, MET_BEFORE, "the game on the screen, still in play, already met the goal "
+                       "before any move of this work; no new game was started, as that would throw it away")
         return seen["terminal"] or seen["goal"] == "reached"
 
     def _judge(self, state: dict[str, Any]) -> None:
@@ -1701,7 +1724,8 @@ class Agent:
         self.tries += 1
         self.carried = None
         recent = [{key: move[key] for key in ("action_id", "kind", "effect")} for move in self.moves[-HISTORY_KEPT:]]
-        context = {"state": self.state, "recent": recent, **({"onward": True} if self.onward else {})}
+        context = {"state": self.state, "recent": recent, **({"onward": True} if self.onward else {}),
+                   **({"anew": True} if self._before_own() else {})}
         if await self._asking(self.recovery.attempt(self.seen, reason, context, timeout_s=self._left())):
             if self.blind:
                 self.distrusted = self.blind = False
@@ -1720,6 +1744,9 @@ class Agent:
         if action.get("kind") == GIVE_UP and "end" in action and self._before_any():
             # the end of the level before this part, which was to be passed for the next: no next level was found
             raise _End(Outcome.GAVE_UP, "next_level_not_found", self._situation())
+        if action.get("kind") == GIVE_UP and "end" in action and self._before_own():
+            # the end of a game played before the work: none was started for it
+            raise _End(Outcome.GAVE_UP, "new_game_not_found", self._situation())
         if action.get("kind") == GIVE_UP and "end" in action:
             won = action["end"] == WON and self._won_meets_goal()
             raise _End(Outcome.GOAL_REACHED if won else Outcome.GAME_OVER, WON if won else "end_screen", self._situation())
@@ -1878,7 +1905,7 @@ class Agent:
             between = self._before_any()
             try:
                 answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving,
-                                                       onward=between, been_here=been))
+                                                       onward=between, been_here=been, anew=self._before_own()))
             except Exception as error:
                 log.info("the model could not be asked for a move: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -1902,6 +1929,9 @@ class Agent:
                 self.found["moves_left"] = action["moves_left"]
             if action["kind"] == direct.DONE and self._before_any():
                 raise _End(Outcome.GAVE_UP, "next_level_not_found", player.situation)
+            if action["kind"] == direct.DONE and self._before_own():
+                # the end of a game played before the work, which was asked for from its start: not its own end
+                raise _End(Outcome.GAVE_UP, "new_game_not_found", player.situation)
             if action["kind"] == direct.DONE:
                 won = action["end"] == WON
                 raise _End(Outcome.GOAL_REACHED if won and objective == "play_until_end" else Outcome.GAME_OVER,
@@ -2095,11 +2125,11 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
-               notes: str = "", **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               notes: str = "", anew: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
     family's reader could not."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
-                       direct=direct, light=light, onward=onward, notes=notes).run()
+                       direct=direct, light=light, onward=onward, notes=notes, anew=anew).run()

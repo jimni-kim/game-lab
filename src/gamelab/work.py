@@ -108,7 +108,9 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         began = time.monotonic()
         run, adapted = await agent.play(surface, model, family_id, goal=part, budget=left, cancel=cancel,
                                         watch=_Numbered(watch, used) if watch is not None and parts else watch,
-                                        fresh=fresh and not parts, onward=levels, **{**options, "notes": notes})
+                                        fresh=fresh and not parts, onward=levels,
+                                        anew=goal.scope == Scope.NEW_GAME and not parts,
+                                        **{**options, "notes": notes})
         parts.append((run, adapted))
         lasted.append(round(time.monotonic() - began, 1))
         record = run.record

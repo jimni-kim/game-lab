@@ -38,6 +38,9 @@ LIFE_MINUTES_MOST = 24 * 60
 # why play stopped when the level on the screen ended before any move of this part of the work, and the work goes
 # on to the next (`agent.Agent.onward`)
 NEXT_LEVEL = "next_level"
+# why play stopped when a game from its start was asked for and the one on the screen ended before the work began:
+# a new game of the same kind is to be started (`agent.Agent.anew`)
+NEW_GAME = "new_game"
 # what a model giving up may say of the game itself: its own end screen, won or lost, stands where the board was
 ENDS = ("won", "lost")
 # what an input of the model's is carried out with (`Surface.kinds`)
@@ -206,7 +209,10 @@ class Recovery:
         entry: dict[str, Any] = {"reason": reason, "source": "model", "situation": None, "action": None, "changed": None}
         self.log.append(entry)
         self._forget()
-        action = self._replay(seen, reason) if reason in REPLAYED_REASONS else None
+        # an input that got past a game ended before a work asked for from its start (a new game button) is sent
+        # again only there, never on the end of a game played since (`agent.Agent.anew`)
+        anew = bool(context.get("anew"))
+        action = self._replay(seen, reason, anew) if reason in REPLAYED_REASONS else None
         if action is not None:
             entry["source"] = "replay"
         else:
@@ -238,7 +244,7 @@ class Recovery:
         if action.get("forced_free"):
             self.used["forced_free"] = self.used.get("forced_free", 0) + 1
         self.tried.append({"action": action, "screen_changed": entry["changed"], "signature": seen,
-                           "replayed": entry["source"] == "replay", "reason": reason})
+                           "replayed": entry["source"] == "replay", "reason": reason, **({"anew": True} if anew else {})})
         return True
 
     async def replay(self, surface: Any, reason: str) -> bool:
@@ -267,14 +273,14 @@ class Recovery:
             self.known = [known for known in self.known if known["action"] != self.tried[-1]["action"]
                           or _distance(known["signature"], self.tried[-1]["signature"]) > REPLAY_DISTANCE]
 
-    def _replay(self, seen: list[int], reason: str) -> dict[str, Any] | None:
+    def _replay(self, seen: list[int], reason: str, anew: bool = False) -> dict[str, Any] | None:
         """The input that got past a screen like this one before; never twice on one screen, so one that
         no longer works is followed by a question. An input that opened the next level is sent again only to
         open the next level: the same end screen after a level played here is that level's end, not in the way."""
         if self.tried:
             return None
         near = [known for known in self.known if _distance(known["signature"], seen) <= REPLAY_DISTANCE
-                and bool(known.get("next")) == (reason == NEXT_LEVEL)]
+                and bool(known.get("next")) == (reason == NEXT_LEVEL) and bool(known.get("anew")) == anew]
         return min(near, key=lambda known: _distance(known["signature"], seen))["action"] if near else None
 
     async def _ask(self, png: bytes, reason: str, context: dict[str, Any], kinds: frozenset[str],
@@ -341,7 +347,8 @@ class Recovery:
                 break
         if not last["replayed"] and last["action"]["kind"] != WAIT and last["reason"] in REPLAYED_REASONS:
             self.known = [*self.known, {"action": last["action"], "signature": last["signature"],
-                                        **({"next": True} if last["reason"] == NEXT_LEVEL else {})}][-KNOWN_KEPT:]
+                                        **({"next": True} if last["reason"] == NEXT_LEVEL else {}),
+                                        **({"anew": True} if last.get("anew") else {})}][-KNOWN_KEPT:]
         self.tried = []
 
     def summary(self, since: int = 0) -> dict[str, Any]:

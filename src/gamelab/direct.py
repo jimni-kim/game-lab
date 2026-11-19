@@ -279,13 +279,14 @@ class Direct:
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
-                  been_here: dict[str, Any] | None = None) -> dict[str, Any] | None:
+                  been_here: dict[str, Any] | None = None, anew: bool = False) -> dict[str, Any] | None:
         """The model's answer for the screen as it is: `{"action", "expect", "uses", "scene", "guided"}` with the
         action in the screen's pixels, or None when it gave none the surface can be given or one that uses what
         `goal` does not allow. `moving`: where something kept moving over the screen, left out of the picture.
         `onward`: more levels are wanted and none was played in this part of the work yet: whatever the screen
         shows, the next level is to be reached and played (`agent.Agent.onward`). `been_here`: play left a
-        screen like this one before (`scenes.Trail`)."""
+        screen like this one before (`scenes.Trail`). `anew`: a game from its start was asked for and nothing was
+        played here yet: a game the screen shows ended was played before (`agent.Agent.anew`)."""
         shown, scale = recovery.view(png)
         size = recovery._size(shown)
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
@@ -297,6 +298,7 @@ class Direct:
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
                  "scenes": scenes.KINDS,
                  **({"onward": True} if onward else {}),
+                 **({"anew": True} if anew else {}),
                  **({"been_here": been_here} if been_here else {}), "notes": self.notes,
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
