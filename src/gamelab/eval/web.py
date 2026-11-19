@@ -328,6 +328,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
                                         store=Store(args.adapter_store), fresh=args.regenerate, cancel=cancel,
                                         watch=watching(recorder) if watching else recorder,
                                         accept_consent=args.accept_consent, writer=writer, hint=hint,
+                                        game=measure.game_within(args),
                                         light=measure.light_model(args))
     finally:
         await game.tidy()

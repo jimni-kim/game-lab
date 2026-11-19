@@ -65,6 +65,11 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 앱 이름은 APK의 `application-label`을 한 번 읽어 `out/apps/`에 둔다. 잘못 읽히거나 판마다 데이터를 지워야 하는 앱(`pm clear`)은
 `src/gamelab/eval/apps.json`에 손으로 적는다(`{"PKG": {"label": "부르는 이름", "clear": true}}`).
 
+게임에 대해 보관하는 것은 `--adapter-store`(기본 `out/adapters`) 아래 사이트(앱)별 폴더에 둔다: 계열별 판독기와 값,
+판 사이 화면의 루틴(`routines/`, 모델이 한 번 넘긴 화면을 다음부터 코드가 다시 누름), 모델의 기억(`memory.json`),
+모델이 만든 계열(`made.json`). 한 앱에 게임이 여럿이면 요청이 고른 게임 이름(`--ask`가 스스로 읽고, 아니면
+`--game NAME`)으로 폴더를 나눈다(`…+mines`). 다시 배우게 하려면 그 폴더를 지우거나 다른 `--adapter-store`를 준다.
+
 옛 명령의 `--generate`는 받기만 한다(이제 늘 어댑터를 쓴다). `--profile`, `--unregistered`, `--loop`는 없앴다.
 
 - 사이트 설정과 정답키: `src/gamelab/eval/sites.json`. 옵션 설명은 각 명령의 `--help`.

@@ -29,7 +29,7 @@ from typing import Any
 
 import logging
 
-from . import agent, catalog, scenes
+from . import agent, catalog, routine, scenes
 from .contracts import LOST, Budget, GoalSpec, Outcome, Scope
 from .run import Run
 
@@ -90,8 +90,13 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     used = confirmed = tokens_in = tokens_out = questions = 0
     won = lost = empty = 0
     ended: tuple[str, str, str] | None = None
-    # what the model playing between the levels kept for itself, for the part after
-    notes = str(options.pop("notes", "") or "")
+    # what the model playing between the levels kept for itself, for the part after (`direct.MEMORY`)
+    notes = options.pop("notes", "") or ""
+    # the game's routines, one book for every part: the steps one part's model taught are sent by code in the next
+    # (PLAN §28)
+    book = options.pop("book", None) or routine.Book()
+    # whether the part before ended in a level lost: the next plays that level again
+    again = False
     while ended is None:
         left, spent = _left(budget, used, started, tokens_in) if parts else (budget, None)
         if spent is not None:
@@ -110,14 +115,20 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
                                         watch=_Numbered(watch, used) if watch is not None and parts else watch,
                                         fresh=fresh and not parts, onward=levels,
                                         anew=goal.scope == Scope.NEW_GAME and not parts,
-                                        **{**options, "notes": notes})
+                                        **{**options, "notes": notes, "book": book})
         parts.append((run, adapted))
         lasted.append(round(time.monotonic() - began, 1))
         record = run.record
+        spent_here = adapted.setdefault("account", {"used": {}, "refused": {}}).setdefault("used", {})
+        if again and record.get("level_moves") and not spent_here.get("retry"):
+            # a lost level was played again: another try was used, whoever pressed the button and whatever was
+            # said of it (a step of the game's routine says nothing, `routine`)
+            spent_here["retry"] = 1
+        again = again and not record.get("level_moves")
         used, confirmed = used + record["actions_used"], confirmed + record["confirmed_actions"]
         tokens_in, tokens_out = tokens_in + adapted["tokens"]["input"], tokens_out + adapted["tokens"]["output"]
         questions += adapted["questions"]
-        notes = (adapted.get("direct") or {}).get("notes") or notes
+        notes = (adapted.get("direct") or {}).get("memory") or notes
         outcome, reason, detail = record["outcome"], record["reason"], record.get("detail", "")
         if not levels:
             ended = (outcome, reason, detail)
@@ -138,7 +149,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             if won >= goal.target_value:
                 ended = (str(Outcome.GOAL_REACHED), LEVELS, "")
         else:
-            lost, empty = lost + 1, 0
+            lost, empty, again = lost + 1, 0, True
             if LOST in goal.stop_conditions or "retry" not in goal.allowed_meta_actions:
                 ended = (str(Outcome.GAME_OVER), "level_lost", detail)
     outcome, reason, detail = ended
@@ -177,6 +188,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         **({"out_of_lives": last["out_of_lives"]} if reason == agent.OUT_OF_LIVES and last.get("out_of_lives") else {}),
         # names and profiles the game would not go on without, and what they were made as (C2-5)
         **({"profiles": profiles} if profiles else {}),
+        # what the game's routines did in this work: the steps kept, sent by code, failed and learned (PLAN §28)
+        **({"routines": book.summary()} if book.summary() else {}),
     }
     moves = [{**move, "part": number} for number, (run, _) in enumerate(parts, 1) for move in run.moves]
     record = {**last_run.record, "outcome": outcome, "reason": reason, "detail": detail, "goal": goal.to_json(),
@@ -195,9 +208,21 @@ def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
     of the level (its goals as read, the ways it learned, the moves a model picked among the code's: PLAN §31), and
     each time the family's play was handed to the model and why (C2-1)."""
     record, kit = run.record, adapted.get("kit") or {}
+    # the inputs before the level's first move: those a model chose, and those code sent as steps of the game's
+    # routine
+    beside = []
+    for move in run.moves:
+        if not _beside(move):
+            break
+        beside.append(move)
     return {"outcome": record["outcome"], "reason": record["reason"], "family": record.get("family"),
             "actions": record["actions_used"], "confirmed": record["confirmed_actions"],
             "level_moves": record.get("level_moves"),
+            # (`seconds`: from the part's start to the last of them done; `first_move_s`: to the level's first move)
+            "between": {"by_model": sum(move["level"] == agent.L0 for move in beside),
+                        "by_routine": sum(move["level"] == agent.ROUTINE for move in beside),
+                        "seconds": max((move.get("at_s") or 0.0 for move in beside), default=None),
+                        "first_move_s": _until_level(run.moves)},
             "seconds": seconds, "input_tokens": (adapted.get("tokens") or {}).get("input"),
             "questions": adapted.get("questions"),
             **({"moves_left": adapted["moves_left"]} if adapted.get("moves_left") is not None else {}),
@@ -205,6 +230,19 @@ def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
             **({"resumes": adapted["resumes"][-RESUMES_TOLD:]} if adapted.get("resumes") else {}),
             **({"let_go": adapted["let_go"][-RESUMES_TOLD:]} if adapted.get("let_go") else {}),
             "used": (adapted.get("account") or {}).get("used") or {}}
+
+
+def _until_level(moves: list[dict[str, Any]]) -> float | None:
+    """How long the part took to its first move on a level's board done and read (the screens before the level,
+    and the reading of the board): None when it made none."""
+    return next((move.get("at_s") for move in moves if not _beside(move)), None)
+
+
+def _beside(move: dict[str, Any]) -> bool:
+    """Whether an input was sent outside a level: a step of the game's routine, or the model's on a screen it named
+    something other than a board."""
+    return move.get("level") == agent.ROUTINE or (move.get("level") == agent.L0
+                                                  and move.get("scene") not in (None, scenes.BOARD))
 
 
 def told(handback: dict[str, Any]) -> str:

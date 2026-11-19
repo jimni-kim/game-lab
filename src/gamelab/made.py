@@ -108,6 +108,8 @@ class Game:
             raise ValueError(f"made family {self.id}: " + "; ".join(problems))
         self.code = Code(self)
         self.attempts = self.rewrites = self.questions = 0
+        # taken up again from what was kept of the site, not described and written in this game
+        self.restored = False
         self.problems: list[str] = []
         catalog.register(self.descriptor, self.code, Solver(self.code))
 
@@ -182,8 +184,30 @@ class Game:
         self.rewrites += 1
         return await self.write(model, states, examples, refused, allowed)
 
+    def record(self) -> dict[str, Any] | None:
+        """What is kept of the family for the next game of this site (plan §12, A3): the description it was made
+        from and the rules as written; None while no rules are."""
+        return {"told": self.told, "source": self.code.source} if self.code.source else None
+
+    @classmethod
+    def restore(cls, site: str, kept: Any) -> Game | None:
+        """The family as it was kept, with nothing described or written anew; None when what was kept is no
+        such record. Whoever takes it up holds its rules to the screen first."""
+        if not isinstance(kept, dict) or not isinstance(kept.get("told"), dict) or not isinstance(kept.get("source"), str):
+            return None
+        told = kept["told"]
+        if told.get("input") not in FORMS or any(type(told.get(name)) is not int or told[name] < 1 for name in ("rows", "cols")):
+            return None
+        try:
+            game = cls(site, told)
+        except (ValueError, KeyError, TypeError):
+            return None
+        game.code._load(kept["source"])
+        game.restored = True
+        return game
+
     def summary(self) -> dict[str, Any]:
-        return {"family": self.id, "name": self.told["name"], "summary": self.told["summary"], "input": self.told["input"],
+        return {"family": self.id, "name": self.told["name"], **({"restored": True} if self.restored else {}), "summary": self.told["summary"], "input": self.told["input"],
                 "rows": self.told["rows"], "cols": self.told["cols"], "attempts": self.attempts, "rewrites": self.rewrites,
                 "questions": self.questions, "written": self.code.source is not None, "errors": self.code.errors,
                 "digest": hashlib.sha256(self.code.source.encode()).hexdigest() if self.code.source else None}

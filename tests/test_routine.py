@@ -1,0 +1,304 @@
+"""Play the model made between two levels is made again by code (PLAN §28), and what goes with it: a sequence of
+inputs checked between them (§27, M1), a memory in parts that outlasts the work (M4), and things kept by the one
+game of several an app holds (§12, A1).
+
+The screens are the garden of `test_between.py`: a level's end, a story of three lines, a map with the button
+that deals the next level and a shop beside it. A stretch the model played once is played by the steps kept of
+it the next time, in the same work and in the next one; where a screen no step fits stands in the way the model
+is asked there and nowhere else, and its answer is kept too; a step that no longer does anything gives way to
+what the model then answers."""
+import json
+import time
+
+from gamelab import agent, direct, request, routine, work
+from gamelab.adaptation import Store, keyed
+from gamelab.contracts import Budget, GoalSpec
+from gamelab.model import TurnResult
+from test_adaptation_mines import COMPUTE, SIZE, WINNING, middle, quick as mines_quick  # noqa: F401
+from test_between import CLOSE, LINES, PLAY, SHOP, Garden, Guide, inside, page, plays, quick as direct_quick  # noqa: F401
+from test_work import ending
+
+LEVELS = GoalSpec("levels", 3)
+
+
+def budget():
+    return Budget(300, COMPUTE, 600)
+
+
+def between(played, part):
+    """The inputs sent outside the level in one part of the work: who sent each, on what kind of screen."""
+    return [(move["level"], move.get("scene")) for move in played.moves
+            if move["part"] == part and (move["level"] == "R" or move.get("scene") not in (None, "board"))]
+
+
+async def test_a_stretch_the_model_played_is_played_by_code_the_next_time_and_in_the_next_work(tmp_path):
+    fake = Garden([WINNING] * 3)
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=LEVELS, budget=budget(), store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    # the first time the model was asked at every screen; the second, at none, not even at the board
+    assert between(played, 2) == [("L0", "result"), ("L0", "story")] + [("L0", "map")] and len(plays(model)) == 4
+    assert between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map")]
+    parts = made["work"]["parts"]
+    assert [part["between"]["by_model"] for part in parts] == [0, 3, 0]
+    assert [part["between"]["by_routine"] for part in parts] == [0, 0, LINES + 2]
+    told = made["work"]["routines"][0]
+    assert (told["task"], told["kept_before"], told["kept"], told["learned"], told["sent"], told["failed"]) == \
+        ("next_level", 0, 3, 3, LINES + 2, 0)
+    # what was learned is kept by the game: its steps, and the screen each was learned on
+    kept = Store(tmp_path).routines("https://mines.example/")["next_level"]
+    assert [step["scene"] for step in kept] == ["result", "story", "map"] and kept[-1]["opens"] and "opens" not in kept[0]
+    assert kept[1]["action"]["repeat"] == 5
+    folder = next(tmp_path.glob("*/routines"))
+    assert sorted(path.name for path in folder.glob("*.png")) == [f"next_level-n{number}.png" for number in (1, 2, 3)]
+    # another work on the same game: every stretch is the code's, and the model is asked nothing of the way
+    fake = Garden([WINNING] * 3)
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=LEVELS, budget=budget(), store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels") and fake.ends == ["won"] * 3
+    assert plays(model) == [] and between(played, 2) == between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map")]
+    assert made["work"]["routines"][0]["kept_before"] == 3 and made["work"]["routines"][0]["learned"] == 0
+
+
+class Sale(Garden):
+    """The garden, whose map is covered by the shop of its own accord before some levels (`sales`: the levels
+    dealt before which it is)."""
+
+    def __init__(self, draws, sales):
+        super().__init__(draws)
+        self.sales, self.offered = set(sales), set()
+
+    async def tap(self, x, y, duration_ms):
+        stage = self.stage
+        await super().tap(x, y, duration_ms)
+        if stage == "story" and self.stage == "map" and self.dealt in self.sales and self.dealt not in self.offered:
+            self.offered.add(self.dealt)
+            self.stage = "shop"
+
+
+async def test_a_screen_no_step_fits_is_the_models_from_there_on_and_what_it_answers_is_kept_too(tmp_path):
+    # the shop comes up by itself before the third level and the fourth: the first time it is a screen no step
+    # is kept for
+    fake = Sale([WINNING] * 4, sales={2, 3})
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 4), budget=budget(),
+                                   store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    # the stretch to the third level: the steps as far as they go, the model at the shop and nowhere else, the
+    # steps again from the map
+    assert between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("L0", "popup"), ("R", "map")]
+    asked = plays(model)
+    assert len(asked) == 5 and asked[4]["history"][-1] == {
+        "action": {"kind": "tap", "at": [300.0, 300.0]}, "sent_by": "program", "scene": "story", "screen_changed": True}
+    # the stretch to the fourth: the shop is passed by the step kept of it
+    assert between(played, 4) == [("R", "result")] + [("R", "story")] * LINES + [("R", "popup"), ("R", "map")]
+    assert [step["scene"] for step in Store(tmp_path).routines("https://mines.example/")["next_level"]] == \
+        ["result", "story", "map", "popup"]
+
+
+class Moved(Garden):
+    """The garden, whose map takes the next level from its other button once `moved` (the screen looks the same)."""
+    moved = False
+
+    async def tap(self, x, y, duration_ms):
+        if self.stage == "map" and self.moved:
+            self.taps.append((x, y))
+            if inside(x, y, SHOP):
+                self.covered, self.stage = True, "board"
+                await super(Garden, self).tap(*middle(self.button), duration_ms)
+                self.taps.pop()
+            return
+        await super().tap(x, y, duration_ms)
+
+
+async def test_a_step_that_changes_nothing_gives_way_to_what_the_model_answers_in_its_place(tmp_path):
+    fake = Moved([WINNING] * 2)
+    played, _ = await work.play(fake, Guide(fake, repeat=5), "minesweeper", goal=GoalSpec("levels", 2), budget=budget(),
+                                store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels")
+    old = Store(tmp_path).routines("https://mines.example/")["next_level"][-1]
+    assert old["scene"] == "map" and inside(*old["action"]["at"], PLAY)
+    # the game changed: the map's old button does nothing now
+    fake = Moved([WINNING] * 3)
+    fake.moved = True
+    model = Guide(fake, repeat=5, shops=True)
+    played, made = await work.play(fake, model, "minesweeper", goal=LEVELS, budget=budget(), store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    # the step was sent, changed nothing, and the model was asked on that screen; its answer is the step from then on
+    assert between(played, 2) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map"), ("L0", "map")]
+    assert [move["effect"] for move in played.moves if move["part"] == 2 and move.get("scene") == "map"] == ["absent", "confirmed"]
+    assert between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map")]
+    # (asked twice in all: at the map, and at the board that the new step opened for the first time)
+    assert len(plays(model)) == 2
+    kept = Store(tmp_path).routines("https://mines.example/")["next_level"]
+    assert [step["scene"] for step in kept] == ["result", "story", "map"] and inside(*kept[-1]["action"]["at"], SHOP)
+    assert made["work"]["routines"][0]["failed"] == 1
+
+
+def test_a_step_fits_a_screen_only_when_the_screen_and_the_place_pressed_look_as_they_did():
+    town = page((120, 190, 140), [(PLAY, (40, 120, 220)), (SHOP, (220, 160, 40))])
+    kept = routine.Routine("next_level")
+    step = kept.learn(town, {"kind": "tap", "at": middle(PLAY)}, scene="map")
+    assert kept.find(town) is step and kept.looks[-1]["step"] == step["id"]
+    # the same screen with the button gone from its place: the whole screen is still near, the place is not
+    bare = page((120, 190, 140), [(SHOP, (220, 160, 40))])
+    assert kept.find(bare, at=1) is None and kept.looks[-1]["nearest"]["spot"] > routine.SPOT_DISTANCE
+    assert kept.looks[-1]["nearest"]["screen"] <= routine.SCREEN_DISTANCE
+    # another screen altogether
+    assert kept.find(page((60, 60, 70)), at=2) is None and kept.looks[-1]["nearest"]["screen"] > routine.SCREEN_DISTANCE
+    # a step left out for now
+    assert kept.find(town, avoid={step["id"]}, at=3) is None
+    # the same input learned again on a screen like it is the same step; a screen to wait on is taken only where
+    # no input fits
+    assert kept.learn(town, {"kind": "tap", "at": [middle(PLAY)[0] + 4, middle(PLAY)[1]]}, scene="map") is step
+    waiting = kept.learn(town, {"kind": "wait", "ms": 1500}, scene="loading")
+    assert len(kept.steps) == 2 and kept.find(town, at=4) is step and kept.find(town, avoid={step["id"]}, at=5) is waiting
+    # one that changed nothing twice running is kept no longer
+    kept.used(step, False)
+    kept.used(step, True)
+    kept.used(step, False)
+    assert step in kept.steps
+    kept.used(step, False)
+    assert step not in kept.steps and kept.summary()["failed"] == 3
+
+
+def test_what_is_kept_as_a_step_and_what_never_is():
+    tap = {"kind": "tap", "at": [10.0, 10.0]}
+    assert routine.kept(tap, "map", {"uses": []}) and routine.kept({"kind": "back"}, "popup", {})
+    assert routine.kept({"kind": "wait", "ms": 500}, "loading", {})
+    # a level's move, a side puzzle's, a name made, anything that uses up what is the player's, typed text
+    assert not routine.kept(tap, "board", {}) and not routine.kept(tap, "other_puzzle", {}) and not routine.kept(tap, None, {})
+    assert not routine.kept(tap, "popup", {"profile": "Player"}) and not routine.kept(tap, "result", {"uses": ["retry"]})
+    assert not routine.kept({"kind": "text", "text": "Player"}, "popup", {})
+    # a step the model sent twice in one stretch on screens alike may be sent twice by code; any other, once
+    kept = routine.Routine("next_level")
+    step = kept.learn(page((200, 180, 120), bar=0), tap, scene="result", sends={})
+    assert kept.most(step) == 1
+    assert kept.learn(page((200, 180, 120), bar=1), tap, scene="result", sends={step["id"]: 1}) is step and kept.most(step) == 2
+    assert kept.most(kept.learn(page((60, 60, 70)), {**tap, "repeat": 4}, scene="story")) == routine.REPEATED_MOST
+    # steps read back from what was kept: one that is no step is left out
+    again = routine.Routine("next_level", json.loads(json.dumps(kept.steps)) + [{"id": "n9"}, "noise"])
+    assert [step["id"] for step in again.steps] == ["n1", "n2"] and again.learn(page((9, 9, 9)), tap, scene="map")["id"] == "n3"
+
+
+class Rewards(Guide):
+    """The model, which answers a story's screen with every tap it will take at once (`taps` of them) and the
+    map's button after them, a screen it does not see yet."""
+
+    def __init__(self, fake, taps):
+        super().__init__(fake)
+        self.taps = taps
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if context.get("play") and self.fake.stage == "story":
+            self.asked.append(("play", context, 1))
+            inputs = [{"kind": "tap", "at": [300, 300]}] * self.taps + [{"kind": "tap", "at": middle(SHOP)}]
+            return TurnResult(text=json.dumps({"situation": "story", "scene": "story", "guided": False, "score": None,
+                                               "action": {"kind": "sequence", "inputs": inputs}, "expect": "the map",
+                                               "memory": {"ways": "three lines, then the map"}}))
+        return await super().complete(request)
+
+
+async def test_the_inputs_of_a_sequence_off_the_board_are_sent_only_while_each_changes_a_little_of_the_screen():
+    fake = Garden([WINNING] * 2)
+    model = Rewards(fake, taps=LINES)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=budget())
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    # the third tap brought the map: the tap meant for a screen the model had not seen was not sent
+    story = next(move for move in played.moves if move.get("scene") == "story")
+    assert story["repeated"] == {"sent": LINES, "of": LINES + 1, "stopped": "scene_changed"} and fake.shopped == 0
+    told = next(context for context in plays(model) if context["history"] and context["history"][-1].get("repeated"))
+    assert told["history"][-1]["repeated"]["stopped"] == "scene_changed"
+    # six inputs at most, none of them a wait or typed text
+    tap = {"kind": "tap", "at": [5, 5]}
+    assert direct.check({"kind": "sequence", "inputs": [tap] * 6}, SIZE, fake.kinds) is not None
+    assert direct.check({"kind": "sequence", "inputs": [tap] * 7}, SIZE, fake.kinds) is None
+    assert direct.check({"kind": "sequence", "inputs": [tap, {"kind": "wait", "ms": 100}]}, SIZE, fake.kinds) is None
+
+
+async def test_what_the_model_noted_of_a_game_is_kept_by_its_parts_and_given_to_the_next_work(tmp_path):
+    fake = Garden([WINNING] * 2)
+    model = Rewards(fake, taps=1)
+    await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=budget(), store=Store(tmp_path))
+    # a part given replaces what it held, one left out stays; a plain text is the plan. All but the plan are kept
+    asked = plays(model)
+    assert asked[0]["memory"] == {} and set(asked[0]["memory_parts"]) == {"rules", "ways", "failed", "plan"}
+    assert asked[-1]["memory"]["ways"] == "three lines, then the map" and "plan" in asked[-1]["memory"]
+    assert Store(tmp_path).memory("https://mines.example/") == {"ways": "three lines, then the map"}
+    fake = Sale([WINNING] * 2, sales={1})
+    model = Guide(fake)
+    await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=budget(), store=Store(tmp_path))
+    assert plays(model)[0]["memory"] == {"ways": "three lines, then the map"}
+    # a memory as the model keeps it
+    player = direct.Direct(model, notes={"rules": "  match three  ", "plan": "x" * 900, "other": "no part", "failed": 3})
+    assert player.memory == {"rules": "match three", "plan": "x" * direct.MEMORY_MOST} and player.lasting() == {}
+    player.questions = 1
+    player._remember({"plan": "", "ways": "the right button"})
+    assert player.lasting() == {"rules": "match three", "ways": "the right button"} and "plan" not in player.memory
+
+
+async def test_things_are_kept_by_the_one_game_of_several_an_app_holds(tmp_path):
+    app = "android://name.boyle.chris.sgtpuzzles"
+    assert keyed(app, None) == keyed(app, " ") == app
+    assert keyed(app, "Mines") == keyed(app, "mines!") == f"{app}#game=mines" != keyed(app, "Fifteen")
+    store = Store(tmp_path)
+    store.save_recoveries(keyed(app, "mines"), "minesweeper", [{"action": {"kind": "tap", "at": [1, 1]}, "signature": [0]}])
+    store.save_memory(keyed(app, "fifteen"), {"rules": "slide the tiles in order"})
+    store.save_memory(app, {"rules": "a list of puzzles"})
+    assert store.recoveries(keyed(app, "fifteen"), "minesweeper") == [] and store.recoveries(app, "minesweeper") == []
+    assert len(store.recoveries(keyed(app, "mines"), "minesweeper")) == 1
+    assert store.memory(keyed(app, "fifteen")) == {"rules": "slide the tiles in order"} and store.memory(keyed(app, "mines")) is None
+    assert store.memory(app) == {"rules": "a list of puzzles"}
+    assert sorted(path.name.split("+")[-1] for path in tmp_path.iterdir() if "+" in path.name) == ["fifteen", "mines"]
+    # a game played as one of several keeps its routines apart from the app's other games
+    fake = Garden([WINNING] * 2)
+    await work.play(fake, Guide(fake), "minesweeper", goal=GoalSpec("levels", 2), budget=budget(), store=store, game="Mines")
+    assert store.routines("https://mines.example/#game=mines")["next_level"] and store.routines("https://mines.example/") == {}
+
+    class Says:
+        async def complete(self, turn):
+            return TurnResult(text=json.dumps({"url": None, "app": "name.boyle.chris.sgtpuzzles", "objective": "play_until_end",
+                                               "game": "Mines 9x9", "within": " mines "}))
+    apps = [{"package": "name.boyle.chris.sgtpuzzles", "label": "Puzzles"}]
+    asked = await request.understand(Says(), "퍼즐 앱에서 Mines 끝까지", apps)
+    assert (asked["within"], asked["hint"]) == ("mines", "Mines 9x9")
+    # a name that only says the app's own again picks no game inside it
+    apps = [{"package": "com.example.mines", "label": "Mines Classic"}]
+
+    class Named:
+        async def complete(self, turn):
+            return TurnResult(text=json.dumps({"url": None, "app": "com.example.mines", "objective": "play_until_end",
+                                               "game": "Mines", "within": "Mines"}))
+    assert (await request.understand(Named(), "Mines 끝까지", apps))["within"] is None
+
+
+async def test_a_screen_on_its_way_is_looked_at_again_before_the_model_is_asked(monkeypatch):
+    """After a step sent by code the next screen may not stand yet: it is looked at again until it does or has
+    stood still a while, and only then is anyone asked."""
+
+    class Slow(Garden):
+        """The garden, whose map shows a blank page for a moment after the story's last line."""
+        until = 0.0
+
+        async def capture(self, region=None):
+            if self.stage == "map" and time.monotonic() < self.until:
+                return page((10, 10, 10))
+            return await super().capture(region)
+
+        async def tap(self, x, y, duration_ms):
+            if self.stage == "map" and time.monotonic() < self.until:
+                return
+            stage = self.stage
+            await super().tap(x, y, duration_ms)
+            if stage == "story" and self.stage == "map" and self.dealt >= 2:
+                self.until = time.monotonic() + 0.3
+
+    monkeypatch.setattr(agent, "STILL_S", 30.0)
+    monkeypatch.setattr(agent, "TRANSIT_S", 3.0)
+    fake = Slow([WINNING] * 3)
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=LEVELS, budget=budget())
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    # the blank page was waited out: the map's step was sent once the map stood there, and no model saw the page
+    assert between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map")] and len(plays(model)) == 4

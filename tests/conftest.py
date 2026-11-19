@@ -7,9 +7,14 @@ def _instant_looks(monkeypatch):
     moving (`motion`) need no time between them here, nor the frames a carried drag looks at."""
     from gamelab import carry, motion
 
+    from gamelab import agent
+
     monkeypatch.setattr(motion, "GAP_S", 0.0)
     monkeypatch.setattr(motion, "FRAME_GAP_S", 0.0)
     monkeypatch.setattr(carry, "STILL_GAP_S", 0.0)
+    # nor is a screen no step of a routine fits on its way to another (`agent._by_routine`)
+    monkeypatch.setattr(agent, "LOOK_AGAIN_S", 0.0)
+    monkeypatch.setattr(agent, "STILL_S", 0.0)
 
 
 @pytest.fixture(autouse=True)

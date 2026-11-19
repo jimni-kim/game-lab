@@ -266,3 +266,37 @@ def choose(state, rules):
     left, top, width, height = BOARD
     assert fake.taps[:2] == [(left + width / 6, top + height / 4), (left + width / 2, top + height / 4)]
     assert len(fake.taps) == 2 * played.record["actions_used"]
+
+
+async def test_a_family_made_for_a_game_is_kept_and_taken_up_again_with_nothing_described_or_written(tmp_path):
+    """What was made of a game is kept by the game (plan §12, A3): its description and its rules as written. The
+    next game of it is played by them at once; rules that do not hold on its first screen are not used, and the
+    game is found, described and written for as if nothing had been kept."""
+    from gamelab.adaptation import Store
+
+    store, site = Store(tmp_path), "https://lamps.example/grid"
+
+    async def again(modules):
+        fake = Lamps()
+        model = Maker(fake, modules)
+        played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 120), store=store)
+        return fake, model, played, found
+
+    fake, model, played, found = await again([RIGHT])
+    assert ending(played) == ("goal_reached", "won") and model.count("write") == 1
+    kept = store.made(site)
+    assert kept["source"] == RIGHT.strip() and kept["told"]["name"] == "Lamps" and not catalog.MADE
+    # the next game: no question of which game, what it is or its rules
+    fake, model, played, found = await again([])
+    assert ending(played) == ("goal_reached", "won"), (played.record, found)
+    assert (model.count("identify"), model.count("describe"), model.count("write"), model.count("play")) == (0, 0, 0, 0)
+    assert found["made"]["restored"] and found["identified"]["source"] == "made_kept" and len(fake.taps) == ROWS * COLS
+    assert played.record["family"] == found["made"]["family"] and not catalog.MADE
+    # what is kept does not hold on the screen (its rules offer no move there): not used, and made anew
+    store.save_made(site, {**kept, "source": RIGHT + "\n\ndef legal_actions(state, rules):\n    return []\n"})
+    fake, model, played, found = await again([RIGHT])
+    assert ending(played) == ("goal_reached", "won"), (played.record, found)
+    assert (model.count("identify"), model.count("describe"), model.count("write")) == (1, 1, 1)
+    assert found["made_kept"] == "not_taken" and "restored" not in found["made"] and store.made(site)["source"] == RIGHT.strip()
+    # nothing kept is a family: a record that is none is left alone
+    assert made.Game.restore(site, {"told": {"rows": 2}, "source": 3}) is None and made.Game.restore(site, None) is None

@@ -35,9 +35,9 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, carry, catalog, direct, kits, made, recovery as recovering, samples, scenes
+from . import adaptation, carry, catalog, direct, kits, made, recovery as recovering, routine, samples, scenes
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
-                         Store, Trace, _agrees, _board, _shape, adopt, explorable, identify)
+                         Store, Trace, _agrees, _board, _shape, adopt, explorable, identify, keyed)
 from .adapters.generated import GeneratedAdapter
 from .adapters.kit import KitAdapter
 from .carry import Carrier
@@ -56,6 +56,20 @@ log = logging.getLogger("gamelab.agent")
 
 RECORD_VERSION = 2
 L0, L2, L3 = "L0", "L2", "L3"
+# an input no reading chose: a step of the game's routine, sent again by code on a screen like the one a model chose
+# it on (`routine`, PLAN §28)
+ROUTINE = "R"
+# after a step sent by code no kept step may fit the screen yet (a scene on its way to the next): it is looked at
+# again this often, until it has looked the same this long (small pictures this near, of 255) and for no longer
+# than that, before a model is asked or, after a step that opened a level before, the family is tried. A screen kept
+# as one to wait on is looked at again at most this many times a stretch
+LOOK_AGAIN_S, STILL_S, STILL_NEAR, TRANSIT_S, WAITS_MOST = 0.5, 1.5, 1.0, 8.0, 30
+# the first screen of a stretch the game has steps for is looked at again for this long when none fits it yet (the
+# end of the level before may still be drawing)
+FIRST_S = 3.0
+# what `_by_routine` did about a screen: nothing (the model is asked), something (the screen is looked at again), or
+# the family took the board
+ASK, AGAIN, RESUMED = "ask", "again", "resumed"
 # the first moves read by an adapter (made now, or kept from another game) that must each do what the rules
 # predict: one that does not sends the screen to the model
 TRIAL_MOVES = 3
@@ -211,7 +225,15 @@ class Agent:
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
-                 notes: str = "", anew: bool = False) -> None:
+                 notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None) -> None:
+        # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
+        # (`adaptation.keyed`)
+        self.game_name = game
+        # the game's routines (`routine`): the steps kept of its screens between levels, sent again by code. The
+        # work's own book when it has parts, so that what one part learned the next can send
+        self.book = book if book is not None else routine.Book()
+        # the stretch of the model's own play now going on, as the routine sees it (`_stretch`)
+        self.stretch: dict[str, Any] = {}
         # more levels follow this one (`work`): a level shown ended before any move here is passed for the next
         self.onward = onward
         # the person asked for a game from its start, not one to go on with (`Scope.NEW_GAME`, `work`): a game the
@@ -230,6 +252,7 @@ class Agent:
         # one input it sent among them when it was one a kept recovery can send again, and the input count a
         # family tried again on a screen named a board did not read it at
         self.trail = scenes.Trail()
+        self._stretch()
         # moves in a row that gained nothing towards the level's goals (`AIMLESS_MOST`), and what a model was
         # asked to pick among the code's moves: the questions, the picks that were not the code's own first, the
         # answers that picked none
@@ -238,7 +261,6 @@ class Agent:
         self.picked: dict[str, Any] | None = None
         # whether the game's count of moves left changed with the last move, as the family's reader saw it
         self.ticked: bool | None = None
-        self.passage: dict[str, Any] | None = None
         self.unread_at: int | None = None
         # what the inputs sent used up beyond the board, and what inputs not sent would have (PLAN §25, R2)
         self.account: dict[str, dict[str, int]] = {"used": {}, "refused": {}}
@@ -387,6 +409,7 @@ class Agent:
                 await self._keep_for_next()
             if self.game is not None:
                 self.found["made"] = self.game.summary()
+                self._keep_made()
             self._keep_looks()
             record = {"version": RECORD_VERSION, "family": self.family_id, "phase": "ended", "outcome": str(outcome),
                       "reason": reason, "detail": detail, "goal": self.goal.to_json(), "budget": self.budget.to_json(),
@@ -418,6 +441,7 @@ class Agent:
                 "screen": self.screen,
                 "situation": self.player.situation if self.player is not None and self.policy == "model" else self._situation(),
                 **({"profiles": list(self.profiles)} if self.profiles else {}),
+                **({"routines": self.book.summary()} if self.book.summary() else {}),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
     def _kit_summary(self) -> dict[str, Any] | None:
@@ -453,12 +477,22 @@ class Agent:
             self.game.close()
         if self.store is not None and self.recovery is not None and self.family_id and self.site and self.recovery.known:
             self.store.save_recoveries(self.site, self.family_id, self.recovery.known)
+        if self.site:
+            self.book.keep(self.store)
+            if self.store is not None and self.player is not None and self.player.lasting():
+                self.store.save_memory(self.site, self.player.lasting())
 
     async def _begin(self) -> None:
         """The family the game is played as: the one given, the one a kept adapter of this site names, else
         each a model names for the screen, likeliest first (`_take`)."""
-        self.site = await self.surface.address()
+        self.site = keyed(await self.surface.address(), self.game_name)
+        self.book.open(self.store, self.site, self.fresh)
+        if not self.notes and self.store is not None and not self.fresh:
+            # what a model playing this game before noted of it (PLAN §27, M4)
+            self.notes = self.store.memory(self.site) or ""
         self.candidates = [self.family_id] if self.family_id else []
+        if self.family_id is None and await self._made_again():
+            return
         if self.family_id is None:
             kept = [] if self.store is None or self.fresh else \
                 [name for name in explorable() if (self.store.profile(self.site, name) if kits.has(name)
@@ -477,6 +511,53 @@ class Agent:
                 # family a model named takes the board once it is one (`_resume`)
                 self.resumable = self.family_id
             await self._play_direct(self.found.get("identified", {}).get("situation") or "")
+
+    async def _made_again(self) -> bool:
+        """The family made for this game before (`made`), taken up with nothing described or written anew (plan
+        §12, A3): its board must read from the first screen by its description, and its rules as written must
+        hold on what is read. Else nothing of it is used, and the game is found as any other is."""
+        kept = None if self.store is None or self.fresh or not self.direct else self.store.made(self.site)
+        game = made.Game.restore(self.site, kept) if kept is not None else None
+        if game is None:
+            return False
+        self.game, self.named = game, True
+        self.found["identified"] = {"family": None, "source": "made_kept", "candidates": [game.id], "tried": [],
+                                    "questions": 0, "inputs": 0, "situation": None}
+        holds = False
+        try:
+            if await self._take(game.id):
+                first = self.adaptation.first[1] if self.adaptation.first is not None else None
+                if first is None and self.adapter is not None:
+                    # read by the adapter kept with it: that reading is the first screen
+                    self.carried = await self._read_code(None)
+                    first = self.carried.state if self.carried is not None else None
+                holds = first is not None and not game.code.check([first], [])
+        except _End:
+            holds = False
+        except Exception as error:
+            log.info("the family kept for this game could not be taken up: %s", error)
+        if holds:
+            return True
+        if self.adapter is not None:
+            self.adapter.close()
+        game.close()
+        self.game, self.named, self.adapter, self.adaptation, self.recovery = None, False, None, None, None
+        self.family_id = self.family = self.policy = self.trace = self.made = self.board = self.carried = None
+        self.found.pop("identified", None)
+        self.found["made_kept"] = "not_taken"
+        return False
+
+    def _keep_made(self) -> None:
+        """The family made for this game kept for its next game, when its rules played it: moves by them were
+        borne out by the screen and they were not dropped. One taken up from what was kept that did not hold is
+        kept no longer."""
+        if self.store is None or self.game is None or not self.site:
+            return
+        dropped = any(failure.get("reason") == "made_family_dropped" for failure in self.failures)
+        if self.game.code.source and self.transitions and not dropped:
+            self.store.save_made(self.site, self.game.record())
+        elif self.game.restored:
+            self.store.save_made(self.site, None)
 
     async def _identify(self) -> dict[str, Any]:
         """Which families the game may be, as a model sees it; asked again when the model could not be reached
@@ -1790,13 +1871,10 @@ class Agent:
         self.on_board = False
 
     async def _between(self) -> None:
-        """The screen stands between two levels (PLAN §25, R6): the input that opened the next level from a
-        screen like it before is sent again unasked; else the model plays on by its own inputs, through
-        whatever the game puts there, until a screen it names a board is read by the family (`_resume`)."""
+        """The screen stands between two levels (PLAN §25, R6): it is played on by the steps kept of the game's
+        screens where one fits and by the model's own inputs where none does (`_play_direct`, `routine`), through
+        whatever the game puts there, until the family reads a board (`_resume`)."""
         self.carried = None
-        if self.recovery is not None and await self.recovery.replay(self.seen, NEXT_LEVEL):
-            self.unread_move = None
-            return
         self.fruitless = self.since_tried = 0
         if self.resumable is None and (self.game is None or self.family_id != self.game.id):
             self.resumable = self.family_id
@@ -1887,7 +1965,6 @@ class Agent:
                     and player.score >= self.goal.target_value:
                 raise _End(Outcome.GOAL_REACHED, objective)
             self._check_stops()
-            self._afford()
             before = await self.seen.capture()
             moving = list(self.seen.moving)
             looked = time.monotonic()
@@ -1903,6 +1980,13 @@ class Agent:
             if been is not None and self.trail.round():
                 raise _End(Outcome.GAVE_UP, "going_round", player.situation)
             between = self._before_any()
+            # a screen the game's routine has a step for is passed by that step, and no model is asked (PLAN §28)
+            did = await self._by_routine(before, moving, looked)
+            if did == RESUMED:
+                return
+            if did == AGAIN:
+                continue
+            self._afford()
             try:
                 answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving,
                                                        onward=between, been_here=been, anew=self._before_own()))
@@ -1950,12 +2034,17 @@ class Agent:
             if self.watch is not None:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
             if not level:
-                # the one input sent between two levels, when a kept recovery can send it again (`_resume`)
-                self.passage = {"action": {key: value for key, value in action.items() if key != "repeat"},
-                                "signature": recovering.signature(before)} \
-                    if between and not self.trail.inputs and not answer["uses"] and action["kind"] in recovering.NEEDS else None
                 self.trail.sent(answer["told"])
-            carried = await direct.send(self.seen, action, self.carrier, before)
+            # inputs sent one after another at one answer, each only once the one before changed a little of the
+            # screen: a tap to be sent again (a story's lines), or the inputs of a sequence on a screen that is no
+            # board (PLAN §27, M1). On a board a sequence is one move, sent whole
+            queue: list[dict[str, Any]] = []
+            if action["kind"] == direct.SEQUENCE and not level:
+                queue = list(action["inputs"][1:])
+            elif action.get("repeat") and not level and not answer["uses"]:
+                queue = [{"kind": direct.TAP, "at": action["at"]}] * (action["repeat"] - 1)
+            carried = await direct.send(self.seen, action["inputs"][0] if action["kind"] == direct.SEQUENCE and not level
+                                        else action, self.carrier, before)
             self.used += 1
             for name in answer["uses"]:
                 # `forced_free`: of those, a booster the game forced in a tutorial for nothing
@@ -1967,23 +2056,29 @@ class Agent:
             after = await direct.settled(self.seen)
             moving = motion.joined(moving + self.seen.moving)
             repeated, sent_on = None, before
-            if action.get("repeat") and not level and not answer["uses"]:
-                # a tap to be sent again while each changes a little of the screen (a story's lines): the next
-                # is not sent once one changed nothing or so much that the scene is another (PLAN §27, M1)
+            # the screen each input of this answer was sent on
+            screens = [before]
+            if queue:
+                # the next is not sent once one changed nothing, or so much that the scene is another: the model
+                # looks at that first
                 sends, why = 1, "count"
-                while sends < action["repeat"]:
+                for following in queue:
                     share = self._share(sent_on, after, moving)
                     if not share or share >= direct.REPEAT_SHARE or self.used >= self.budget.max_actions:
                         why = "no_change" if not share else "scene_changed" if share >= direct.REPEAT_SHARE else "budget"
                         break
                     self._check_stops()
                     sent_on = after
-                    await direct.send(self.seen, {"kind": direct.TAP, "at": action["at"]})
+                    screens.append(after)
+                    await direct.send(self.seen, following, self.carrier, after)
                     self.used, sends = self.used + 1, sends + 1
                     after = await direct.settled(self.seen)
                     moving = motion.joined(moving + self.seen.moving)
-                repeated = {"sent": sends, "stopped": why}
+                repeated = {"sent": sends, **({"of": len(queue) + 1} if action["kind"] == direct.SEQUENCE else {}),
+                            "stopped": why}
             changed = player.saw(answer, sent_on, after, moving, carried, repeated) or bool(repeated and repeated["sent"] > 1)
+            if not level:
+                self._learn(answer, screens, changed)
             if carried and carried.get("picked") and not changed:
                 self.carrier.doubt()
             self.levels[L0] += 1
@@ -2079,12 +2174,120 @@ class Agent:
         self.shrugged = False
         self.unread_move = self.ineffective = self.state = None
         self.carried = reading
-        if self.passage is not None and self.trail.inputs == 1 and self.recovery is not None:
-            # one input opened the level from the screen before it: sent again unasked on a screen like that one
-            self.recovery.known = [*self.recovery.known, {**self.passage, "next": True}][-recovering.KNOWN_KEPT:]
-        self.passage = None
+        task = self._task()
+        if task is not None and self.stretch["last"] is not None:
+            # the level's board was read after this step: after it the family is tried next time, no model asked
+            self.book.of(task).opened(self.stretch["last"])
+        self._stretch()
         self.trail.clear()
         return True
+
+    # ── the game's routine (PLAN §28) ─────────────────────────────────
+
+    def _task(self) -> str | None:
+        """What the model's own play is for now, when it is a stretch the game has again and again: getting to
+        the next level's board, or to a new game's. None on a level's board, where an input depends on the position."""
+        return routine.NEXT_LEVEL if self._before_any() else routine.NEW_GAME if self._before_own() else None
+
+    def _stretch(self) -> None:
+        """A stretch of the model's own play begins: nothing of the routine was sent in it yet. `sends`: how often
+        each step was sent (by code or by the model), `avoid`: steps that changed nothing here, `last`: the last
+        input sent that is a step (by code or by the model), `by_code`: whether code sent the last input, `until`:
+        the time up to which a screen no step fits is looked at again before anyone is asked, `seen` and `since`:
+        the last such screen and since when it has looked the same."""
+        self.stretch = {"sends": {}, "avoid": set(), "total": 0, "waits": 0, "last": None,
+                        "by_code": False, "until": 0.0, "first": True, "seen": None, "since": 0.0}
+
+    async def _by_routine(self, before: bytes, moving: list[list[int]], looked: float) -> str:
+        """The screen passed by a step kept of this game's screens, when one fits it (`routine.Routine.find`):
+        the input the model chose on a screen like it is sent again and its effect looked at; a screen kept as one
+        to wait on is looked at again. Where none fits right after a step, the screen may be on its way to the
+        next and is looked at again for a while; after a step that opened a level before, the family is then tried
+        on it. ASK: the model is to be asked about this screen."""
+        task = self._task()
+        if task is None:
+            return ASK
+        kept, stretch = self.book.of(task), self.stretch
+        first, stretch["first"] = stretch["first"], False
+        if first and kept.steps:
+            stretch["until"] = time.monotonic() + FIRST_S
+        step = None
+        if stretch["total"] < routine.STRETCH_MOST:
+            spent = {step["id"] for step in kept.steps if stretch["sends"].get(step["id"], 0) >= kept.most(step)}
+            step = kept.find(before, avoid=stretch["avoid"] | spent, at=self.used)
+        if step is None:
+            now, seen = time.monotonic(), recovering.signature(before)
+            if stretch["seen"] is None or recovering._distance(stretch["seen"], seen) > STILL_NEAR:
+                stretch["since"] = now
+            stretch["seen"] = seen
+            if now < stretch["until"] and now - stretch["since"] < STILL_S:
+                # a scene on its way to the next: looked at again until it stands still
+                await asyncio.sleep(LOOK_AGAIN_S)
+                return AGAIN
+            stretch["until"] = 0.0
+            last, by_code = stretch["last"], stretch["by_code"]
+            stretch["by_code"] = False
+            if by_code and last is not None and last.get("opens") and self.resumable is not None \
+                    and self.resumes < RESUMES_MOST:
+                if await self._resume(board=True):
+                    return RESUMED
+                kept.unopened(last)
+            return ASK
+        if step["action"]["kind"] == direct.WAIT:
+            if stretch["waits"] >= WAITS_MOST:
+                stretch["avoid"].add(step["id"])
+                return AGAIN
+            stretch["waits"] += 1
+            kept.used(step, True)
+            await asyncio.sleep(LOOK_AGAIN_S)
+            stretch.update(by_code=True, until=time.monotonic() + TRANSIT_S)
+            return AGAIN
+        action = {key: value for key, value in step["action"].items() if key != "repeat"}
+        scale = min(1.0, recovering.VIEW_SIDE / max(recovering._size(before)))
+        told = direct.scaled(action, 1 / scale)
+        if self.watch is not None:
+            await self.watch.sending(self.used + 1, action, None, action, looked)
+        self.trail.sent(told)
+        await direct.send(self.seen, action, self.carrier, before)
+        self.used += 1
+        if self.watch is not None:
+            await self.watch.sent()
+        after = await direct.settled(self.seen)
+        changed = bool(motion.outside(carry_boxes(before, after), motion.joined(moving + self.seen.moving)))
+        kept.used(step, changed)
+        stretch["sends"][step["id"]] = stretch["sends"].get(step["id"], 0) + 1
+        stretch["total"] += 1
+        self.player.replayed(told, step.get("scene"), changed)
+        self.levels[ROUTINE] = self.levels.get(ROUTINE, 0) + 1
+        self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": told, "level": ROUTINE,
+                           "read_after_by": ROUTINE, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
+                           "step": step["id"], "at_s": round(time.monotonic() - self.started, 2),
+                           **({"scene": step["scene"]} if step.get("scene") else {})})
+        self.confirmed += changed
+        self.screen = step.get("scene") or self.screen
+        if changed:
+            stretch.update(last=step, by_code=True, until=time.monotonic() + TRANSIT_S)
+        else:
+            stretch["avoid"].add(step["id"])
+        return AGAIN
+
+    def _learn(self, answer: dict[str, Any], screens: list[bytes], changed: bool) -> None:
+        """The inputs the model just sent on a screen that is no board, kept as steps of the game's routine: each
+        with the screen it was sent on. The last of them only when the screen changed after it."""
+        self.stretch.update(by_code=False, until=0.0)
+        task = self._task()
+        if task is None:
+            return
+        action, scene = answer["action"], answer["scene"]
+        parts = action["inputs"] if action["kind"] == direct.SEQUENCE else [action]
+        for index, (part, png) in enumerate(zip(parts, screens)):
+            waits = part["kind"] == direct.WAIT and scene == scenes.LOADING
+            if (index < len(screens) - 1 or changed or waits) and (waits or part["kind"] != direct.WAIT) \
+                    and routine.kept(part, scene, answer):
+                step = self.book.of(task).learn(png, part, scene=scene, sends=self.stretch["sends"])
+                self.stretch["sends"][step["id"]] = self.stretch["sends"].get(step["id"], 0) + 1
+                if not waits:
+                    self.stretch["last"] = step
 
     def _won_meets_goal(self) -> bool:
         """Whether the game's own win message, with nothing under it read, is the goal reached: the rule
@@ -2125,11 +2328,12 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
-               notes: str = "", anew: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
+               **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
     family's reader could not."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
-                       direct=direct, light=light, onward=onward, notes=notes, anew=anew).run()
+                       direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book).run()

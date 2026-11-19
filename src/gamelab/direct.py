@@ -28,7 +28,15 @@ The model names each screen by its kind (`scenes`: a level's board, its result, 
 puzzle of another kind) and says when the game forces one input (`guided`). The loop goes by the name (PLAN §25,
 R5 and R6): which inputs are moves of a level, when a family's own reader is tried again, and, on a screen that
 is no board, a tap sent again and again without asking for as long as each changes a little of the screen
-(`repeat`: a story's lines; PLAN §27, M1).
+(`repeat`: a story's lines; PLAN §27, M1). A sequence of inputs on such a screen is sent the same way, each only
+once the one before changed a little of the screen.
+
+What the model keeps for itself is in parts (`MEMORY`; PLAN §27, M4): the game's rules as far as it made them out,
+how the game gets from screen to screen outside a level, what it tried in vain, and its plan. All but the plan
+outlast the work: they are kept by the game (`adaptation.Store.memory`) and given to the model that plays it next.
+
+An input the code sent itself between two questions, as a step of the game's routine (`routine`), is put in the
+history the model is shown, marked as the program's.
 """
 from __future__ import annotations
 
@@ -60,7 +68,7 @@ KEYS = recovery.KEYS | {"Backspace", "Tab"}
 TYPED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
 TEXT_MOST = 32
 # moves told to the model of what it did before, the notes it may keep, and the changed places it is told of
-HISTORY_KEPT, NOTES_MOST, PLACES_TOLD = 8, 1200, 6
+HISTORY_KEPT, NOTES_MOST, PLACES_TOLD = 8, 1800, 6
 PLAY_TOKENS, PLAY_TIMEOUT_S = 3000, 90.0
 # how long an input is left to take effect, then until the screen shows the same twice this far apart, at most
 SETTLE_S, STILL_GAP_S, STILL_TIMEOUT_S = 0.6, 0.3, 3.0
@@ -74,7 +82,18 @@ DOUBLE_TAP_GAP_MS = 120
 LONG_PRESS_MS, LONG_PRESS_RANGE = 800, (400, 3000)
 SCROLL_MOST = 10
 # a sequence: at most this many inputs, this far apart (a selection drawn before the next tap lands)
-SEQUENCE_MOST, SEQUENCE_GAP_S = 4, 0.3
+SEQUENCE_MOST, SEQUENCE_GAP_S = 6, 0.3
+# what the model keeps for itself, each part with what it is told to put there, and how long a part may be. PLAN is
+# of the work in hand only; the others are kept by the game for the next work on it
+PLAN = "plan"
+MEMORY = {
+    "rules": "the game's rules as far as you have made them out: what a move is, how it is made here, what wins",
+    "ways": "how this game gets from screen to screen outside a level: what opens the next level, what it puts in "
+            "the way and how each is passed",
+    "failed": "what you tried that did not work, so as not to try it again",
+    PLAN: "what you are doing now and mean to do next",
+}
+MEMORY_MOST = 400
 # a wait for the screen to change: at most this long, looked at this often
 CHANGE_WAIT_MS, CHANGE_LOOK_S = 15000, 0.5
 # the game started again from nothing at most this many times a game
@@ -257,10 +276,13 @@ class Direct:
     """One game played by a model's own inputs."""
 
     def __init__(self, model: Model, *, hint: str | None = None, accept_consent: bool = False,
-                 refused: dict[str, int] | None = None, notes: str = "") -> None:
+                 refused: dict[str, int] | None = None, notes: Any = "") -> None:
         self.model, self.hint, self.accept_consent = model, hint, accept_consent
-        # what the model wants kept from one question to the next, and what it last said the screen shows
-        self.notes, self.situation = notes[:NOTES_MOST], ""
+        # what the model wants kept from one question to the next (`MEMORY`; a plain text is its plan), and what
+        # it last said the screen shows
+        self.memory: dict[str, str] = {}
+        self._remember(notes if isinstance(notes, dict) else {PLAN: notes} if isinstance(notes, str) else {})
+        self.situation = ""
         # the kind of screen it last named (`scenes`), and whether it said the game forces one input there
         self.scene: str | None = None
         self.guided = False
@@ -299,7 +321,7 @@ class Direct:
                  "scenes": scenes.KINDS,
                  **({"onward": True} if onward else {}),
                  **({"anew": True} if anew else {}),
-                 **({"been_here": been_here} if been_here else {}), "notes": self.notes,
+                 **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(shown).decode("ascii")}}
@@ -316,8 +338,10 @@ class Direct:
             return None
         if isinstance(answer.get("situation"), str):
             self.situation = answer["situation"][:300]
-        if isinstance(answer.get("notes"), str):
-            self.notes = answer["notes"][:NOTES_MOST]
+        if isinstance(answer.get("memory"), dict):
+            self._remember(answer["memory"])
+        elif isinstance(answer.get("notes"), str):
+            self._remember({PLAN: answer["notes"]})
         self.scene, self.guided = scenes.kind(answer.get("scene")), answer.get("guided") is True
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
@@ -376,7 +400,29 @@ class Direct:
             self.hold_ms = max(self.hold_ms, entry["held_ms"])
         return bool(places)
 
+    def _remember(self, said: dict[str, Any]) -> None:
+        """The parts of the memory the model gave take the place of what they held; a part it left out stays."""
+        for part in MEMORY:
+            if isinstance(said.get(part), str):
+                self.memory[part] = said[part].strip()[:MEMORY_MOST]
+        self.memory = {part: text for part, text in self.memory.items() if text}
+
+    @property
+    def notes(self) -> str:
+        """The memory as one text, for the record."""
+        return "\n".join(f"{part}: {text}" for part, text in self.memory.items())[:NOTES_MOST]
+
+    def lasting(self) -> dict[str, str]:
+        """What of the memory outlasts the work: all but the plan, when the model was asked at all."""
+        return {part: text for part, text in self.memory.items() if part != PLAN} if self.questions else {}
+
+    def replayed(self, told: dict[str, Any], scene: str | None, changed: bool) -> None:
+        """An input the code sent itself, as a step of the game's routine (`routine`), kept for the next question
+        as the model's own are: `told` is the input in the pixels of the picture the model is shown."""
+        self.history.append({"action": told, "sent_by": "program", **({"scene": scene} if scene else {}),
+                             "screen_changed": changed})
+
     def summary(self) -> dict[str, Any]:
         return {"questions": self.questions, "score_first": self.first_score, "score_last": self.score,
-                "notes": self.notes, "situation": self.situation, "scene": self.scene,
+                "notes": self.notes, "memory": dict(self.memory), "situation": self.situation, "scene": self.scene,
                 **({"refused": dict(self.refused)} if self.refused else {})}

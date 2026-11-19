@@ -19,7 +19,7 @@ from gamelab.model import TurnResult
 from gamelab.rules import match3
 from gamelab.solvers import match3 as match3_solver
 from test_adaptation_mines import COMPUTE, WINNING
-from test_between import Garden, Guide, plays, quick  # noqa: F401
+from test_between import PLAY, Garden, Guide, inside, page, plays, quick  # noqa: F401
 from test_work import ending
 
 # a sparse board: every power stands among empty places and pieces held in place, and no swap lines anything up
@@ -51,7 +51,8 @@ def test_a_power_nothing_can_be_swapped_with_is_tapped_while_the_game_is_not_kno
 
 
 class Board(Guide):
-    """The model of `test_between`, which says on the map of the second part that no life is left (`lives`), marks
+    """The model of `test_between`, which says at the game's notice that no life is left how long the next takes
+    (`lives`), marks
     its tap on the story's first line as making a name (`profile`), and tells the moves a level was left with."""
 
     def __init__(self, fake, lives=None, profile=None, **options):
@@ -60,9 +61,9 @@ class Board(Guide):
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
-        if context.get("play") and self.fake.stage == "map" and self.lives is not None and self.fake.dealt == 2:
+        if context.get("play") and self.fake.stage == "empty" and self.lives is not None:
             self.asked.append(("play", context, 1))
-            return TurnResult(text=json.dumps({"situation": "the map: no lives, the next in 25 minutes", "scene": "map",
+            return TurnResult(text=json.dumps({"situation": "no lives, the next in 25 minutes", "scene": "popup",
                                                "guided": False, "score": None,
                                                "action": {"kind": "out_of_lives", "minutes": self.lives},
                                                "expect": "", "notes": ""}))
@@ -142,18 +143,36 @@ async def test_a_board_the_familys_reader_cannot_read_is_played_by_the_family_fr
     assert not [entry for entry in second.get("let_go", []) if entry["on_board"]]
 
 
+class Hearts(Garden):
+    """The garden, with no life left after its second level: the map's button then opens a notice that says so,
+    and no level. (The map itself looks as it always did, and its button is pressed as before: by the step kept of
+    it, `routine`.)"""
+
+    async def capture(self, region=None):
+        if self.stage == "empty":
+            return page((40, 20, 60), [((150, 150, 500, 300), (230, 230, 230))])
+        return await super().capture(region)
+
+    async def tap(self, x, y, duration_ms):
+        if self.stage == "empty" or (self.stage == "map" and self.dealt == 2 and inside(x, y, PLAY)):
+            self.taps.append((x, y))
+            self.stage = "empty"
+            return
+        await super().tap(x, y, duration_ms)
+
+
 async def test_a_level_the_game_opens_only_once_a_life_comes_back_ends_the_work_told_how_long(monkeypatch):
-    fake = Garden([WINNING] * 3)
+    fake = Hearts([WINNING] * 3)
     model = Board(fake, lives=25, repeat=5)
     played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 3), budget=Budget(200, COMPUTE, 600))
     assert ending(played) == ("stopped", "out_of_lives"), (played.record, made["work"])
     handback = made["work"]
-    # the map after the second level: the third is not opened
-    assert handback["levels"]["won"] == 2 and fake.dealt == 2 and fake.stage == "map"
+    # the notice after the second level: the third is not opened
+    assert handback["levels"]["won"] == 2 and fake.dealt == 2 and fake.stage == "empty"
     assert handback["out_of_lives"]["minutes"] == 25
     assert "out of lives, next life in 25 min" in work.told(handback)
     # nothing was sent at that answer
-    assert not [move for move in played.moves if move["part"] == 3 and move.get("scene") == "map"]
+    assert not [move for move in played.moves if move["part"] == 3 and move.get("scene") == "popup"]
 
 
 async def test_a_name_the_game_made_the_player_make_is_told_and_each_part_tells_what_it_spent():

@@ -110,12 +110,13 @@ async def test_a_game_of_no_registered_family_is_played_by_the_model_and_told_wh
     assert played.record["levels"] == {"L2": 0, "L3": 0, "L0": 3} and played.record["confirmed_actions"] == 3
     assert [move["effect"] for move in played.moves] == ["confirmed"] * 3
     # each question after the first carries what the code saw of the input before it, and the model's own notes
-    assert model.asked[0]["history"] == [] and model.asked[0]["notes"] == ""
+    assert model.asked[0]["history"] == [] and model.asked[0]["memory"] == {}
     seen = model.asked[1]["history"][0]
     assert seen["action"] == PRESS and seen["screen_changed"] and seen["expected"] == "one more lamp lights"
     # the first lamp, where it is drawn
     assert any(140 <= left <= 160 and 110 <= top <= 130 for left, top, _, _ in seen["changed_at"])
-    assert model.asked[1]["notes"] == "asked 1 times" and model.asked[0]["goal"]["objective"] == "play_until_end"
+    # (notes given as one text, as a model once wrote them, are its plan)
+    assert model.asked[1]["memory"] == {"plan": "asked 1 times"} and model.asked[0]["goal"]["objective"] == "play_until_end"
     assert made["direct"]["questions"] == 4 and (made["direct"]["score_first"], made["direct"]["score_last"]) == (0, 3)
     # which game it is, whether it can be played by written rules (it is no grid: no), then the four of the play
     assert made["identified"]["candidates"] == [] and made["questions"] == 6 and "made" not in made

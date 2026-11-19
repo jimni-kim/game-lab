@@ -97,23 +97,25 @@ async def test_levels_are_cleared_one_after_another_and_the_work_hands_back_what
     handback = made["work"]
     assert handback["levels"] == {"wanted": 3, "won": 3, "lost": 0}
     assert [(part["outcome"], part["reason"]) for part in handback["parts"]] == [("goal_reached", "won")] * 3
-    # every move of every part is in the one run, and the record counts them all: the cells, and the one input
-    # the model sent between two levels (the input sent again unasked is no move of anybody's)
+    # every move of every part is in the one run, and the record counts them all: the cells, the one input the
+    # model sent between two levels, and the same input sent by code the second time
     cells = sum(1 for move in played.moves)
-    assert handback["spent"]["inputs"] == played.record["actions_used"] == cells == len(fake.taps) - 1
+    assert handback["spent"]["inputs"] == played.record["actions_used"] == cells == len(fake.taps)
     assert {move["part"] for move in played.moves} == {1, 2, 3} and played.record["parts"] == 3
     # the second and third parts began on the last level's end, a screen the family reads no board on: the
     # model played on from it by its own inputs, told the work goes on (the button, on a screen it named a
     # result), and the family played again from the screen it named a board, the model's move there not sent.
-    # The one input that opened the level was sent again unasked the second time
+    # The one input that opened the level was sent again unasked the second time, as a step of the game's routine,
+    # and the family tried on the board it opened with no model asked what the screen was
     between = [context for kind, context, _ in model.asked if kind == "play"]
     assert len(between) == 2 and all(context["onward"] and context["scenes"]["board"] for context in between)
-    passed = [move for move in played.moves if move["level"] == "L0"]
-    assert len(passed) == 1 and passed[0]["scene"] == "result" and passed[0]["part"] == 2
-    assert [entry["source"] for entry in played.recoveries if entry["reason"] == "next_level"] == ["replay"]
+    passed = [(move["level"], move["scene"], move["part"]) for move in played.moves if move["level"] in ("L0", "R")]
+    assert passed == [("L0", "result", 2), ("R", "result", 3)]
     assert not [context for kind, context, _ in model.asked if kind == "recover" and context["reason"] == "next_level"]
+    assert [part["between"]["by_model"] for part in handback["parts"]] == [0, 1, 0]
+    assert [part["between"]["by_routine"] for part in handback["parts"]] == [0, 0, 1]
     # the input between two levels is no move of a level
-    assert [part["level_moves"] for part in handback["parts"]] == [part["confirmed"] - (number == 1)
+    assert [part["level_moves"] for part in handback["parts"]] == [part["confirmed"] - (number > 0)
                                                                    for number, part in enumerate(handback["parts"])]
     # where it stopped: the last level's end, named once by a model for the person
     assert handback["stopped_at"]["screen"] == "result" and handback["stopped_at"]["situation"] == "level 3 won"

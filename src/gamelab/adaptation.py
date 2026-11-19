@@ -1122,16 +1122,38 @@ def _board(state: dict[str, Any]) -> Any:
     return {key: value for key, value in state.items() if key not in ("score", "scene")}
 
 
+# where a game's routines are kept under its site
+ROUTINES = "routines"
+# what marks, in a site's address as things are kept by it, the one game of several a site or app holds (`keyed`)
+GAME_MARK = "#game="
+GAME_MOST = 24
+
+
+def keyed(site: str, game: str | None) -> str:
+    """The address things are kept by (plan §12, A1): the site's own, with the game named when the person picked
+    one of several the site or app holds (a puzzle collection's "mines"), so that two games of one app share
+    nothing kept. A name is taken by its letters and digits alone, whatever its case."""
+    slug = "".join(letter for letter in (game or "").casefold() if letter.isalnum())[:GAME_MOST]
+    return f"{site.split('#', 1)[0]}{GAME_MARK}{slug}" if slug else site
+
+
 class Store:
-    """Adapters kept by site and family (plan §4.4): the code, and how it was made."""
+    """What is kept of a site, and of the one game of it when it holds several (`keyed`): by family the adapter
+    (the code, and how it was made), what a family's own reader learned and the inputs that got past its screens
+    (plan §4.4); of the game whatever family plays it, the routines of its screens (`routine`, PLAN §28) and
+    what a model playing it noted of it (`direct`, PLAN §27 M4)."""
 
     def __init__(self, folder: Path) -> None:
         self.folder = folder
 
-    def _path(self, site: str, family_id: str) -> Path:
+    def _site(self, site: str) -> Path:
         parts = urlsplit(site)
         name = f"{parts.netloc or 'site'}-{hashlib.sha256(f'{parts.netloc}{parts.path}'.encode()).hexdigest()[:8]}"
-        return self.folder / name.replace(":", "_") / family_id
+        game = parts.fragment[len(GAME_MARK) - 1:] if parts.fragment.startswith(GAME_MARK[1:]) else ""
+        return self.folder / (name.replace(":", "_") + (f"+{game}" if game else ""))
+
+    def _path(self, site: str, family_id: str) -> Path:
+        return self._site(site) / family_id
 
     def load(self, site: str, family_id: str) -> tuple[str, dict[str, Any], Trace] | None:
         """The adapter kept for a site: its code, how it was made, and the looks it was made from."""
@@ -1208,6 +1230,65 @@ class Store:
         path = self._path(site, family_id)
         path.mkdir(parents=True, exist_ok=True)
         (path / "recoveries.json").write_text(json.dumps(known) + "\n", encoding="utf-8")
+
+    def routines(self, site: str) -> dict[str, list[dict[str, Any]]]:
+        """The steps kept of this game's screens, by the task each stretch of them is for (`routine.Book`)."""
+        folder = self._site(site) / ROUTINES
+        kept: dict[str, list[dict[str, Any]]] = {}
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            try:
+                steps = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            if isinstance(steps, list):
+                kept[path.stem] = steps
+        return kept
+
+    def save_routines(self, site: str, tasks: dict[str, list[dict[str, Any]]], pictures: dict[str, bytes]) -> None:
+        """`pictures`: the screen each step was learned on, by the step's id, kept beside the steps for whoever
+        looks into why a step did or did not fit a later screen."""
+        folder = self._site(site) / ROUTINES
+        folder.mkdir(parents=True, exist_ok=True)
+        for task, steps in tasks.items():
+            (folder / f"{task}.json").write_text(json.dumps(steps) + "\n", encoding="utf-8")
+            kept = {step["id"] for step in steps}
+            for old in folder.glob(f"{task}-*.png"):
+                if old.stem[len(task) + 1:] not in kept:
+                    old.unlink()
+        for name, png in pictures.items():
+            (folder / f"{name}.png").write_bytes(png)
+
+    def made(self, site: str) -> dict[str, Any] | None:
+        """The family made for this game before (`made.Game.record`): its description and its rules as written."""
+        path = self._site(site) / "made.json"
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+        return kept if isinstance(kept, dict) else None
+
+    def save_made(self, site: str, record: dict[str, Any] | None) -> None:
+        """`record` None: the family did not hold, and what was kept of it is kept no longer."""
+        path = self._site(site) / "made.json"
+        if record is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def memory(self, site: str) -> dict[str, Any] | None:
+        """What a model playing this game by its own inputs noted of it for the next time (`direct.Direct.memory`)."""
+        path = self._site(site) / "memory.json"
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+        return kept if isinstance(kept, dict) else None
+
+    def save_memory(self, site: str, memory: dict[str, Any]) -> None:
+        folder = self._site(site)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "memory.json").write_text(json.dumps(memory, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 # questions asked and inputs sent to reach a board before a game is given up as not shown

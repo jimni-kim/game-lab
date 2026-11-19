@@ -51,6 +51,9 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--resume", action="store_true",
                         help="go on from the screen as it stands: nothing is started again before the first game, "
                              "and later games go on from where the last one stopped")
+    parser.add_argument("--game", metavar="NAME",
+                        help="the one game of several the page or app holds: what is kept is kept by it too (a request "
+                             "in words names it itself)")
     parser.add_argument("--policy")
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
@@ -88,6 +91,11 @@ def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
     return (goal,
             Budget(max_actions=args.max_actions, compute=args.compute, max_seconds=args.max_seconds,
                    max_input_tokens=getattr(args, "max_input_tokens", None) or None))
+
+
+def game_within(args: argparse.Namespace) -> str | None:
+    """The one game of several a page or app holds, as the request in words named it, else as `--game` did."""
+    return (getattr(args, "asked", None) or {}).get("within") or getattr(args, "game", None)
 
 
 def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, model.Recorded | None]:

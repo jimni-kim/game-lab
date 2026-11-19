@@ -140,16 +140,18 @@ async def test_the_screens_between_two_levels_are_passed_by_the_model_and_the_fa
     asked = plays(model)
     assert [context["history"][-1].get("scene") if context["history"] else None for context in asked[:4]] == \
         [None, "result", "story", "map"]
-    assert len(asked) == 8 and all(context["onward"] for context in asked)
+    # (the second time the same screens stood between two levels, code passed them by the steps kept of the
+    # first: `test_routine.py`)
+    assert len(asked) == 4 and all(context["onward"] for context in asked)
     told = asked[2]["history"][-1]
     assert told["repeated"] == {"sent": LINES, "stopped": "scene_changed"} and told["screen_changed"]
     between = [move for move in played.moves if move["level"] == "L0"]
-    assert [move["scene"] for move in between] == ["result", "story", "map"] * 2
+    assert [move["scene"] for move in between] == ["result", "story", "map"]
     # every tap of the story is an input sent; none of what was sent between the levels is a move of a level
     assert sum(part["actions"] - part["level_moves"] for part in made["work"]["parts"]) >= 2 * (LINES + 2)
     assert made["work"]["parts"][0]["level_moves"] == made["work"]["parts"][0]["confirmed"]
     # what the model noted of the way between the levels went with it to the next part
-    assert asked[4]["notes"].startswith("level 2:") and asked[0]["notes"] == ""
+    assert asked[3]["memory"]["plan"].startswith("level 1:") and asked[0]["memory"] == {}
     assert made["work"]["stopped_at"]["screen"] == "result"
 
 
@@ -158,8 +160,9 @@ async def test_a_tap_is_repeated_only_as_often_as_asked_and_not_at_all_when_it_c
     model = Guide(fake, repeat=2)
     played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=Budget(200, COMPUTE, 600))
     assert ending(played) == ("goal_reached", "levels")
-    stories = [move["repeated"] for move in played.moves if move.get("scene") == "story"]
-    assert stories == [{"sent": 2, "stopped": "count"}, {"sent": 1, "stopped": "scene_changed"}]
+    # (the third line, a screen like the one the model chose the tap on, is passed by code: the step kept of it)
+    stories = [(move["level"], move.get("repeated")) for move in played.moves if move.get("scene") == "story"]
+    assert stories == [("L0", {"sent": 2, "stopped": "count"}), ("R", None)]
     # asked for more than may be sent at once, or on a board: no input at all
     assert direct.check({"kind": "tap", "at": [5, 5], "repeat": direct.REPEAT_MOST + 1}, SIZE, fake.kinds) is None
     assert direct.check({"kind": "tap", "at": [5, 5], "repeat": 3}, SIZE, fake.kinds) == {"kind": "tap", "at": [5.0, 5.0], "repeat": 3}
