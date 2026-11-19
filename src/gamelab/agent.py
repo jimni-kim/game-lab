@@ -61,9 +61,8 @@ L0, L2, L3 = "L0", "L2", "L3"
 ROUTINE = "R"
 # after a step sent by code no kept step may fit the screen yet (a scene on its way to the next): it is looked at
 # again this often, until it has looked the same this long (small pictures this near, of 255) and for no longer
-# than that, before a model is asked or, after a step that opened a level before, the family is tried. A screen kept
-# as one to wait on is looked at again at most this many times a stretch
-LOOK_AGAIN_S, STILL_S, STILL_NEAR, TRANSIT_S, WAITS_MOST = 0.5, 1.5, 1.0, 8.0, 30
+# than that, before a model is asked or, after a step that opened a level before, the family is tried
+LOOK_AGAIN_S, STILL_S, STILL_NEAR, TRANSIT_S = 0.5, 1.5, 1.0, 8.0
 # the first screen of a stretch the game has steps for is looked at again for this long when none fits it yet (the
 # end of the level before may still be drawing)
 FIRST_S = 3.0
@@ -477,10 +476,10 @@ class Agent:
             self.game.close()
         if self.store is not None and self.recovery is not None and self.family_id and self.site and self.recovery.known:
             self.store.save_recoveries(self.site, self.family_id, self.recovery.known)
-        if self.site:
-            self.book.keep(self.store)
-            if self.store is not None and self.player is not None and self.player.lasting():
-                self.store.save_memory(self.site, self.player.lasting())
+        # (a stretch that reached no board leaves no step behind, kept or not: `routine.Book.keep`)
+        self.book.keep(self.store if self.site else None)
+        if self.site and self.store is not None and self.player is not None and self.player.lasting():
+            self.store.save_memory(self.site, self.player.lasting())
 
     async def _begin(self) -> None:
         """The family the game is played as: the one given, the one a kept adapter of this site names, else
@@ -2090,6 +2089,9 @@ class Agent:
             if changed or action["kind"] == direct.WAIT:
                 self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT), 0
                 if level and changed and action["kind"] != direct.WAIT:
+                    if self._task() is not None:
+                        # the model's own move on a level's board: the stretch that led here got there
+                        self.book.of(self._task()).proved()
                     self.level_moves += 1
                     self.trail.clear()
             else:
@@ -2175,8 +2177,10 @@ class Agent:
         self.unread_move = self.ineffective = self.state = None
         self.carried = reading
         task = self._task()
-        if task is not None and self.stretch["last"] is not None:
-            # the level's board was read after this step: after it the family is tried next time, no model asked
+        if task is not None:
+            # the stretch got to a level's board: what was learned on the way is kept, and the step the board was
+            # read after is the one after which the family is tried next time, no model asked
+            self.book.of(task).proved()
             self.book.of(task).opened(self.stretch["last"])
         self._stretch()
         self.trail.clear()
@@ -2191,11 +2195,12 @@ class Agent:
 
     def _stretch(self) -> None:
         """A stretch of the model's own play begins: nothing of the routine was sent in it yet. `sends`: how often
-        each step was sent (by code or by the model), `avoid`: steps that changed nothing here, `last`: the last
+        each step was sent (by code or by the model), `avoid`: steps that changed nothing here or were waited on
+        long enough, `waits`: since when each screen to wait on has been, `last`: the last
         input sent that is a step (by code or by the model), `by_code`: whether code sent the last input, `until`:
         the time up to which a screen no step fits is looked at again before anyone is asked, `seen` and `since`:
         the last such screen and since when it has looked the same."""
-        self.stretch = {"sends": {}, "avoid": set(), "total": 0, "waits": 0, "last": None,
+        self.stretch = {"sends": {}, "avoid": set(), "total": 0, "waits": {}, "last": None,
                         "by_code": False, "until": 0.0, "first": True, "seen": None, "since": 0.0}
 
     async def _by_routine(self, before: bytes, moving: list[list[int]], looked: float) -> str:
@@ -2234,10 +2239,12 @@ class Agent:
                 kept.unopened(last)
             return ASK
         if step["action"]["kind"] == direct.WAIT:
-            if stretch["waits"] >= WAITS_MOST:
+            # a screen to wait on: for as long as the step has patience (`routine.Routine.patience`), then it is
+            # left out and whoever is next looks at the screen
+            if time.monotonic() - stretch["waits"].setdefault(step["id"], time.monotonic()) >= kept.patience(step):
                 stretch["avoid"].add(step["id"])
+                stretch["sends"][step["id"]] = 1
                 return AGAIN
-            stretch["waits"] += 1
             kept.used(step, True)
             await asyncio.sleep(LOOK_AGAIN_S)
             stretch.update(by_code=True, until=time.monotonic() + TRANSIT_S)

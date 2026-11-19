@@ -12,7 +12,7 @@ import time
 
 from gamelab import agent, direct, request, routine, work
 from gamelab.adaptation import Store, keyed
-from gamelab.contracts import Budget, GoalSpec
+from gamelab.contracts import Budget, GoalSpec, Scope
 from gamelab.model import TurnResult
 from test_adaptation_mines import COMPUTE, SIZE, WINNING, middle, quick as mines_quick  # noqa: F401
 from test_between import CLOSE, LINES, PLAY, SHOP, Garden, Guide, inside, page, plays, quick as direct_quick  # noqa: F401
@@ -302,3 +302,58 @@ async def test_a_screen_on_its_way_is_looked_at_again_before_the_model_is_asked(
     assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
     # the blank page was waited out: the map's step was sent once the map stood there, and no model saw the page
     assert between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map")] and len(plays(model)) == 4
+
+
+def test_a_maps_step_fits_the_map_seen_from_elsewhere_with_its_button_relabelled_and_another_screens_does_not():
+    def town(shift, label):
+        # a map: something large that stands elsewhere when the map is seen from elsewhere, and a button with a label
+        return page((120, 190, 140), [((400 + shift, 100, 300, 200), (30, 60, 30)), (PLAY, (40, 120, 220)),
+                                      ((PLAY[0] + 50, PLAY[1] + 10, 20, 20), label)])
+    tap = {"kind": "tap", "at": middle(PLAY)}
+    first, later = town(0, (250, 250, 250)), town(-300, (250, 200, 40))
+    kept = routine.Routine("next_level")
+    step = kept.learn(first, tap, scene="map")
+    assert kept.find(later) is step
+    look = kept.looks[-1]
+    assert routine.SCREEN_DISTANCE < look["screen"] <= routine.MAP_DISTANCE and look["spot"] <= routine.SPOT_DISTANCE
+    # the same input learned from there is the same step
+    assert kept.learn(later, tap, scene="map") is step and len(kept.steps) == 1
+    # a step of any other kind of screen must have the whole screen like it
+    other = routine.Routine("next_level")
+    other.learn(first, tap, scene="popup")
+    assert other.find(later) is None and other.find(town(0, (250, 200, 40))) is not None
+    # the button gone from the map: no fit, however like the rest is
+    assert kept.find(page((120, 190, 140), [((400, 100, 300, 200), (30, 60, 30))]), at=1) is None
+    # two places are apart by the cells that differ least: a label's worth of them changes nothing
+    assert routine.apart([0] * 100, [0] * 75 + [200] * 25) == 0 and routine.apart([0] * 100, [200] * 100) == 200
+    assert routine.apart([0] * 4, [0] * 5) == 255.0
+
+
+async def test_a_stretch_that_reaches_no_board_leaves_no_step_behind(tmp_path):
+    """What the model pressed on a way that ended at a stop is not pressed again by code: the steps of a stretch
+    are kept once it got to a level's board, and not before."""
+
+    class Stops(Guide):
+        async def complete(self, request):
+            context = json.loads(request.messages[0].content[0]["text"])
+            if context.get("play") and self.fake.stage == "map":
+                self.asked.append(("play", context, 1))
+                return TurnResult(text=json.dumps({"situation": "the map", "scene": "map", "guided": False, "score": None,
+                                                   "action": {"kind": "stop", "because": "the way on costs coins"},
+                                                   "expect": "", "memory": {}}))
+            return await super().complete(request)
+
+    fake = Garden([WINNING] * 2)
+    played, made = await work.play(fake, Stops(fake, repeat=5), "minesweeper", goal=GoalSpec("levels", 2), budget=budget(),
+                                   store=Store(tmp_path))
+    assert ending(played) == ("stopped", "stop_condition") and fake.stage == "map"
+    told = made["work"]["routines"][0]
+    assert (told["learned"], told["dropped"], told["kept"]) == (2, 2, 0)
+    assert Store(tmp_path).routines("https://mines.example/") == {} and not list(tmp_path.glob("*/routines/*.png"))
+    # the same game played on by a model that goes on: the stretch is the model's again, and kept this time
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 1, scope=Scope.CURRENT_GAME),
+                                   budget=budget(), store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    assert [step["scene"] for step in Store(tmp_path).routines("https://mines.example/")["next_level"]] == ["map"]
+    assert all("trial" not in step for step in Store(tmp_path).routines("https://mines.example/")["next_level"])

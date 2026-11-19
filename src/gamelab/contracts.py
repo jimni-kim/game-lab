@@ -39,7 +39,8 @@ OBJECTIVES = ("play_until_end", "reach_value", "actions", "levels")
 # it by name (PLAN §25, R2). Nothing that costs real money is among them: that is never done
 META_ACTIONS = {
     "boosters": "use a booster, power-up or other helper the game holds or offers outside the board's own pieces",
-    "currency": "spend coins, gems or another of the game's currencies",
+    "currency": "spend coins, gems, stars, energy or another of the game's currencies, on a purchase or on a task "
+                "of its map or story",
     "continue": "take extra moves, time or a life to keep a level going after it ran out",
     "retry": "play a lost level again (it may cost a life)",
 }

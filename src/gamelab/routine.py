@@ -6,8 +6,10 @@ step: a small picture of the screen it was sent on, a closer one of the place it
 screen like it stands there again, with the place looking as it did, the code sends the input and no model is
 asked.
 
-    the check    before a step is sent: the whole screen is like the one the model chose the input on, and so is
-                 the place pressed. After it: the screen changed
+    the check    before a step is sent: the whole screen is like the one the model chose the input on, and the
+                 place pressed looks as it did (most of it: a button whose number changed is the same button).
+                 A map or home screen may look less like it than another screen must, since what is behind its
+                 buttons moves. After the step: the screen changed
     where it     no step fits the screen (a notice this level put in the way): the model is asked from there on,
     breaks       and what it answers is kept as a step too. A step whose input changed nothing is left out for
                  the rest of the stretch and, when that happens again, kept no longer; the model's answer on that
@@ -20,6 +22,12 @@ asked.
 What is never kept: an input on a level's board or in a puzzle beside the levels (it depends on the position), an
 input that made a name or profile, typed text, and any input that uses up something of the player's (a booster,
 coins, another try at a lost level): whether to spend is the model's to say each time, on the screen as it is.
+
+A step is kept only when the stretch it was learned in got where it was going: a level's board was read, or a
+move made on one. Until then it is on trial (it may be sent again within the stretch), and a stretch that ends
+anywhere else (the model stopped, gave up, went round) leaves none of its new steps behind: what the model pressed
+on the way to nowhere is not pressed again by code (2026-11-19: a stretch that ended at a stop had left two taps
+that spent the game's energy).
 
 A step is sent once in a stretch: play that comes back to a screen it left by that step is the model's to look at
 (it went round). The exceptions are a step the model itself asked to be repeated (a story's lines) and one the
@@ -42,17 +50,25 @@ NEXT_LEVEL, NEW_GAME = "next_level", "new_game"
 SENT = frozenset({direct.TAP, direct.DOUBLE_TAP, direct.LONG_PRESS, direct.KEY, direct.SWIPE, direct.BACK})
 # the kinds of screen a step is kept for: not a level's board, not a puzzle beside the levels
 SCENES = frozenset({scenes.RESULT, scenes.MAP, scenes.POPUP, scenes.TUTORIAL, scenes.STORY, scenes.LOADING})
-# how far the screen's small picture (`recovery.signature`, of 255) and the pressed place's may be from a step's
-# for the step to fit. The place is looked at closer than the screen: a button that moved, went grey or stands under
-# another notice is not the one the model pressed. Set from the screens of two games (PLAN §28, session D)
-SCREEN_DISTANCE, SPOT_DISTANCE = 12.0, 14.0
-# the place pressed: a square this share of the screen's longer side around the point, as this many grey levels a side
-SPOT_SHARE, SPOT_SIDE = 0.1, 12
+# how far the screen's small picture (`recovery.signature`, of 255) may be from a step's for the step to fit, and
+# how far the pressed place's. Set from one game's screens (PLAN §28, session D, 2026-11-19): two notices over a
+# dimmed screen were 25 to 35 apart and one notice on two days 2.6; a map seen from two places was 21 apart, a
+# map and anything else 36 or more. So a step of a map fits a screen within MAP_DISTANCE, any other within
+# SCREEN_DISTANCE
+SCREEN_DISTANCE, MAP_DISTANCE, SPOT_DISTANCE = 12.0, 30.0, 6.0
+# the place pressed: a square this share of the screen's longer side around the point (a button, little of what is
+# around it), as this many grey levels a side. Two places are as far apart as the nearest SPOT_ALIKE of their cells
+# are on average: a button whose label changed (a level's number) is the same button, 0 to 2.3 in that game,
+# where another button in the same place was 14 or more
+SPOT_SHARE, SPOT_SIDE, SPOT_ALIKE = 0.06, 12, 0.7
 # two inputs of one kind this near (the share of the screen's longer side) are the same input
 SAME_PLACE = 0.03
 # a step is sent this often in one stretch, unless the model sent it more often itself (`again`); one the model
 # asked to be repeated (a story's lines), this often
 STEP_MOST, REPEATED_MOST = 1, direct.REPEAT_MOST
+# a screen to wait on is waited on for a few times as long as the model waited there, within these bounds (seconds):
+# a board still drawing that a model once waited a moment on is no loading screen to sit out
+PATIENCE_TIMES, PATIENCE_LEAST, PATIENCE_MOST = 3, 3.0, 30.0
 # the steps one stretch may send in all before the model looks again, and the times a step may change nothing
 # before it is kept no longer
 STRETCH_MOST, FAILS_MOST = 24, 2
@@ -85,6 +101,19 @@ def spot(png: bytes, point: list[float]) -> list[int]:
     return _spot(_grey(png), point)
 
 
+def apart(one: list[int], other: list[int]) -> float:
+    """How far two places are from looking the same: the average difference of the cells that differ least."""
+    if len(one) != len(other):
+        return 255.0
+    nearest = sorted(abs(a - b) for a, b in zip(one, other))[:max(1, round(len(one) * SPOT_ALIKE))]
+    return sum(nearest) / len(nearest)
+
+
+def reach(scene: str | None) -> float:
+    """How far a screen may be from a step's for the step to fit it, by the kind of screen the step is of."""
+    return MAP_DISTANCE if scene == scenes.MAP else SCREEN_DISTANCE
+
+
 def place(action: dict[str, Any]) -> list[float] | None:
     """Where an input presses the screen: None for one that presses nowhere (a key, the back button, a wait)."""
     return action.get("at") or action.get("from")
@@ -110,7 +139,7 @@ class Routine:
         self.number = max((int(step["id"][1:]) for step in self.steps if step["id"][1:].isdigit()), default=0)
         # each time a screen was looked at for a step: which fitted, or how far the nearest was
         self.looks: list[dict[str, Any]] = []
-        self.sent = self.failed = self.learned = self.waited = 0
+        self.sent = self.failed = self.learned = self.waited = self.dropped = 0
 
     def find(self, png: bytes, *, avoid: Any = (), at: int = 0) -> dict[str, Any] | None:
         """The step that fits the screen: among those whose screen and place are near enough, the one whose
@@ -122,10 +151,10 @@ class Routine:
         for step in self.steps:
             far = recovery._distance(step["signature"], seen)
             point = place(step["action"])
-            near = recovery._distance(step["spot"], _spot(grey, point)) if point is not None and step.get("spot") else None
+            near = apart(step["spot"], _spot(grey, point)) if point is not None and step.get("spot") else None
             if nearest is None or far < nearest[0]:
                 nearest = (far, near, step["id"])
-            if far > SCREEN_DISTANCE or (near or 0.0) > SPOT_DISTANCE or step["id"] in avoid:
+            if far > reach(step.get("scene")) or (near or 0.0) > SPOT_DISTANCE or step["id"] in avoid:
                 continue
             rank = (step["action"]["kind"] == direct.WAIT, near or 0.0, far)
             if best is None or rank < best[:3]:
@@ -171,23 +200,26 @@ class Routine:
         wanted = {key: value for key, value in action.items()}
         self.serial += 1
         for step in self.steps:
-            if recovery._distance(step["signature"], seen) > SCREEN_DISTANCE:
+            if recovery._distance(step["signature"], seen) > reach(step.get("scene")):
                 continue
             if _same(step["action"], wanted, png):
                 step.update(used=self.serial, failed=0)
                 if "repeat" in wanted:
                     step["action"]["repeat"] = wanted["repeat"]
+                if wanted["kind"] == direct.WAIT and (sends or {}).get(step["id"]):
+                    # the code waited here as long as it may and the model waited on: twice as long from now on
+                    step["patience"] = min(self.patience(step) * 2, PATIENCE_MOST)
                 before = (sends or {}).get(step["id"], 0)
                 if before:
                     step["again"] = max(step.get("again", 1), before + 1)
                 return step
         # a step of the same screen whose input did nothing there gives way to what the model sends in its place
         self.steps = [step for step in self.steps if not (step.get("failed") and recovery._distance(step["signature"], seen)
-                                                          <= SCREEN_DISTANCE)]
+                                                          <= reach(step.get("scene")))]
         self.number += 1
         step = {"id": f"{self.task[0]}{self.number}", "signature": seen, "action": wanted, "scene": scene,
                 **({"spot": spot(png, point)} if point is not None else {}),
-                "used": self.serial, "sent": 0, "failed": 0}
+                "used": self.serial, "sent": 0, "failed": 0, "trial": True}
         self.steps.append(step)
         self.pictures[self._name(step)] = png
         self.learned += 1
@@ -196,6 +228,24 @@ class Routine:
             self.steps = [old for old in self.steps if old is not gone]
             self.pictures.pop(self._name(gone), None)
         return step
+
+    def proved(self) -> None:
+        """The stretch got to a level's board: the steps learned on the way are kept."""
+        for step in self.steps:
+            step.pop("trial", None)
+
+    def settle(self) -> None:
+        """The stretch is over: steps still on trial were learned on a way that reached no board, and are dropped."""
+        for step in self.steps:
+            if step.get("trial"):
+                self.pictures.pop(self._name(step), None)
+                self.dropped += 1
+        self.steps = [step for step in self.steps if not step.get("trial")]
+
+    def patience(self, step: dict[str, Any]) -> float:
+        """How long a screen to wait on is waited on in one stretch, in seconds."""
+        return step.get("patience") or min(max(PATIENCE_TIMES * step["action"].get("ms", 0) / 1000, PATIENCE_LEAST),
+                                           PATIENCE_MOST)
 
     def most(self, step: dict[str, Any]) -> int:
         """How often a step may be sent in one stretch."""
@@ -220,7 +270,8 @@ class Routine:
 
     def summary(self) -> dict[str, Any]:
         return {"task": self.task, "kept_before": self.began, "kept": len(self.steps), "sent": self.sent,
-                "failed": self.failed, "waited": self.waited, "learned": self.learned, "looks": self.looks[-LOOKS_KEPT:]}
+                "failed": self.failed, "waited": self.waited, "learned": self.learned, "dropped": self.dropped,
+                "looks": self.looks[-LOOKS_KEPT:]}
 
 
 def _sound(step: Any) -> bool:
@@ -243,8 +294,8 @@ def _same(old: dict[str, Any], new: dict[str, Any], png: bytes) -> bool:
 
 class Book:
     """A game's routines, by task. Read from what is kept of the game once its address is known (`open`) and
-    written back when a game of it ends (`keep`); with nothing to keep them in, they last as long as the work whose
-    parts share the book."""
+    written back when a game of it ends (`keep`: steps still on trial are dropped first); with nothing to keep
+    them in, they last as long as the work whose parts share the book."""
 
     def __init__(self) -> None:
         self.tasks: dict[str, Routine] = {}
@@ -263,6 +314,8 @@ class Book:
         return self.tasks[task]
 
     def keep(self, store: Any) -> None:
+        for routine in self.tasks.values():
+            routine.settle()
         if store is None or not self.site or not any(routine.steps or routine.began for routine in self.tasks.values()):
             return
         pictures = {name: png for routine in self.tasks.values() for name, png in routine.pictures.items()}
