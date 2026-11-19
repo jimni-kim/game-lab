@@ -52,9 +52,9 @@ SENT = frozenset({direct.TAP, direct.DOUBLE_TAP, direct.LONG_PRESS, direct.KEY, 
 SCENES = frozenset({scenes.RESULT, scenes.MAP, scenes.POPUP, scenes.TUTORIAL, scenes.STORY, scenes.LOADING})
 # how far the screen's small picture (`recovery.signature`, of 255) may be from a step's for the step to fit, and
 # how far the pressed place's. Set from one game's screens (PLAN §28, session D, 2026-11-19): two notices over a
-# dimmed screen were 25 to 35 apart and one notice on two days 2.6; a map seen from two places was 21 apart, a
-# map and anything else 36 or more. So a step of a map fits a screen within MAP_DISTANCE, any other within
-# SCREEN_DISTANCE
+# dimmed screen were 25 to 35 apart and one notice at two times (the picture in it another) 2.6; a map seen from
+# two places was 21 apart, a map and anything else 36 or more. So a step of a map fits a screen within
+# MAP_DISTANCE, any other within SCREEN_DISTANCE
 SCREEN_DISTANCE, MAP_DISTANCE, SPOT_DISTANCE = 12.0, 30.0, 6.0
 # the place pressed: a square this share of the screen's longer side around the point (a button, little of what is
 # around it), as this many grey levels a side. Two places are as far apart as the nearest SPOT_ALIKE of their cells
