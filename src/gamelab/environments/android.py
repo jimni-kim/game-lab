@@ -190,7 +190,7 @@ class AndroidSurface:
         await self.run(["shell", "am", "start", "-n", found[-1]])
         self.package = package
 
-    async def key(self, key: str) -> None:
+    async def key(self, key: str, hold_ms: int = 0) -> None:
         await self.run(["shell", "input", "keyevent", KEYCODES.get(key, key)])
 
     async def tap(self, x: float, y: float, duration_ms: int) -> None:

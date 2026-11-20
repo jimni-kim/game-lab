@@ -170,8 +170,10 @@ class WebSurface:
     async def address(self) -> str:
         return self.page.url
 
-    async def key(self, key: str) -> None:
-        await self.page.keyboard.press(key)
+    async def key(self, key: str, hold_ms: int = 0) -> None:
+        """`hold_ms`: how long the key is down before it is let go (a game that looks each frame at which keys
+        are down misses one let go at once)."""
+        await self.page.keyboard.press(key, delay=hold_ms or None)
 
     async def tap(self, x: float, y: float, duration_ms: int) -> None:
         await self.drag(x, y, x, y, duration_ms)

@@ -574,6 +574,14 @@ class Agent:
                 await self._until_due("")
             await self._play_direct("")
             return
+        if self.family_id is None and self._falling_kept() is not None:
+            # a game in which time moves, played here before: what the model said of it then is held against
+            # the screen and the loop starts with no question (PLAN §29, S4)
+            self.found["identified"] = {"family": None, "source": "falling_kept", "questions": 0, "inputs": 0,
+                                        "situation": None}
+            if await self._play_realtime():
+                return
+            self.found.pop("identified", None)
         if self.family_id is None and await self._made_again():
             return
         if self.family_id is None:
@@ -2240,21 +2248,34 @@ class Agent:
             return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
 
+    def _falling_kept(self) -> dict[str, Any] | None:
+        return None if self.store is None or self.fresh or not self.site else self.store.falling(self.site)
+
     async def _play_realtime(self) -> bool:
         """The game is one in which time moves (pieces fall into a well): a model says once where the well is and
         which keys play it, and from then on code reads the well and sends the keys, with no question between
-        (`realtime`, PLAN §29). False when the model's answer gives the loop nothing to go by (the game is then
-        found as any other is); else the game is played to its end here (`_End`). `reach_value` is counted in lines
-        cleared and `actions` in pieces placed."""
+        (`realtime`, PLAN §29). What it said is kept once pieces came to lie as planned, and the next game is
+        played from that when the screen is as it was (`realtime.again`); kept words the loop could place
+        nothing by are dropped and the model asked. False when the model's answer gives the loop nothing to go by
+        (the game is then found as any other is); else the game is played to its end here (`_End`).
+        `reach_value` is counted in lines cleared and `actions` in pieces placed."""
         self._afford()
         first = await self.surface.capture()
         self.shots, self.last_png = self.shots + 1, first
-        try:
-            setup = await self._asking(realtime.ask(self.model, first, await self.surface.size(), self.surface.kinds,
-                                                    self.hint))
-        except Exception as error:
-            log.info("the falling game could not be asked about: %s", error)
-            setup = None
+        kept = self._falling_kept()
+        setup = realtime.again(kept, first, await self.surface.size(), self.surface.kinds) if kept is not None else None
+        source = "kept" if setup is not None else "model"
+        if kept is not None and setup is None:
+            log.info("what was kept of the falling game does not fit this screen")
+            self.found["falling_kept"] = "dropped"
+            self.store.save_falling(self.site, None)
+        if setup is None:
+            try:
+                setup = await self._asking(realtime.ask(self.model, first, await self.surface.size(),
+                                                        self.surface.kinds, self.hint))
+            except Exception as error:
+                log.info("the falling game could not be asked about: %s", error)
+                setup = None
         if setup is None:
             self.found["realtime"] = {"setup": None}
             return False
@@ -2289,16 +2310,28 @@ class Agent:
                                            or objective == "actions" and loop.pieces >= target)
 
         loop = realtime.Loop(self.surface, setup, send=send, check=self._check_stops, seen=seen, placed=placed)
-        self.found["realtime"] = told = {"setup": setup}
+        self.found["realtime"] = told = {"setup": setup, "source": source}
+        why = None
         try:
             await loop.begin(first)
             why = await loop.play(done)
         finally:
             told.update(loop.summary())
+            if self.store is not None and self.site:
+                if loop.effects["confirmed"]:
+                    # the evidence it is kept on: pieces came to lie where the code planned them by it
+                    self.store.save_falling(self.site, realtime.record({**setup, **realtime.learned(loop)}, loop.well))
+                elif source == "kept" and why in ("no_piece", "well_unread") and not loop.effects["confirmed"]:
+                    self.store.save_falling(self.site, None)
             try:
                 self.last_png = await self.surface.capture()
             except ValueError:
                 pass
+        if source == "kept" and why in ("no_piece", "well_unread") and not loop.effects["confirmed"]:
+            # nothing was placed by the kept words: the model is asked of the screen as it stands now
+            log.info("the falling game was not played by what was kept of it (%s): asked anew", why)
+            self.found["falling_kept"] = "dropped"
+            return await self._play_realtime()
         if why == "done":
             raise _End(Outcome.GOAL_REACHED, objective)
         if why == "stopped_falling":

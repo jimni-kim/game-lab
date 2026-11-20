@@ -1290,6 +1290,25 @@ class Store:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "memory.json").write_text(json.dumps(memory, ensure_ascii=False) + "\n", encoding="utf-8")
 
+    def falling(self, site: str) -> dict[str, Any] | None:
+        """What a model said once of this game's well and keys, and what its empty cells looked like
+        (`realtime.record`, PLAN §29): the next game starts from it with no question."""
+        path = self._site(site) / "falling.json"
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+        return kept if isinstance(kept, dict) else None
+
+    def save_falling(self, site: str, record: dict[str, Any] | None) -> None:
+        """`record` None: what was kept did not fit the screen or played nothing, and is kept no longer."""
+        path = self._site(site) / "falling.json"
+        if record is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
     def world(self, site: str) -> dict[str, Any] | None:
         """What is known of a game that goes on between requests: what it holds, and when each errand done in it
         can be done again (`world.World`, PLAN §30)."""

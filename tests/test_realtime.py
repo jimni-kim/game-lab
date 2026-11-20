@@ -8,10 +8,11 @@ import json
 from PIL import Image, ImageDraw
 
 from gamelab import realtime
+from gamelab.adaptation import Store
 from gamelab.agent import play
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.model import TurnResult
-from gamelab.realtime import Cells, best, fall, normal, settle, turns, understood
+from gamelab.realtime import Cells, best, fall, normal, piece_in, settle, turns, understood
 
 ROWS, COLS, CELL = 12, 6, 20
 LEFT, TOP = 100, 40
@@ -33,11 +34,14 @@ class Falling:
     reads_dom = False
     kinds = frozenset({"keys", "tap"})
 
-    def __init__(self, every=3, started=False):
+    def __init__(self, every=3, started=False, shadow=False, held=False, drops=False, turn="ArrowUp"):
+        # shadow: the piece is drawn once more, pale, where it would come to lie. held: a key let go at once does
+        # nothing. drops: the space bar puts the piece down at once
         self.every, self.playing, self.over = every, False, False
+        self.shadow, self.needs_hold, self.drops, self.turn = shadow, held, drops, turn
         self.stack, self.piece, self.colour = {}, None, None
         self.count = self.captures = self.cleared = 0
-        self.keys = []
+        self.keys, self.held = [], []
         if started:
             self._start()
 
@@ -89,7 +93,13 @@ class Falling:
         draw = ImageDraw.Draw(image)
         draw.rectangle([BOX[0] - 2, BOX[1] - 2, BOX[2] + 1, BOX[3] + 1], fill=(0, 0, 0))
         draw.rectangle([BOX[0], BOX[1], BOX[2] - 1, BOX[3] - 1], fill=EMPTY)
-        shown = dict(self.stack) | ({cell: self.colour for cell in self.piece} if self.piece else {})
+        shown = dict(self.stack)
+        if self.piece and self.shadow:
+            lies = list(self.piece)
+            while self._fits([(r + 1, c) for r, c in lies]):
+                lies = [(r + 1, c) for r, c in lies]
+            shown |= {cell: (150, 150, 150) for cell in lies}
+        shown |= {cell: self.colour for cell in self.piece} if self.piece else {}
         for (r, c), colour in shown.items():
             if r >= 0:
                 draw.rectangle([LEFT + c * CELL + 1, TOP + r * CELL + 1, LEFT + (c + 1) * CELL - 2, TOP + (r + 1) * CELL - 2],
@@ -103,16 +113,22 @@ class Falling:
     async def tap(self, x, y, duration_ms):
         pass
 
-    async def key(self, key):
+    async def key(self, key, hold_ms=0):
         self.keys.append(key)
+        self.held.append(hold_ms)
         if key == "Space" and not self.playing and not self.over:
             self._start()
-        if not self.playing:
             return
-        if key in ("ArrowLeft", "ArrowRight"):
+        if not self.playing or self.needs_hold and hold_ms < 20:
+            return
+        if key == "Space" and self.drops:
+            count = self.count
+            while self.count == count and self.playing:
+                self._down()
+        elif key in ("ArrowLeft", "ArrowRight"):
             moved = [(r, c + (1 if key == "ArrowRight" else -1)) for r, c in self.piece]
             self.piece = moved if self._fits(moved) else self.piece
-        elif key == "ArrowUp":
+        elif key == self.turn:
             # its own way of turning: about the piece's top-left, the other way round from the code's
             top, left = min(r for r, _ in self.piece), min(c for _, c in self.piece)
             high = max(r for r, _ in self.piece) - top
@@ -191,7 +207,8 @@ async def test_a_game_already_going_is_taken_up_from_its_stack(monkeypatch):
     guide = Guide({**ANSWER, "start": None})
     run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60))
     assert run.record["outcome"] == "goal_reached", (run.record, made["realtime"])
-    assert "Space" not in fake.keys
+    # (the space bar is pressed once, on a piece in the air, to see whether it drops one; never to start)
+    assert fake.keys[0] != "Space" and fake.keys.count("Space") == 1 and made["realtime"]["dropping"] == "none"
 
 
 async def test_a_game_that_falls_too_fast_ends_as_over_not_as_an_error(monkeypatch):
@@ -209,3 +226,77 @@ async def test_an_unusable_answer_leaves_the_game_to_the_usual_ways():
     run, made = await play(fake, guide, None, goal=GoalSpec("play_until_end"), budget=Budget(5, 1, 20), direct=False)
     assert made["realtime"] == {"setup": None}
     assert run.record["outcome"] == "unsupported"
+
+
+async def test_the_next_game_starts_from_what_was_kept_with_no_question(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    store, guide = Store(tmp_path), Guide()
+    run, made = await play(Falling(), guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached" and made["realtime"]["source"] == "model"
+    kept = store.falling("https://falling.example/")
+    assert kept["setup"]["box"] == BOX and len(kept["empty"]) == 3
+    again = Guide()
+    run, made = await play(Falling(), again, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached", (run.record, made["realtime"])
+    assert again.asked == [] and made["realtime"]["source"] == "kept"
+    assert made["identified"]["source"] == "falling_kept"
+
+
+async def test_what_was_kept_of_another_screen_is_dropped_and_the_model_asked(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    store, site = Store(tmp_path), "https://falling.example/"
+    setup = understood(ANSWER, list(SIZE), Falling.kinds)
+    # the well's cells looked otherwise then: the screen is not the one the words were said of
+    store.save_falling(site, {"setup": setup, "empty": [240, 240, 240], "near": 28.0})
+    guide = Guide()
+    run, made = await play(Falling(), guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached", (run.record, made["realtime"])
+    assert guide.asked == ["setup"] and made["falling_kept"] == "dropped" and made["realtime"]["source"] == "model"
+    assert store.falling(site)["empty"] != [240, 240, 240]
+
+
+async def test_kept_words_nothing_is_placed_by_are_dropped_and_the_model_asked(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    monkeypatch.setattr(realtime, "FIRST_S", 0.3)
+    store, site = Store(tmp_path), "https://falling.example/"
+    # the game is started by another key now than the one kept
+    setup = understood({**ANSWER, "start": {"kind": "key", "key": "Enter"}}, list(SIZE), Falling.kinds)
+    store.save_falling(site, {"setup": setup, "empty": list(EMPTY), "near": 28.0})
+    guide = Guide()
+    run, made = await play(Falling(), guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached", (run.record, made["realtime"])
+    assert guide.asked == ["setup"] and made["falling_kept"] == "dropped"
+    assert store.falling(site)["setup"]["start"] == {"kind": "key", "key": "Space"}
+
+
+def test_a_piece_is_told_from_the_shadow_drawn_of_it():
+    stack = Cells((5, c) for c in range(3))
+    piece = Cells([(0, 1), (0, 2), (1, 1), (1, 2)])
+    shadow = fall(stack, piece, 6, 6)
+    assert piece_in(stack, piece | shadow, 6, 6) == piece
+    # a piece half above the well is known whole by its shadow
+    assert piece_in(stack, Cells([(0, 1), (0, 2)]) | shadow, 6, 6) == Cells([(-1, 1), (-1, 2), (0, 1), (0, 2)])
+    # come down into its shadow, the two are one patch: told apart by the shapes it turns to
+    near = Cells((r + 1, c) for r, c in piece)
+    assert piece_in(stack, near | shadow, 6, 6, turns(piece)) == near
+    # cells that hang nowhere a piece's shadow would lie are no piece
+    assert piece_in(stack, piece | Cells([(3, 5)]), 6, 6) is None
+    assert piece_in(stack, piece, 6, 6) == piece
+
+
+async def test_a_game_that_draws_shadows_takes_held_keys_and_drops_is_learned_as_it_is_played(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    store = Store(tmp_path)
+    # (the model names the usual key for turning; this game turns with another, which it gave as one to try)
+    fake, guide = Falling(every=8, shadow=True, held=True, drops=True, turn="x"), Guide({**ANSWER, "also": {"rotate": ["x"]}})
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60), store=store)
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    assert told["shadow"] and told["hold_ms"] == realtime.HOLD_MS and told["keys"]["drop"] == "Space"
+    assert told["keys"]["rotate"] == "x" and told["turning"] == "found"
+    assert told["resyncs"] == 0 and told["effects"]["unknown"] == 0
+    # the next game is played from the start as this one was learned to be
+    fake, again = Falling(every=8, shadow=True, held=True, drops=True, turn="x"), Guide()
+    run, made = await play(fake, again, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached" and again.asked == []
+    assert all(fake.held[1:]) and "ArrowDown" not in fake.keys and "ArrowUp" not in fake.keys

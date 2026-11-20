@@ -541,5 +541,21 @@
         "wait_ms": 3000
       }
     ]
+  },
+  "tetrjs_falling": {
+    "url": "https://simon.lc/tetr.js/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "PLAN §29 (S4): a falling-block game (open source, simonlc/tetr.js) drawn on canvases over black: a menu over the well, then pieces fall into a 10 by 20 well with a shadow of the piece where it would land, a key that drops a piece at once, a held piece and a preview of the next ones. No family is named and nothing in the setup starts the game. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      }
+    ]
   }
 }
