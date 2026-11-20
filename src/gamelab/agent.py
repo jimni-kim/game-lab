@@ -119,6 +119,12 @@ THEN_S = 0.3
 # a game played by the model's own inputs (L0) is given up when this many of them in a row changed nothing on
 # the screen, or when the model gave this many answers in a row that are no input
 MAX_IDLE, MAX_SILENT = 6, 3
+# how long the page under the picture may take to say what stands in view (`_outline`)
+OUTLINE_TIMEOUT_S = 5.0
+# how long one input of the model's own play may take to be carried out (its longest is a wait of 15 s): a page
+# whose script is stuck takes a key or a capture for ever, and the game ends there instead (2026-11-20: a held-out
+# page froze three times in three runs and no record was left)
+SEND_TIMEOUT_S = 40.0
 # a game the model plays itself after a family's play broke off is tried by that family again when a move of its
 # changes this share of the screen (a tutorial gives way to the game), at most RESUMES_MOST times a game
 RESUME_SHARE, RESUMES_MOST = 0.3, 3
@@ -2223,8 +2229,11 @@ class Agent:
             if did == AGAIN:
                 continue
             self._afford()
+            # what the page under the picture says stands in view, where there is a page (PLAN §27, M2)
+            outline = await self._outline()
             try:
                 answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving,
+                                                       outline=outline,
                                                        onward=between, been_here=been,
                                                        anew=self._before_own() and not self._errand(),
                                                        errand=self.errand if self._errand() else None,
@@ -2241,6 +2250,10 @@ class Agent:
                 continue
             silent = 0
             action, scene = answer["action"], answer["scene"]
+            if action["kind"] == direct.LOOK:
+                # nothing is sent: the model is shown the same screen at full size (`direct.Direct.sharp`)
+                self.found["looked_whole_at"] = self.used
+                continue
             if self._errand() and scene in (None, scenes.BOARD):
                 # an errand has no board of its own: the screen it is done on is the game's own ground, whatever
                 # the model called it, and an input on it is a step of the errand, not a move of a level
@@ -2311,16 +2324,18 @@ class Agent:
                 await self.watch.sending(self.used + 1, action, None, action, looked)
             if not level:
                 self.trail.sent(answer["told"])
-            # inputs sent one after another at one answer, each only once the one before changed a little of the
-            # screen: a tap to be sent again (a story's lines), or the inputs of a sequence on a screen that is no
-            # board (PLAN §27, M1). On a board a sequence is one move, sent whole
+            # inputs sent one after another at one answer, each only once the one before changed something of the
+            # screen: a tap to be sent again (a story's lines), the inputs of a sequence on a screen that is no
+            # board, or on a board the moves the model worked out at once (PLAN §27, M1)
             queue: list[dict[str, Any]] = []
-            if action["kind"] == direct.SEQUENCE and not level:
+            moves = level and action["kind"] == direct.SEQUENCE
+            if action["kind"] == direct.SEQUENCE:
                 queue = list(action["inputs"][1:])
             elif action.get("repeat") and not level and not answer["uses"]:
                 queue = [{"kind": direct.TAP, "at": action["at"]}] * (action["repeat"] - 1)
-            carried = await direct.send(self.seen, action["inputs"][0] if action["kind"] == direct.SEQUENCE and not level
-                                        else action, self.carrier, before)
+            # the words the page showed when the moves were chosen: other words coming up end them
+            worded = direct.words(outline) if moves and outline is not None else None
+            carried = await self._sent(action["inputs"][0] if action["kind"] == direct.SEQUENCE else action, before)
             self.used += 1
             for name in answer["uses"]:
                 # `forced_free`: of those, a booster the game forced in a tutorial for nothing
@@ -2329,30 +2344,45 @@ class Agent:
                 self.profiles.append({"made": answer["profile"], "situation": player.situation})
             if self.watch is not None:
                 await self.watch.sent()
-            after = await direct.settled(self.seen)
+            after = await self._settled()
             moving = motion.joined(moving + self.seen.moving)
             repeated, sent_on = None, before
             # the screen each input of this answer was sent on
             screens = [before]
             if queue:
-                # the next is not sent once one changed nothing, or so much that the scene is another: the model
-                # looks at that first
-                sends, why = 1, "count"
+                # the next is not sent once one changed nothing, or so much that the scene is another (on a board,
+                # also once the page shows words it did not before: a result, a notice): the model looks at that
+                # first
+                sends, why, much = 1, "count", direct.MOVE_SHARE if moves else direct.REPEAT_SHARE
                 for following in queue:
                     share = self._share(sent_on, after, moving)
-                    if not share or share >= direct.REPEAT_SHARE or self.used >= self.budget.max_actions:
-                        why = "no_change" if not share else "scene_changed" if share >= direct.REPEAT_SHARE else "budget"
+                    if not share or share >= much or self.used >= self.budget.max_actions:
+                        why = "no_change" if not share else "scene_changed" if share >= much else "budget"
+                        break
+                    if moves and objective == "actions" and self.confirmed + sends >= (self.goal.target_value or 1):
+                        why = "goal"
+                        break
+                    if worded is not None and direct.words(await self._outline()) - worded:
+                        why = "new_text"
                         break
                     self._check_stops()
                     sent_on = after
                     screens.append(after)
-                    await direct.send(self.seen, following, self.carrier, after)
+                    await self._sent(following, after)
                     self.used, sends = self.used + 1, sends + 1
-                    after = await direct.settled(self.seen)
+                    after = await self._settled()
                     moving = motion.joined(moving + self.seen.moving)
                 repeated = {"sent": sends, **({"of": len(queue) + 1} if action["kind"] == direct.SEQUENCE else {}),
                             "stopped": why}
-            changed = player.saw(answer, sent_on, after, moving, carried, repeated) or bool(repeated and repeated["sent"] > 1)
+            # whether the last input sent changed anything
+            tail = bool(self._share(sent_on, after, moving)) if moves else None
+            if moves:
+                repeated["last_changed"] = tail
+            # of moves on a board the model is told what all of them changed together
+            changed = player.saw(answer, before if moves else sent_on, after, moving, carried, repeated) \
+                or bool(repeated and repeated["sent"] > 1)
+            # the moves of a sequence sent before its last each changed the screen: confirmed moves of the level
+            more = repeated["sent"] - 1 if moves and repeated else 0
             if not level:
                 self._learn(answer, screens, changed)
             if carried and carried.get("picked") and not changed:
@@ -2364,12 +2394,14 @@ class Agent:
                                **({"scene": scene} if scene else {}), **({"repeated": repeated} if repeated else {}),
                                **({"carried": carried} if carried else {})})
             if changed or action["kind"] == direct.WAIT:
-                self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT), 0
+                # of a sequence of moves whose last changed nothing, the earlier ones still count
+                last = tail if moves else changed
+                self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT and last) + more, 0
                 if level and changed and action["kind"] != direct.WAIT:
                     if self._task() is not None:
                         # the model's own move on a level's board: the stretch that led here got there
                         self.book.of(self._task()).proved()
-                    self.level_moves += 1
+                    self.level_moves += last + more
                     self.trail.clear()
             else:
                 idle += 1
@@ -2395,6 +2427,35 @@ class Agent:
             # moves on
             if scene is None and changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
+
+    async def _sent(self, action: dict[str, Any], before: bytes) -> dict[str, Any] | None:
+        """An input of the model's own play carried out (`direct.send`), or the game ended where the surface does
+        not take it in time."""
+        try:
+            return await asyncio.wait_for(direct.send(self.seen, action, self.carrier, before), SEND_TIMEOUT_S)
+        except TimeoutError:
+            raise _End(Outcome.NEEDS_RECOVERY, "surface_unresponsive", "an input was not taken in time") from None
+
+    async def _settled(self) -> bytes:
+        """The screen once an input's effect is over (`direct.settled`), or the game ended where the surface gives
+        no picture in time."""
+        try:
+            return await asyncio.wait_for(direct.settled(self.seen), SEND_TIMEOUT_S)
+        except (TimeoutError, ValueError):
+            raise _End(Outcome.NEEDS_RECOVERY, "surface_unresponsive", "the screen could not be looked at") from None
+
+    async def _outline(self) -> dict[str, Any] | None:
+        """What the page under the picture says stands in view (`Surface.outline`); None where there is no page
+        to read or it could not be read."""
+        read = getattr(self.surface, "outline", None)
+        if not getattr(self.surface, "reads_dom", False) or not callable(read):
+            return None
+        try:
+            # a page whose script is stuck never answers: the picture alone is gone by then
+            return await asyncio.wait_for(read(), OUTLINE_TIMEOUT_S)
+        except Exception as error:
+            log.info("the page could not be read: %s", error)
+            return None
 
     def _due(self) -> bool:
         """Whether enough of the model's moves were confirmed since the family was last tried to try it again."""

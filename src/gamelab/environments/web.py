@@ -33,6 +33,85 @@ _ELEMENTS = """(queries) => {
  return out;
 }"""
 
+# What the page itself says of the screen (`outline`): every element in view that carries text of its own, can be
+# pressed, is a picture, or is a coloured or pictured leaf (a tile, a cell), with its box clipped to the view.
+# Nothing is read from a field. A thing pressed that has no text of its own speaks for what is inside it, which is
+# then not listed again (a button's label, its icon). `drawn`: the share of the view under things the page cannot be read through (a canvas, an
+# embedded page, a video, a large drawing).
+OUTLINE_MOST, OUTLINE_TEXT, OUTLINE_NAME, OUTLINE_CLASSES = 400, 40, 28, 3
+_OUTLINE = """([most, textMost, nameMost, classesMost]) => {
+ const W = innerWidth, H = innerHeight, items = [], spoken = new WeakSet();
+ let drawn = 0, cut = false;
+ const OPAQUE = new Set(['canvas', 'iframe', 'video', 'object', 'embed', 'svg']);
+ const SKIP = new Set(['script', 'style', 'noscript', 'head', 'meta', 'link', 'template', 'br', 'html', 'body']);
+ const PRESSED = new Set(['button', 'a', 'input', 'select', 'textarea', 'summary']);
+ const ROLES = new Set(['button', 'link', 'tab', 'checkbox', 'radio', 'menuitem', 'option', 'gridcell', 'switch']);
+ const FIELD = 'input,textarea,select,[contenteditable]:not([contenteditable="false"])';
+ const tidy = text => (text || '').replace(/\\s+/g, ' ').trim();
+ const own = e => tidy(Array.from(e.childNodes, n => n.nodeType === 3 ? n.textContent : '').join(' '));
+ const named = url => {
+   if (!url || url.startsWith('data:') || url.startsWith('blob:')) return '';
+   const last = url.split(/[?#]/)[0].split('/').pop() || '';
+   return last.replace(/\\.[a-z0-9]+$/i, '');
+ };
+ const colour = value => {
+   const m = /rgba?\\((\\d+), (\\d+), (\\d+)(?:, ([\\d.]+))?\\)/.exec(value || '');
+   if (!m || (m[4] !== undefined && +m[4] < 0.5)) return '';
+   return '#' + [1, 2, 3].map(i => (+m[i]).toString(16).padStart(2, '0')).join('');
+ };
+ const walk = root => {
+   for (const e of root.querySelectorAll('*')) {
+     if (e.shadowRoot) walk(e.shadowRoot);
+     const tag = e.tagName.toLowerCase();
+     if (SKIP.has(tag) || e.ownerSVGElement) continue;
+     if (e.parentElement && spoken.has(e.parentElement)) { spoken.add(e); continue; }
+     const r = e.getBoundingClientRect();
+     const left = Math.max(r.left, 0), top = Math.max(r.top, 0);
+     const w = Math.min(r.right, W) - left, h = Math.min(r.bottom, H) - top;
+     if (w < 4 || h < 4) continue;
+     if (e.checkVisibility && !e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true,
+                                                  opacityProperty: true, visibilityProperty: true})) continue;
+     const s = getComputedStyle(e);
+     if (s.visibility !== 'visible' || +s.opacity < 0.1) continue;
+     if (OPAQUE.has(tag) && w * h >= 0.1 * W * H) { drawn += w * h; continue; }
+     const field = !!e.closest(FIELD);
+     const role = e.getAttribute('role') || '';
+     const parent = e.parentElement;
+     const pressed = PRESSED.has(tag) || ROLES.has(role) || e.hasAttribute('onclick')
+       || (s.cursor === 'pointer' && !(parent && getComputedStyle(parent).cursor === 'pointer'));
+     let text = field ? '' : own(e);
+     if (!text && pressed && !field && e.querySelectorAll('*').length <= 3) {
+       const inner = tidy(e.innerText);
+       if (inner.length <= textMost) { text = inner; spoken.add(e); }
+     }
+     const image = s.backgroundImage.startsWith('url(') ? named(s.backgroundImage.slice(4).replace(/["')]/g, '')) : '';
+     const leaf = e.childElementCount === 0;
+     const bg = leaf && !text ? colour(s.backgroundColor) : '';
+     const picture = tag === 'img' || tag === 'svg' || OPAQUE.has(tag);
+     if (!(text || pressed || picture || image || bg)) continue;
+     let label = e.getAttribute('aria-label') || e.getAttribute('alt') || e.getAttribute('title')
+       || (tag === 'img' ? named(e.getAttribute('src')) : '') || image;
+     label = tidy(label);
+     let holder = e;
+     while (!holder.classList.length && holder.parentElement && holder.parentElement.childElementCount === 1)
+       holder = holder.parentElement;
+     const x = left + w / 2, y = top + h / 2;
+     const hit = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
+     const flags = [];
+     if (e.disabled || e.getAttribute('aria-disabled') === 'true') flags.push('disabled');
+     if (['aria-selected', 'aria-pressed', 'aria-checked'].some(name => e.getAttribute(name) === 'true')) flags.push('selected');
+     if (hit && hit !== e && !e.contains(hit) && !hit.contains(e)) flags.push('covered');
+     if (items.length >= most) { cut = true; continue; }
+     items.push({at: [Math.round(x), Math.round(y)], size: [Math.round(w), Math.round(h)],
+                 tag: tag, text: text.slice(0, textMost), label: label === text ? '' : label.slice(0, nameMost),
+                 classes: Array.from(holder.classList).slice(0, classesMost).map(name => name.slice(0, nameMost)),
+                 bg: bg, flags: flags});
+   }
+ };
+ walk(document);
+ return {size: [W, H], drawn: drawn / (W * H), cut: cut, items: items};
+}"""
+
 
 class WebSurface:
     kinds = frozenset({KEYS, TAP, DRAG, HOLD, TEXT, SCROLL, SECONDARY, RELAUNCH})
@@ -78,6 +157,15 @@ class WebSurface:
                               **({"cut": True} if cut else {})})
             out[query["name"]] = {"count": read["count"], "truncated": read["count"] > query["max"], "items": items}
         return out
+
+    async def outline(self) -> dict[str, Any] | None:
+        """What the page says stands in view (`_OUTLINE`): `{"size", "drawn", "cut", "items": [{"at", "size", "tag",
+        "text", "label", "classes", "bg", "flags"}]}` in the capture's pixels; None when the page cannot be read."""
+        try:
+            found = await self.page.evaluate(_OUTLINE, [OUTLINE_MOST, OUTLINE_TEXT, OUTLINE_NAME, OUTLINE_CLASSES])
+        except Exception:
+            return None
+        return found if isinstance(found, dict) and isinstance(found.get("items"), list) else None
 
     async def address(self) -> str:
         return self.page.url

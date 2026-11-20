@@ -77,18 +77,18 @@ def signature(png: bytes) -> list[int]:
         return list(image.convert("L").resize((SIGNATURE_SIDE, SIGNATURE_SIDE)).tobytes())
 
 
-def view(png: bytes) -> tuple[bytes, float]:
+def view(png: bytes, side: int = VIEW_SIDE) -> tuple[bytes, float]:
     """The picture as a model is shown it, and how much smaller it is than the screen: a model's service
     shrinks a large picture before the model sees it, and the model then answers in the pixels of what it
-    saw. A picture already no longer than VIEW_SIDE is shown as it is; points and boxes a model gives are
+    saw. A picture already no longer than `side` is shown as it is; points and boxes a model gives are
     divided by the factor to be the screen's."""
     from PIL import Image
 
     with Image.open(BytesIO(png)) as image:
         longer = max(image.size)
-        if longer <= VIEW_SIDE:
+        if longer <= side:
             return png, 1.0
-        scale = VIEW_SIDE / longer
+        scale = side / longer
         out = BytesIO()
         image.convert("RGB").resize((round(image.width * scale), round(image.height * scale))).save(out, format="PNG")
         return out.getvalue(), scale

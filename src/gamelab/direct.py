@@ -35,6 +35,13 @@ What the model keeps for itself is in parts (`MEMORY`; PLAN §27, M4): the game'
 how the game gets from screen to screen outside a level, what it tried in vain, and its plan. All but the plan
 outlast the work: they are kept by the game (`adaptation.Store.memory`) and given to the model that plays it next.
 
+What a question costs is kept down three ways (PLAN §27, session S2). The prompt is put together for the
+question (`prompt`): a paragraph of `play_direct.md` tagged `[when ...]` is given only when what it speaks of is
+there (an input the screen takes, an errand, levels to get to). Where the page under the picture can be read
+(`Surface.outline`), what it says stands in view is given as lines of text (`lines`; M2) and the picture is shown
+smaller; the model may ask for it at full size (`LOOK`). And on a level's board a sequence is several moves, sent
+one at a time while each changes something (`agent._play_direct`; M1).
+
 An input the code sent itself between two questions, as a step of the game's routine (`routine`), is put in the
 history the model is shown, marked as the program's.
 """
@@ -43,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import time
 from typing import Any
 
@@ -54,7 +62,7 @@ from .model import Model, Msg, TurnRequest
 TAP, KEY, SWIPE, TEXT, WAIT, DONE, GIVE_UP, STOP = "tap", "key", "swipe", "text", "wait", "done", "give_up", "stop"
 OUT_OF_LIVES = recovery.OUT_OF_LIVES
 DOUBLE_TAP, LONG_PRESS, DRAG, SCROLL, BACK = "double_tap", "long_press", "drag", "scroll", "back"
-RIGHT_TAP, RELAUNCH, SEQUENCE = "right_tap", "relaunch", "sequence"
+RIGHT_TAP, RELAUNCH, SEQUENCE, LOOK = "right_tap", "relaunch", "sequence", "look"
 # how a game the model says is over ended
 ENDS = ("won", "lost")
 # what an input is carried out with (`Surface.kinds`): any one of these
@@ -83,6 +91,18 @@ LONG_PRESS_MS, LONG_PRESS_RANGE = 800, (400, 3000)
 SCROLL_MOST = 10
 # a sequence: at most this many inputs, this far apart (a selection drawn before the next tap lands)
 SEQUENCE_MOST, SEQUENCE_GAP_S = 6, 0.3
+# on a level's board a sequence is moves one after another (PLAN §27, M1): at most this many inputs, and the share
+# of the screen one of them may change and still be followed by the next (a move changes more of a board than a
+# tap changes of a notice; more than this is a result or another screen)
+MOVES_MOST, MOVE_SHARE = 12, 0.5
+# the page's own account of the screen given as text (PLAN §27, M2): only when little of the view is under what
+# the page cannot be read through, it names at least this many things and its lines are no longer than this in
+# all (about twice what the whole picture costs: what is told is exact, which a picture's reading is not). The
+# picture is then shown with its longer side this long
+DRAWN_MOST, ELEMENTS_LEAST, ELEMENTS_CHARS, SMALL_SIDE = 0.1, 3, 8000, 768
+# a text of the page counts as words when it has this many letters; such a text coming up ends a sequence of moves
+WORD_LETTERS = 4
+_TAGGED = re.compile(r"^(\s*(?:- )?)\[when ([a-z_ ]+)\] ")
 # what the model keeps for itself, each part with what it is told to put there, and how long a part may be. PLAN is
 # of the work in hand only; the others are kept by the game for the next work on it
 PLAN = "plan"
@@ -117,12 +137,66 @@ def _ms(value: Any, default: int, least: int, most: int) -> int | None:
     return value if type(value) is int and least <= value <= most else None
 
 
+def prompt(flags: set[str]) -> str:
+    """The instructions for a question: `play_direct.md` with each line tagged `[when a b]` kept only when one of
+    the names is among `flags` (the inputs the screen takes, `onward`, `levels`, `anew`, `errand`, `elements`,
+    `look`), the tag taken off. A line with no tag is always given (PLAN §27, M7: the part by situation)."""
+    kept = []
+    for line in (resources.FRAGMENT / "prompts" / "play_direct.md").read_text(encoding="utf-8").split("\n"):
+        tagged = _TAGGED.match(line)
+        if tagged is None:
+            kept.append(line)
+        elif set(tagged[2].split()) & flags:
+            kept.append(tagged[1] + line[tagged.end():])
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept))
+
+
+def lines(outline: Any, scale: float = 1.0) -> list[str] | None:
+    """What the page says stands in view (`Surface.outline`) as lines for a model, places in the pixels of the
+    picture it is shown (`scale`): `x,y WxH tag "text" [label] .classes #colour flags`. None when the page does
+    not hold the screen: much of the view is a canvas or the like, it names next to nothing, or more than is
+    worth telling."""
+    if not isinstance(outline, dict) or outline.get("cut") or (outline.get("drawn") or 0) >= DRAWN_MOST:
+        return None
+    out = []
+    for item in outline.get("items") or []:
+        if "covered" in (item.get("flags") or []) and not (item.get("text") or item.get("label")):
+            # a box that says nothing and lies under something else (a tile's back, a cell under its piece)
+            continue
+        (x, y), (width, height) = item["at"], item["size"]
+        parts = [f"{round(x * scale)},{round(y * scale)}", f"{round(width * scale)}x{round(height * scale)}"]
+        if item.get("tag") not in ("div", "span"):
+            parts.append(str(item.get("tag")))
+        if item.get("text"):
+            parts.append(json.dumps(item["text"], ensure_ascii=False))
+        if item.get("label"):
+            parts.append(f"[{item['label']}]")
+        if item.get("classes"):
+            parts.append("." + ".".join(item["classes"]))
+        if item.get("bg"):
+            parts.append(item["bg"])
+        out.append(" ".join(parts + list(item.get("flags") or [])))
+    return out if len(out) >= ELEMENTS_LEAST and sum(map(len, out)) <= ELEMENTS_CHARS else None
+
+
+def words(outline: Any) -> frozenset[str]:
+    """The texts the page shows uncovered that are words, numbers left out: a score that counts up is the same
+    text, a notice or a result that came up is a new one."""
+    found = set()
+    for item in (outline.get("items") or []) if isinstance(outline, dict) else []:
+        text = re.sub(r"\d+", "", item.get("text") or "").strip()
+        if sum(letter.isalpha() for letter in text) >= WORD_LETTERS and "covered" not in (item.get("flags") or []):
+            found.add(text)
+    return frozenset(found)
+
+
 def can(kind: Any, kinds: frozenset[str]) -> bool:
     return kind in NEEDS and any(needs in kinds for needs in NEEDS[kind])
 
 
-def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str, Any] | None:
-    """The model's action as one the surface can be given, or None."""
+def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int = SEQUENCE_MOST
+          ) -> dict[str, Any] | None:
+    """The model's action as one the surface can be given, or None. `most`: how many inputs a sequence may have."""
     if not isinstance(action, dict):
         return None
     kind = action.get("kind")
@@ -157,7 +231,7 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
         return {"kind": kind, "at": at, "steps": action["steps"]}
     if kind in (BACK, RELAUNCH):
         return {"kind": kind}
-    if kind == SEQUENCE and isinstance(action.get("inputs"), list) and 2 <= len(action["inputs"]) <= SEQUENCE_MOST:
+    if kind == SEQUENCE and isinstance(action.get("inputs"), list) and 2 <= len(action["inputs"]) <= most:
         inputs = [check(part, size, kinds) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
                   for part in action["inputs"]]
         return {"kind": kind, "inputs": inputs} if None not in inputs else None
@@ -171,8 +245,8 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
         return {"kind": DONE, "end": action["end"], **recovery.left_of(action), **_world(action)}
     if kind == OUT_OF_LIVES:
         return {"kind": OUT_OF_LIVES, "minutes": recovery.minutes(action.get("minutes"))}
-    if kind == GIVE_UP:
-        return {"kind": GIVE_UP}
+    if kind in (GIVE_UP, LOOK):
+        return {"kind": kind}
     if kind == STOP:
         return {"kind": STOP, **_world(action)}
     return None
@@ -302,6 +376,8 @@ class Direct:
         self.relaunches = 0
         # the shortest press before a drag moves that this game takes, once a drag showed it (ms)
         self.hold_ms = 0
+        # the model asked for the screen at full size where the page's text came with a small picture (`LOOK`)
+        self.sharp = False
         # inputs not sent because they used what the person did not allow, by what they would have used (the
         # game's own account when it gives one)
         self.refused: dict[str, int] = refused if refused is not None else {}
@@ -309,7 +385,8 @@ class Direct:
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
                   been_here: dict[str, Any] | None = None, anew: bool = False,
-                  errand: str | None = None, began: bytes | None = None) -> dict[str, Any] | None:
+                  errand: str | None = None, began: bytes | None = None, outline: Any = None
+                  ) -> dict[str, Any] | None:
         """The model's answer for the screen as it is: `{"action", "expect", "uses", "scene", "guided"}` with the
         action in the screen's pixels, or None when it gave none the surface can be given or one that uses what
         `goal` does not allow. `moving`: where something kept moving over the screen, left out of the picture.
@@ -319,15 +396,20 @@ class Direct:
         played here yet: a game the screen shows ended was played before (`agent.Agent.anew`). `errand`: the one
         thing beside the levels the person asked for, by its plain name (`agent.Agent.errand`): that is the work,
         and it ends when it is done. `began`: the screen as the work found it, shown beside this one for the
-        model to tell what the work itself did from what stood there before (an errand's end has no other check)."""
-        shown, scale = recovery.view(png)
+        model to tell what the work itself did from what stood there before (an errand's end has no other check).
+        `outline`: what the page under the picture says stands in view (`Surface.outline`), when it can be read:
+        given as text (`lines`) with the picture shown smaller, until the model asks for it whole (`LOOK`)."""
+        read = lines(outline) is not None
+        shown, scale = recovery.view(png, SMALL_SIDE if read and not self.sharp else recovery.VIEW_SIDE)
         size = recovery._size(shown)
+        offered = sorted(kind for kind in NEEDS if can(kind, kinds)
+                         and (kind != RELAUNCH or self.relaunches < RELAUNCHES_MOST)) + [WAIT] \
+            + ([LOOK] if read and not self.sharp and scale != 1.0 else [])
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
         asked = {"play": True, "goal": goal, "left": left, "screen": list(size),
                  **({"moving": told_moving} if told_moving else {}),
                  **({"drag_hold_ms_at_least": self.hold_ms} if self.hold_ms else {}),
-                 "inputs": sorted(kind for kind in NEEDS if can(kind, kinds)
-                                  and (kind != RELAUNCH or self.relaunches < RELAUNCHES_MOST)) + [WAIT],
+                 "inputs": offered, **({"elements": lines(outline, scale)} if read else {}),
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
                  "scenes": scenes.KINDS,
                  **({"onward": True} if onward else {}),
@@ -340,10 +422,12 @@ class Direct:
                                               "data": base64.b64encode(shown).decode("ascii")}}
         first = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(recovery.view(began)[0]).decode("ascii")}}] if began else []
-        prompt = (resources.FRAGMENT / "prompts" / "play_direct.md").read_text(encoding="utf-8")
+        flags = set(offered) | {name for name, on in (
+            ("onward", onward), ("levels", goal.get("objective") == "levels"), ("anew", anew), ("errand", errand),
+            ("elements", read)) if on}
         self.questions += 1
         result = await self.model.complete(TurnRequest(
-            system_stable=prompt, max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
+            system_stable=prompt(flags), name="play_direct", max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
             messages=[Msg("user", [{"type": "text", "text": json.dumps(asked)}, image, *first])]))
         try:
             answer = json.loads(result.text or "")
@@ -361,9 +445,12 @@ class Direct:
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
             self.first_score = self.score if self.first_score is None else self.first_score
-        action, used = check(answer.get("action"), size, kinds), uses(answer.get("action"))
-        if action is None or used is None or (action["kind"] == RELAUNCH and self.relaunches >= RELAUNCHES_MOST):
+        action = check(answer.get("action"), size, kinds, MOVES_MOST if self.scene == scenes.BOARD else SEQUENCE_MOST)
+        used = uses(answer.get("action"))
+        if action is None or used is None or action["kind"] not in offered + [DONE, OUT_OF_LIVES, GIVE_UP, STOP]:
             return None
+        if action["kind"] == LOOK:
+            self.sharp = True
         # a booster the game hands over for nothing and will not go on without is used unasked (`FORCED_FREE`)
         forced = answer["action"].get("forced_free") is True and bool(used) and set(used) <= FORCED_FREE
         refused = [name for name in used if name not in set(goal.get("allowed_meta_actions") or ()) and not forced]

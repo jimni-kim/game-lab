@@ -278,3 +278,136 @@ async def test_the_game_is_started_again_no_more_than_twice_and_a_wait_may_end_w
     await direct.send(surface, {"kind": "wait", "ms": 15000, "until_change": True})
     # the look before the wait, then until the lamp lit: not the whole 15 s at a look each half second
     assert surface.looks == 4
+
+
+# ── what a question costs (PLAN §27, session S2): moves in one answer, the page as text, the prompt by situation ──
+
+async def test_moves_given_at_once_on_a_board_are_sent_one_by_one_while_each_changes_something():
+    several = {"kind": "sequence", "inputs": [PRESS] * 5}
+    fake, model, played, made = await game([several, {"kind": "done", "end": "won"}])
+    assert ending(played) == ("goal_reached", "won"), (played.record, made)
+    # the fourth press lit nothing more: the fifth was not sent, and the three that did count as the level's moves
+    assert fake.taps == [(300, 325)] * 4 and played.record["actions_used"] == 4
+    assert played.record["confirmed_actions"] == 3 and len(model.asked) == 2
+    told = model.asked[1]["history"][-1]
+    assert told["repeated"] == {"sent": 4, "of": 5, "stopped": "no_change", "last_changed": False}
+    assert told["screen_changed"] and played.moves[0]["repeated"]["sent"] == 4
+    # a board takes up to twelve inputs at one answer, any other screen six
+    size, tap = SIZE, {"kind": "tap", "at": [5, 5]}
+    assert direct.check({"kind": "sequence", "inputs": [tap] * 12}, size, ALL, direct.MOVES_MOST) is not None
+    assert direct.check({"kind": "sequence", "inputs": [tap] * 13}, size, ALL, direct.MOVES_MOST) is None
+    assert direct.check({"kind": "sequence", "inputs": [tap] * 7}, size, ALL) is None
+    # a count of inputs asked for is not gone past by the moves of one answer
+    fake, model, played, made = await game([several], goal=GoalSpec("actions", 2))
+    assert ending(played) == ("goal_reached", "actions") and fake.lit == 2
+
+
+def thing(at, size, text="", **more):
+    return {"at": at, "size": size, "tag": "div", "text": text, "label": "", "classes": [], "bg": "", "flags": [], **more}
+
+
+class Page(Lamps):
+    """The toy as a page that can be read: its button, its lamps, and the banner's words once all are lit."""
+    reads_dom = True
+
+    async def outline(self):
+        items = [thing([300, 325], [100, 50], "light", tag="button", classes=["press"])]
+        items += [thing([190 + lamp * 110, 160], [80, 80], bg="#fac800" if lamp < self.lit else "#5a5a5a") for lamp in range(3)]
+        if self.lit == 3:
+            items.append(thing([300, 65], [400, 50], "All lit!"))
+        return {"size": list(SIZE), "drawn": 0.0, "cut": False, "items": items}
+
+
+async def test_a_page_that_can_be_read_is_told_as_lines_and_words_that_come_up_end_the_moves():
+    fake, model = Page(), Player([{"kind": "sequence", "inputs": [PRESS] * 5}, {"kind": "done", "end": "won"}])
+    played, made = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60))
+    assert ending(played) == ("goal_reached", "won"), (played.record, made)
+    assert model.asked[0]["elements"] == ['300,325 100x50 button "light" .press', "190,160 80x80 #5a5a5a",
+                                          "300,160 80x80 #5a5a5a", "410,160 80x80 #5a5a5a"]
+    # the third press brought the banner's words: the model looks before anything more is sent
+    assert fake.taps == [(300, 325)] * 3 and model.asked[1]["history"][-1]["repeated"]["stopped"] == "new_text"
+    assert played.record["confirmed_actions"] == 3
+    # a count that goes up is the same words; a page mostly canvas, cut short or naming next to nothing is not told
+    assert direct.words({"items": [thing([1, 1], [9, 9], "Score 120")]}) == direct.words({"items": [thing([1, 1], [9, 9], "Score 96")]})
+    assert direct.words({"items": [thing([1, 1], [9, 9], "Game over", flags=["covered"]), thing([1, 1], [9, 9], "12")]}) == frozenset()
+    whole = await fake.outline()
+    assert direct.lines({**whole, "drawn": 0.3}) is None and direct.lines({**whole, "cut": True}) is None
+    assert direct.lines({**whole, "items": whole["items"][:2]}) is None and direct.lines(None) is None
+    assert direct.lines({**whole, "items": [thing([600, 400], [200, 100], "a", label="b", flags=["covered"])] * 3}, 0.5)[0] \
+        == '300,200 100x50 "a" [b] covered'
+
+
+class Asked:
+    """A model that answers each question with the next of `answers` and keeps the questions."""
+
+    def __init__(self, answers):
+        self.answers, self.requests = list(answers), []
+
+    async def complete(self, request):
+        self.requests.append(request)
+        return TurnResult(text=json.dumps({"situation": "s", "scene": "board", "action": self.answers.pop(0), "expect": "e"}))
+
+
+def picture(size):
+    out = BytesIO()
+    Image.new("RGB", size, (200, 200, 200)).save(out, format="PNG")
+    return out.getvalue()
+
+
+def shown(request):
+    import base64
+
+    with Image.open(BytesIO(base64.b64decode(request.messages[0].content[1]["source"]["data"]))) as image:
+        return image.size
+
+
+async def test_with_the_pages_lines_the_picture_is_small_until_the_model_asks_for_it_whole():
+    model = Asked([{"kind": "tap", "at": [384, 240]}, {"kind": "look"}, {"kind": "tap", "at": [640, 400]}, {"kind": "look"}])
+    player = direct.Direct(model)
+    outline = {"size": [1280, 800], "drawn": 0.0, "cut": False, "items": [thing([640, 400], [100, 50], "go")] * 3}
+    goal, left = GoalSpec("play_until_end").to_json(), {"inputs": 9, "seconds": 9}
+    answer = await player.ask(picture((1280, 800)), ALL, goal, left, outline=outline)
+    context = json.loads(model.requests[0].messages[0].content[0]["text"])
+    # the picture's longer side is 768, the lines and the answer are in its pixels, the input is the screen's
+    assert shown(model.requests[0]) == (768, 480) and context["screen"] == [768, 480]
+    assert context["elements"][0] == '384,240 60x30 "go"' and "look" in context["inputs"]
+    assert answer["action"]["at"] == pytest.approx([640, 400]) and answer["told"]["at"] == [384.0, 240.0]
+    assert (await player.ask(picture((1280, 800)), ALL, goal, left, outline=outline))["action"] == {"kind": "look"}
+    # asked for whole: the picture as it is from there on, the lines still with it, and no asking again
+    answer = await player.ask(picture((1280, 800)), ALL, goal, left, outline=outline)
+    context = json.loads(model.requests[2].messages[0].content[0]["text"])
+    assert shown(model.requests[2]) == (1280, 800) and context["elements"][0] == '640,400 100x50 "go"'
+    assert "look" not in context["inputs"] and answer["action"]["at"] == [640.0, 400.0]
+    assert await player.ask(picture((1280, 800)), ALL, goal, left, outline=outline) is None
+    # no page to read: the picture as it always was, no lines
+    await direct.Direct(model := Asked([PRESS])).ask(picture((1280, 800)), ALL, goal, left)
+    assert shown(model.requests[0]) == (1280, 800) and "elements" not in json.loads(model.requests[0].messages[0].content[0]["text"])
+
+
+async def test_the_instructions_carry_only_what_the_question_is_about():
+    whole = direct.prompt({"tap", "key", "drag", "sequence", "onward", "anew", "errand", "elements", "look"})
+    bare = direct.prompt({"tap", "key", "sequence"})
+    assert "[when" not in whole and "[when" not in bare and len(bare) < 0.7 * len(whole)
+    for said in ('"kind": "drag"', "The context has `onward`", "The context has `anew`", "The context has `errand`",
+                 "The context has `elements`", '"kind": "look"'):
+        assert said in whole and said not in bare
+    assert '- `{"kind": "tap"' in bare and '"kind": "done"' in bare and "Never tap an advertisement" in bare
+    assert "The context has `onward`" in direct.prompt({"levels"})
+    # the question's own instructions go with it under the prompt's name, whatever they were put together from
+    model = Asked([PRESS, PRESS])
+    await direct.Direct(model).ask(picture(SIZE), frozenset({"tap"}), GoalSpec("levels", 2).to_json(), {}, errand="collect")
+    asked = model.requests[0]
+    assert asked.name == "play_direct" and "The context has `errand`" in asked.system_stable
+    assert "The context has `onward`" in asked.system_stable and '"kind": "key"' not in asked.system_stable
+
+
+async def test_a_surface_that_never_takes_an_input_ends_the_game_with_a_record(monkeypatch):
+    import asyncio
+
+    class Stuck(Lamps):
+        async def tap(self, x, y, duration_ms):
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(agent, "SEND_TIMEOUT_S", 0.05)
+    played, made = await play(Stuck(), Player([PRESS]), None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60))
+    assert ending(played) == ("needs_recovery", "surface_unresponsive")

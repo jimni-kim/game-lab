@@ -50,6 +50,8 @@ class TurnRequest:
     answer_only: bool = True
     max_steps: int = 1
     stream: bool = False
+    # the prompt's name when its text is put together for the question and so is not a prompt file's own
+    name: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,7 +189,7 @@ class Recorded:
         self.answers = answers if answers is not None else []
 
     async def complete(self, request: TurnRequest) -> TurnResult:
-        asked = {"prompt": self.prompts.get(request.system_stable, "other"), "at_s": round(time.monotonic(), 1)}
+        asked = {"prompt": request.name or self.prompts.get(request.system_stable, "other"), "at_s": round(time.monotonic(), 1)}
         try:
             result = await self.model.complete(request)
         except Exception as error:
