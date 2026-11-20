@@ -46,7 +46,7 @@ from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
 from .model import Model, Msg, TurnRequest, TurnResult
-from . import motion
+from . import motion, world
 from .carry import _boxes as carry_boxes
 from .motion import Steady
 from .run import Run, check
@@ -154,6 +154,13 @@ OUT_OF_LIVES = recovering.OUT_OF_LIVES
 # why a game played for an errand the request named beside the levels (a daily reward) ended: the model read the
 # errand done (`Agent.errand`)
 TASK_DONE = "task_done"
+# why a game played for an errand ended with it undone: the game does not offer it yet, as the game's world memory
+# knew before anything was sent or as a model read it on the way (`world`, PLAN §30). The time left is handed back
+NOT_YET = "not_yet"
+# when the person asked for the errand's time to be waited out with the game open: how often in one game, how
+# much longer than the time read, how much of the budget's seconds must be left over after it, and how long
+# between two looks at whether the work was cancelled
+WAITS_MOST, WAIT_OVER_S, WAIT_ROOM_S, WAIT_STEP_S = 2, 2.0, 30.0, 1.0
 # what a light model is asked of one cell cut out of a board, and what it is told of the game
 LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
                   "with a little of its neighbours around it.")
@@ -237,13 +244,18 @@ class Agent:
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                  notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-                 task: str | None = None) -> None:
+                 task: str | None = None, wait: bool = False) -> None:
         # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
         # (`adaptation.keyed`)
         self.game_name = game
         # the errand the request names beside the game's levels (collecting a daily reward), by its plain name
         # (`request.understand`): its steps are a routine of their own, and the game ends when the model reads it done
         self.errand = task
+        # what is known of the game beyond this request: what it holds and when each errand can be done again
+        # (`world`). `wait_for`: the person asked for an errand not yet due to be waited for with the game open;
+        # else its time left is handed back
+        self.world = world.World()
+        self.wait_for, self.waits = wait, 0
         # the game's routines (`routine`): the steps kept of its screens between levels, sent again by code. The
         # work's own book when it has parts, so that what one part learned the next can send
         self.book = book if book is not None else routine.Book()
@@ -432,6 +444,8 @@ class Agent:
                 self.found["made"] = self.game.summary()
                 self._keep_made()
             self._keep_looks()
+            if self.errand:
+                self.found["world"] = self.world.summary(time.time())
             record = {"version": RECORD_VERSION, "family": self.family_id, "phase": "ended", "outcome": str(outcome),
                       "reason": reason, "detail": detail, "goal": self.goal.to_json(), "budget": self.budget.to_json(),
                       "policy": self.policy, "actions_used": self.used, "confirmed_actions": self.confirmed,
@@ -500,6 +514,7 @@ class Agent:
             self.store.save_recoveries(self.site, self.family_id, self.recovery.known)
         # (a stretch that reached no board leaves no step behind, kept or not: `routine.Book.keep`)
         self.book.keep(self.store if self.site else None)
+        self.world.keep(self.store if self.site else None)
         if self.site and self.store is not None and self.player is not None and self.player.lasting():
             self.store.save_memory(self.site, self.player.lasting())
 
@@ -508,13 +523,19 @@ class Agent:
         each a model names for the screen, likeliest first (`_take`)."""
         self.site = keyed(await self.surface.address(), self.game_name)
         self.book.open(self.store, self.site, self.fresh)
+        self.world.open(self.store, self.site, self.fresh)
         if not self.notes and self.store is not None and not self.fresh:
             # what a model playing this game before noted of it (PLAN §27, M4)
             self.notes = self.store.memory(self.site) or ""
         self.candidates = [self.family_id] if self.family_id else []
         if self._errand():
             # an errand is done on the game's screens beside its boards: no family is looked for, the model finds
-            # the way once and the routine kept of it goes it again (PLAN §24, U2)
+            # the way once and the routine kept of it goes it again (PLAN §24, U2). One the game's world memory
+            # knows is not due yet is not gone after at all: no step is sent and no model asked (PLAN §30)
+            if self.world.wait(self.errand, time.time()) is not None:
+                self.last_png = await self.seen.capture()
+                self.shots += 1
+                await self._until_due("")
             await self._play_direct("")
             return
         if self.family_id is None and await self._made_again():
@@ -2172,7 +2193,7 @@ class Agent:
             self._check_stops()
             before = await self.seen.capture()
             moving = list(self.seen.moving)
-            looked = time.monotonic()
+            looked, looked_at = time.monotonic(), time.time()
             self.shots += 1
             self.last_png = before
             found = found or before
@@ -2218,6 +2239,15 @@ class Agent:
             self.screen = scene or self.screen
             # a move of a level: an input on a screen the model names a board (or names nothing)
             level = scene in (None, scenes.BOARD)
+            if action["kind"] == direct.STOP and self._errand():
+                # the game does not offer the errand now: kept with the time the model read for it, which is
+                # handed back, or waited out when the person asked for that and then the errand is gone after again
+                self.world.not_yet(self.errand, looked_at, action.get("again_in_s"), action.get("have"))
+                if await self._until_due(answer.get("because") or player.situation):
+                    player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program",
+                                           "waited_for": "the time you read until the errand can be done"})
+                    self._stretch()
+                    continue
             if action["kind"] == direct.STOP:
                 raise _End(Outcome.STOPPED, "stop_condition", answer.get("because") or player.situation)
             if action["kind"] == direct.OUT_OF_LIVES:
@@ -2227,6 +2257,7 @@ class Agent:
             if action["kind"] == direct.DONE and action["end"] == WON and self._errand():
                 # the errand is done: the stretch got where it was going, and the steps learned on the way are kept
                 self.book.of(self.errand).proved()
+                self.world.done(self.errand, looked_at, action.get("again_in_s"), action.get("have"))
                 raise _End(Outcome.GOAL_REACHED, TASK_DONE, player.situation)
             if action["kind"] == direct.DONE and self._before_any():
                 raise _End(Outcome.GAVE_UP, "next_level_not_found", player.situation)
@@ -2427,6 +2458,28 @@ class Agent:
         """Whether this game is played for the errand the request named, and for nothing else."""
         return bool(self.errand) and not self.onward
 
+    async def _until_due(self, said: str) -> bool:
+        """The errand is not due yet as the game's world memory has it (`world.World.wait`): the game ends there
+        with the time left handed back (`NOT_YET`), nothing sent; or, when the person asked for it to be waited
+        for and the budget's seconds allow, that time is waited out with the game open and nothing sent, and the
+        errand is then gone after (True). False: no time is known for it."""
+        left = self.world.wait(self.errand, time.time())
+        if left is None:
+            return False
+        room = self._left()
+        if not self.wait_for or self.waits >= WAITS_MOST or (room is not None and left + WAIT_ROOM_S > room):
+            self.found[NOT_YET] = {"task": self.errand, "seconds": round(left), **({"said": said} if said else {}),
+                                   "inputs_before": self.used, "questions_before": self.model.questions}
+            raise _End(Outcome.STOPPED, NOT_YET, f"{self.errand} can be done again in about {round(left)} s"
+                       + (f": {said}" if said else ""))
+        self.waits += 1
+        until = time.monotonic() + left + WAIT_OVER_S
+        while time.monotonic() < until:
+            self._check_stops()
+            await asyncio.sleep(min(WAIT_STEP_S, max(until - time.monotonic(), 0.0)))
+        self.found.setdefault("waited_s", []).append(round(left))
+        return True
+
     def _stretch(self) -> None:
         """A stretch of the model's own play begins: nothing of the routine was sent in it yet. `sends`: how often
         each step was sent (by code or by the model), `avoid`: steps that changed nothing here or were waited on
@@ -2585,7 +2638,7 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-               task: str | None = None, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               task: str | None = None, wait: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
@@ -2593,4 +2646,4 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
                        direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
-                       task=task).run()
+                       task=task, wait=wait).run()

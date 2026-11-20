@@ -34,7 +34,7 @@ APPS_MOST, LABEL_MOST = 200, 80
 
 
 async def understand(model: Model, words: str, apps: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """`{"url", "app", "within", "task", "goal", "hint"}` for a request: the page it names, else the app of `apps`
+    """`{"url", "app", "within", "task", "wait", "goal", "hint"}` for a request: the page it names, else the app of `apps`
     (each `{"package", "label"}`, the device's) it means, None for whichever it does not; the one game it picks
     inside a page or app that holds several (None when the page or app is one game); the one errand it asks for
     beside the game's levels, by a plain name (None when it asks to play); the goal it asks for (the game to its
@@ -74,6 +74,9 @@ async def understand(model: Model, words: str, apps: list[dict[str, Any]] | None
             "within": within,
             # an errand beside the levels (a daily reward): its steps are kept as a routine of their own (`routine`)
             "task": _task(answer.get("task")),
+            # the errand is to be waited for with the game open when the game does not offer it yet; else the time
+            # left is handed back (`world`, PLAN §30)
+            "wait": answer.get("wait") is True,
             "goal": GoalSpec(objective, target if objective != "play_until_end" else None, scope=_scope(answer.get("scope")),
                              stop_conditions=_stops(answer.get("stop")), allowed_meta_actions=_allowed(answer.get("allowed"))),
             "hint": hint[:200] if isinstance(hint, str) and hint.strip() else None}

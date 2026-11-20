@@ -106,6 +106,11 @@ def task_named(args: argparse.Namespace) -> str | None:
     return (getattr(args, "asked", None) or {}).get("task") or getattr(args, "task", None)
 
 
+def task_waits(args: argparse.Namespace) -> bool:
+    """Whether the request in words asked for an errand the game does not offer yet to be waited for."""
+    return bool((getattr(args, "asked", None) or {}).get("wait"))
+
+
 def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, model.Recorded | None]:
     """The model a game is played with and the recorder around it; neither when no model is named."""
     if not args.vision_model:

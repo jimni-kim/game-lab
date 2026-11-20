@@ -46,7 +46,7 @@ import json
 import time
 from typing import Any
 
-from . import carry, frames, motion, recovery, resources, scenes
+from . import carry, frames, motion, recovery, resources, scenes, world
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
@@ -168,14 +168,21 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str]) -> dict[str
             and set(action["text"]) <= TYPED:
         return {"kind": TEXT, "text": action["text"]}
     if kind == DONE and action.get("end") in ENDS:
-        return {"kind": DONE, "end": action["end"], **recovery.left_of(action)}
+        return {"kind": DONE, "end": action["end"], **recovery.left_of(action), **_world(action)}
     if kind == OUT_OF_LIVES:
         return {"kind": OUT_OF_LIVES, "minutes": recovery.minutes(action.get("minutes"))}
     if kind == GIVE_UP:
         return {"kind": GIVE_UP}
     if kind == STOP:
-        return {"kind": STOP}
+        return {"kind": STOP, **_world(action)}
     return None
+
+
+def _world(action: dict[str, Any]) -> dict[str, Any]:
+    """What an answer that ends an errand read of the game's lasting state (`world`): the seconds until the errand
+    can be done again, and what the game counts of the things it holds."""
+    seconds, have = world.again(action.get("again_in_s")), world.held(action.get("have"))
+    return {**({"again_in_s": seconds} if seconds is not None else {}), **({"have": have} if have else {})}
 
 
 uses = recovery.uses

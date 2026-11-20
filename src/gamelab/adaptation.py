@@ -1290,6 +1290,21 @@ class Store:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "memory.json").write_text(json.dumps(memory, ensure_ascii=False) + "\n", encoding="utf-8")
 
+    def world(self, site: str) -> dict[str, Any] | None:
+        """What is known of a game that goes on between requests: what it holds, and when each errand done in it
+        can be done again (`world.World`, PLAN §30)."""
+        path = self._site(site) / "world.json"
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+        return kept if isinstance(kept, dict) else None
+
+    def save_world(self, site: str, known: dict[str, Any]) -> None:
+        folder = self._site(site)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "world.json").write_text(json.dumps(known, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
 
 # questions asked and inputs sent to reach a board before a game is given up as not shown
 IDENTIFY_TOKENS, IDENTIFY_TIMEOUT_S = 1000, 60.0
