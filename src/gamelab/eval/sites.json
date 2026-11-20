@@ -509,5 +509,21 @@
         "wait_ms": 4000
       }
     ]
+  },
+  "codeincomplete_falling": {
+    "url": "https://codeincomplete.com/games/tetris/",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "PLAN §29 (U3): a falling-block game (MIT, jakesgordon/javascript-tetris) drawn on a canvas over a photograph: a start notice, then pieces fall into a 10 by 20 well; arrow keys, no key that drops a piece at once. No family is named and nothing in the setup starts the game. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 3000
+      }
+    ]
   }
 }

@@ -1307,14 +1307,14 @@ def explorable() -> list[str]:
 async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: str | None = None,
                    tries: int = MAX_TRIES) -> dict[str, Any]:
     """Which families the game on the screen may be, as a model sees it (PLAN §10, game identification):
-    `{"families": [ids, likeliest first], "questions", "situation"}`. A screen that shows no game in play is
+    `{"families": [ids, likeliest first], "falling", "questions", "situation"}`. A screen that shows no game in play is
     not the end of it: the model gets past it with inputs of its own (`tries` at most; none: one question and
     no input), and the screen is asked about again. The answer is a guess; the caller checks it by reading the
     board and playing moves by the family's rules."""
     listed = [{key: descriptor[key] for key in ("id", "summary", "board", "actions")}
               for descriptor in map(catalog.descriptor, explorable())]
     known = {family["id"] for family in listed}
-    found: dict[str, Any] = {"families": [], "questions": 0, "situation": None}
+    found: dict[str, Any] = {"families": [], "falling": False, "questions": 0, "situation": None}
     for tried in range(tries + 1):
         png = await surface.capture()
         context = {"families": listed, **({"hint": hint} if hint else {})}
@@ -1328,7 +1328,10 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
             found["situation"] = answer["situation"][:300]
         named = answer.get("families") if isinstance(answer.get("families"), list) else []
         found["families"] = list(dict.fromkeys(name for name in named if name in known))[:MOST_CANDIDATES]
-        if found["families"] or answer.get("screen") == "game":
+        # a game in which time moves (pieces falling into a well) is no family's: it is played by a loop of its
+        # own, which starts the game itself (`realtime`, PLAN §29)
+        found["falling"] = answer.get("falling") is True and not found["families"]
+        if found["families"] or found["falling"] or answer.get("screen") == "game":
             break
         if tried == tries:
             break

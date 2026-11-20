@@ -35,7 +35,7 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, carry, catalog, direct, kits, made, recovery as recovering, routine, samples, scenes
+from . import adaptation, carry, catalog, direct, kits, made, realtime, recovery as recovering, routine, samples, scenes
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify, keyed)
 from .adapters.generated import GeneratedAdapter
@@ -531,6 +531,8 @@ class Agent:
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
+                if asked.get("falling") and await self._play_realtime():
+                    return
         if not await self._next_family() and not await self._make_family():
             if self._before_own() and self.family_id in catalog.descriptor_ids() and self.resumable is None:
                 # the model's own inputs open the game asked for (an ended one on the screen is not it), and the
@@ -2072,6 +2074,72 @@ class Agent:
             await self._play_direct(self._situation())
             return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
+
+    async def _play_realtime(self) -> bool:
+        """The game is one in which time moves (pieces fall into a well): a model says once where the well is and
+        which keys play it, and from then on code reads the well and sends the keys, with no question between
+        (`realtime`, PLAN §29). False when the model's answer gives the loop nothing to go by (the game is then
+        found as any other is); else the game is played to its end here (`_End`). `reach_value` is counted in lines
+        cleared and `actions` in pieces placed."""
+        self._afford()
+        first = await self.surface.capture()
+        self.shots, self.last_png = self.shots + 1, first
+        try:
+            setup = await self._asking(realtime.ask(self.model, first, await self.surface.size(), self.surface.kinds,
+                                                    self.hint))
+        except Exception as error:
+            log.info("the falling game could not be asked about: %s", error)
+            setup = None
+        if setup is None:
+            self.found["realtime"] = {"setup": None}
+            return False
+        self.family_id, self.policy = None, "realtime"
+        self.levels.setdefault(realtime.RT, 0)
+
+        async def send(sent: dict[str, Any]) -> None:
+            self.used += 1
+            if self.watch is not None:
+                await self.watch.sending(self.used, {"kind": sent["kind"]}, None, sent, time.monotonic())
+            await realtime.tap_or_key(self.surface, sent)
+            if self.watch is not None:
+                await self.watch.sent()
+
+        async def seen(png: bytes) -> None:
+            self.shots += 1
+            if self.watch is not None:
+                await self.watch.seen(png)
+
+        def placed(move: dict[str, Any]) -> None:
+            self.levels[realtime.RT] += 1
+            if move["effect"] == "confirmed":
+                self.confirmed += 1
+                self.level_moves += 1
+            self.moves.append({"action_id": f"a{self.used}", **move, "level": realtime.RT, "delivery": "delivered",
+                               "at_s": round(time.monotonic() - self.started, 2)})
+
+        objective, target = str(self.goal.objective), self.goal.target_value
+
+        def done(loop: realtime.Loop) -> bool:
+            return target is not None and (objective == "reach_value" and loop.lines >= target
+                                           or objective == "actions" and loop.pieces >= target)
+
+        loop = realtime.Loop(self.surface, setup, send=send, check=self._check_stops, seen=seen, placed=placed)
+        self.found["realtime"] = told = {"setup": setup}
+        try:
+            await loop.begin(first)
+            why = await loop.play(done)
+        finally:
+            told.update(loop.summary())
+            try:
+                self.last_png = await self.surface.capture()
+            except ValueError:
+                pass
+        if why == "done":
+            raise _End(Outcome.GOAL_REACHED, objective)
+        if why == "stopped_falling":
+            # nothing falls any more: in a game that does not wait, that is its end
+            raise _End(Outcome.GAME_OVER, why, setup["situation"])
+        raise _End(Outcome.GAVE_UP, why, setup["situation"])
 
     async def _play_direct(self, situation: str) -> None:
         """The game is none the harness has rules for: a model plays it with inputs of its own (L0), told after
