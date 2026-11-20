@@ -80,6 +80,14 @@ class World:
         self._hold(have, now)
         self.changed = True
 
+    def unmoved(self, have: Any) -> dict[str, float]:
+        """What a model reads the game to hold now, when every thing of it known from before is held in the same
+        number, and at least one is: nothing the game counts has changed since it was last read. Empty when
+        something changed or nothing can be compared."""
+        read = held(have)
+        shared = {name: count for name, count in read.items() if name in self.have}
+        return shared if shared and all(self.have[name] == count for name, count in shared.items()) else {}
+
     def not_yet(self, task: str, now: float, again_in_s: Any = None, have: Any = None) -> None:
         """The errand was looked for at `now` and the game did not offer it: for `again_in_s` more, when the
         screen showed how long."""

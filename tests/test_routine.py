@@ -518,3 +518,55 @@ async def test_an_errand_the_request_names_is_a_routine_of_its_own_played_by_cod
     # the end is checked against the screen the work found: the model is shown both
     assert model.asked[0]["began"] and model.pictures[-1] == 2
     assert "next_level" not in Store(tmp_path).routines("https://town.example/")
+
+
+def written(*labels):
+    """A bare page: black writing on white and nothing else, a few labels each at its place."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", SIZE, (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+    for text, (x, y) in labels:
+        draw.rectangle((x - 40, y - 12, x + 40, y + 12), outline=(0, 0, 0))
+        draw.text((x - 30, y - 6), text, fill=(0, 0, 0))
+    out = BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_on_a_bare_page_of_writing_a_step_fits_only_where_its_place_reads_as_it_did():
+    # two screens of one page, alike all over: one button in the same place under another label (PLAN §28, S1)
+    spot, tab = (300.0, 80.0), (500.0, 30.0)
+    room = written(("stoke fire", spot), ("a silent forest", tab), ("the fire is roaring.", (100, 30)))
+    forest = written(("gather wood", spot), ("a silent forest", tab), ("the room is hot.", (100, 30)))
+    kept = routine.Routine("gather_wood")
+    stoke = kept.learn(room, {"kind": "tap", "at": list(spot)}, scene="map")
+    assert routine.strict(stoke)
+    # by the screen and by the cells that differ least the two are one, by what the place reads they are not
+    assert recovering_distance(room, forest) <= routine.SCREEN_DISTANCE
+    assert routine.apart(stoke["spot"], routine.spot(forest, list(spot))) <= routine.SPOT_DISTANCE
+    # nor does it matter what the button under it shows
+    assert kept.find(written(("stoke fire", spot), ("check traps", (spot[0], spot[1] + 32)), ("a silent forest", tab)), at=9) is stoke
+    assert kept.find(room) is stoke and kept.looks[-1]["read"] and kept.looks[-1]["spot"] == 0
+    assert kept.find(forest, at=1) is None and kept.looks[-1]["nearest"]["spot"] > routine.SPOT_DISTANCE
+    # the other button pressed in the same place is a step of its own, and each is found on its own screen
+    gather = kept.learn(forest, {"kind": "tap", "at": list(spot)}, scene="map")
+    assert gather is not stoke and len(kept.steps) == 2
+    assert kept.find(forest, at=2) is gather and kept.find(room, at=3) is stoke
+    assert kept.learn(forest, {"kind": "tap", "at": [spot[0] + 3, spot[1]]}, scene="map") is gather
+    # the button gone, or its place taken by a filled bar: no fit
+    assert kept.find(written(("a silent forest", tab)), avoid={stoke["id"]}, at=4) is None
+    # writing elsewhere on the page changed (the log, a count): the same step
+    assert kept.find(written(("gather wood", spot), ("a silent forest", tab), ("wood 54", (700, 80))), at=5) is gather
+    # a pictured screen's step is not read: a button relabelled is the same button there (the test above)
+    town = page((120, 190, 140), [((400, 100, 300, 200), (30, 60, 30)), (PLAY, (40, 120, 220))])
+    assert not routine.strict(routine.Routine("next_level").learn(town, {"kind": "tap", "at": middle(PLAY)}, scene="map"))
+    # places are read by their inner half, against the screen's ground
+    assert routine.apart([255] * 144, [0] * 36 + [255] * 108, 255) == 0 and routine.apart([255] * 144, [0] * 144, 255) == 255
+
+
+def recovering_distance(one, other):
+    from gamelab import recovery
+
+    return recovery._distance(recovery.signature(one), recovery.signature(other))

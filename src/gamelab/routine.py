@@ -7,7 +7,9 @@ screen like it stands there again, with the place looking as it did, the code se
 asked.
 
     the check    before a step is sent: the whole screen is like the one the model chose the input on, and the
-                 place pressed looks as it did (most of it: a button whose number changed is the same button).
+                 place pressed looks as it did (most of it: a button whose number changed is the same button;
+                 writing on a plain ground must read the same, since nothing else of such a page tells its
+                 screens apart).
                  A map or home screen may look less like it than another screen must, since what is behind its
                  buttons moves. After the step: the screen changed
     where it     no step fits the screen (a notice this level put in the way): the model is asked from there on,
@@ -65,6 +67,16 @@ SCREEN_DISTANCE, MAP_DISTANCE, SPOT_DISTANCE = 12.0, 30.0, 6.0
 # are on average: a button whose label changed (a level's number) is the same button, 0 to 2.3 in that game,
 # where another button in the same place was 14 or more
 SPOT_SHARE, SPOT_SIDE, SPOT_ALIKE = 0.06, 12, 0.7
+# a bare screen: a plain ground all over with writing or thin drawing on it (a page of text buttons, no pictures),
+# at least BARE_SHARE of its small picture's cells within PLAIN_NEAR grey levels of the middle one (the ground).
+# Its small picture tells none of its screens apart, so the place pressed has to, and must read as it did. The
+# cells that differ least are the ground, alike under any label, so two such places are as far apart as their
+# cells off the screen's ground are (in either) on average. Set from one web game's screens (PLAN §28, session
+# S1, 2026-11-20): its screens were 0.95 to 0.99 bare, where the screens of two Android games between levels and
+# of the web boards kept were 0.94 or less (the pictured ones 0.87 or less); one button at two times 0.0 apart,
+# with another button under it in another state 2, another label in the same place or the same button dimmed
+# and filling 11 or more, where by the nearest cells all of those were 0 to 4
+BARE_SHARE, PLAIN_NEAR = 0.945, 16
 # two inputs of one kind this near (the share of the screen's longer side) are the same input
 SAME_PLACE = 0.03
 # a step is sent this often in one stretch, unless the model sent it more often itself (`again`); one the model
@@ -106,10 +118,35 @@ def spot(png: bytes, point: list[float]) -> list[int]:
     return _spot(_grey(png), point)
 
 
-def apart(one: list[int], other: list[int]) -> float:
-    """How far two places are from looking the same: the average difference of the cells that differ least."""
+def _ground(cells: list[int]) -> int:
+    return sorted(cells)[len(cells) // 2]
+
+
+def bare(signature: list[int]) -> bool:
+    """Whether a screen's small picture is one plain ground all over."""
+    ground = _ground(signature)
+    return sum(abs(cell - ground) <= PLAIN_NEAR for cell in signature) >= BARE_SHARE * len(signature)
+
+
+def strict(step: dict[str, Any]) -> bool:
+    """Whether the place a step presses must read as it did for the step to fit: its screen is bare all over."""
+    return bool(step.get("spot")) and bare(step["signature"])
+
+
+def apart(one: list[int], other: list[int], ground: int | None = None) -> float:
+    """How far two places are from looking the same: the average difference of the cells that differ least.
+    `ground`: the places are of a bare screen with this ground and must read the same (`strict`): the average
+    difference of the cells off the ground in either, over the inner half of the place."""
     if len(one) != len(other):
         return 255.0
+    if ground is not None:
+        # the inner half of the place: writing is small, and what the button next to it shows is not this one's
+        side = round(len(one) ** 0.5)
+        inner = [row * side + column for row in range(side // 4, side - side // 4)
+                 for column in range(side // 4, side - side // 4)] if side * side == len(one) else range(len(one))
+        marked = [abs(one[cell] - other[cell]) for cell in inner
+                  if abs(one[cell] - ground) > PLAIN_NEAR or abs(other[cell] - ground) > PLAIN_NEAR]
+        return sum(marked) / len(marked) if marked else 0.0
     nearest = sorted(abs(a - b) for a, b in zip(one, other))[:max(1, round(len(one) * SPOT_ALIKE))]
     return sum(nearest) / len(nearest)
 
@@ -156,7 +193,7 @@ class Routine:
         for step in self.steps:
             far = recovery._distance(step["signature"], seen)
             point = place(step["action"])
-            near = apart(step["spot"], _spot(grey, point)) if point is not None and step.get("spot") else None
+            near = apart(step["spot"], _spot(grey, point), _ground(step["signature"]) if strict(step) else None) if point is not None and step.get("spot") else None
             if nearest is None or far < nearest[0]:
                 nearest = (far, near, step["id"])
             if far > reach(step.get("scene")) or (near or 0.0) > SPOT_DISTANCE or step["id"] in avoid:
@@ -166,7 +203,8 @@ class Routine:
                 best = (*rank, step)
         look = {"at_action": at, "step": best[3]["id"] if best else None}
         if best is not None:
-            look.update(screen=round(best[2], 1), spot=round(best[1], 1), kind=best[3]["action"]["kind"])
+            look.update(screen=round(best[2], 1), spot=round(best[1], 1), kind=best[3]["action"]["kind"],
+                        **({"read": True} if strict(best[3]) else {}))
         elif nearest is not None:
             look["nearest"] = {"step": nearest[2], "screen": round(nearest[0], 1),
                                **({"spot": round(nearest[1], 1)} if nearest[1] is not None else {})}
@@ -207,7 +245,7 @@ class Routine:
         for step in self.steps:
             if recovery._distance(step["signature"], seen) > reach(step.get("scene")):
                 continue
-            if _same(step["action"], wanted, png):
+            if _same(step, wanted, png):
                 step.update(used=self.serial, failed=0)
                 if "repeat" in wanted:
                     step["action"]["repeat"] = wanted["repeat"]
@@ -296,8 +334,12 @@ def _sound(step: Any) -> bool:
             and isinstance(step.get("action"), dict) and step["action"].get("kind") in SENT | {direct.WAIT})
 
 
-def _same(old: dict[str, Any], new: dict[str, Any], png: bytes) -> bool:
-    """Whether two inputs are one: the same kind, and the same key or as good as the same place."""
+def _same(step: dict[str, Any], new: dict[str, Any], png: bytes) -> bool:
+    """Whether an input sent on this screen is a step's: the same kind, and the same key or as good as the same
+    place. A step whose place is writing on a bare screen (`strict`) is the input only when the place reads as it did:
+    another button in the same place of a page that looks the same all over is another step (2026-11-20: two
+    text buttons of two tabs had become one step, sent on both)."""
+    old = step["action"]
     if old["kind"] != new["kind"]:
         return False
     if old["kind"] == direct.KEY:
@@ -306,7 +348,9 @@ def _same(old: dict[str, Any], new: dict[str, Any], png: bytes) -> bool:
     if one is None or other is None:
         return one is None and other is None
     longer = max(recovery._size(png))
-    return max(abs(one[0] - other[0]), abs(one[1] - other[1])) <= longer * SAME_PLACE
+    if max(abs(one[0] - other[0]), abs(one[1] - other[1])) > longer * SAME_PLACE:
+        return False
+    return not strict(step) or apart(step["spot"], spot(png, one), _ground(step["signature"])) <= SPOT_DISTANCE
 
 
 class Book:

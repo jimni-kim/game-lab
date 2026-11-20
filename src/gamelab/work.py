@@ -190,6 +190,9 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         # game's world memory knew (`agent.NOT_YET`); and what that memory holds now (PLAN §30)
         **({"not_yet": last[agent.NOT_YET]} if last.get(agent.NOT_YET) else {}),
         **({"world": last["world"]} if last.get("world") else {}),
+        # the errand was told done although everything the game holds read as before it: to be looked at before
+        # it is believed (`world.World.unmoved`)
+        **({"unmoved": last["unmoved"]} if last.get("unmoved") else {}),
         # names and profiles the game would not go on without, and what they were made as (C2-5)
         **({"profiles": profiles} if profiles else {}),
         # what the game's routines did in this work: the steps kept, sent by code, failed and learned (PLAN §28)
@@ -263,6 +266,9 @@ def told(handback: dict[str, Any]) -> str:
         f", next life in {lives['minutes']:g} min" if lives.get("minutes") is not None else ", time to the next life not shown")
     later = handback.get("not_yet")
     waits += "" if later is None else f"; {later['task']} is not offered yet, again in about {later['seconds']} s"
+    if handback.get("unmoved"):
+        waits += "; told done though nothing the game holds changed (" + ", ".join(
+            f"{name} {count:g}" for name, count in handback["unmoved"].items()) + ")"
     names = "; ".join(f"a name or profile window came up and was passed as {made['made']!r}"
                       for made in handback.get("profiles") or ())
     return (f"{handback['outcome']} ({handback['reason']}): {done}{spent['inputs']} inputs, {spent['moves']} moves, "

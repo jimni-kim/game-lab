@@ -160,7 +160,12 @@ NOT_YET = "not_yet"
 # when the person asked for the errand's time to be waited out with the game open: how often in one game, how
 # much longer than the time read, how much of the budget's seconds must be left over after it, and how long
 # between two looks at whether the work was cancelled
-WAITS_MOST, WAIT_OVER_S, WAIT_ROOM_S, WAIT_STEP_S = 2, 2.0, 30.0, 1.0
+WAITS_MOST, WAIT_OVER_S, WAIT_ROOM_S, WAIT_STEP_S = 6, 2.0, 30.0, 1.0
+# a time waited out after which the game still did not offer the errand was too short, whatever the model read
+# then or reads now: the next wait is at least this many times as long (the code's own lower bound; 2026-11-20:
+# a model read 6 s and then nothing off a bar that took a minute). A time the model could not read at all is
+# taken for WAIT_UNREAD_S when the person asked for the errand to be waited for
+WAIT_AGAIN_TIMES, WAIT_UNREAD_S = 2.0, 5.0
 # what a light model is asked of one cell cut out of a board, and what it is told of the game
 LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
                   "with a little of its neighbours around it.")
@@ -256,6 +261,8 @@ class Agent:
         # else its time left is handed back
         self.world = world.World()
         self.wait_for, self.waits = wait, 0
+        # the seconds last waited out for the errand in this game
+        self.waited_s = 0.0
         # the game's routines (`routine`): the steps kept of its screens between levels, sent again by code. The
         # work's own book when it has parts, so that what one part learned the next can send
         self.book = book if book is not None else routine.Book()
@@ -2183,6 +2190,8 @@ class Agent:
         objective, idle, silent = str(self.goal.objective), 0, 0
         # the screen an errand's work found: shown to the model beside each later one (`direct.Direct.ask`)
         found: bytes | None = None
+        # whether an errand's end was already sent back once because nothing the game holds had changed
+        doubted = False
         while True:
             told.update(player.summary())
             if objective == "actions" and self.confirmed >= (self.goal.target_value or 1):
@@ -2242,7 +2251,11 @@ class Agent:
             if action["kind"] == direct.STOP and self._errand():
                 # the game does not offer the errand now: kept with the time the model read for it, which is
                 # handed back, or waited out when the person asked for that and then the errand is gone after again
-                self.world.not_yet(self.errand, looked_at, action.get("again_in_s"), action.get("have"))
+                again_in = action.get("again_in_s")
+                if self.wait_for:
+                    # the person asked for it to be waited for: a time the model could not read is a short one
+                    again_in = max(world.again(again_in) or WAIT_UNREAD_S, WAIT_AGAIN_TIMES * self.waited_s)
+                self.world.not_yet(self.errand, looked_at, again_in, action.get("have"))
                 if await self._until_due(answer.get("because") or player.situation):
                     player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program",
                                            "waited_for": "the time you read until the errand can be done"})
@@ -2256,6 +2269,20 @@ class Agent:
                 self.found["moves_left"] = action["moves_left"]
             if action["kind"] == direct.DONE and action["end"] == WON and self._errand():
                 # the errand is done: the stretch got where it was going, and the steps learned on the way are kept
+                same = self.world.unmoved(action.get("have"))
+                if same and not doubted:
+                    # what the game holds reads as it did before the errand: the model is told so and asked once
+                    # more, on the screen as it is, whether the errand was done at all (2026-11-20: a button
+                    # still cooling from before was twice taken for this errand's doing)
+                    doubted = True
+                    player.history.append({"action": {"kind": direct.DONE}, "sent_by": "program", "not_taken": (
+                        f"everything you read as held is what was held before this errand began ({same}). An errand "
+                        "that was done changes a count. If its button is still cooling or waiting from before, "
+                        "the errand was not done now: answer stop with again_in_s. Answer done again only if you "
+                        "see on this screen what this errand itself gave")})
+                    continue
+                if same:
+                    self.found["unmoved"] = same
                 self.book.of(self.errand).proved()
                 self.world.done(self.errand, looked_at, action.get("again_in_s"), action.get("have"))
                 raise _End(Outcome.GOAL_REACHED, TASK_DONE, player.situation)
@@ -2473,6 +2500,7 @@ class Agent:
             raise _End(Outcome.STOPPED, NOT_YET, f"{self.errand} can be done again in about {round(left)} s"
                        + (f": {said}" if said else ""))
         self.waits += 1
+        self.waited_s = left + WAIT_OVER_S
         until = time.monotonic() + left + WAIT_OVER_S
         while time.monotonic() < until:
             self._check_stops()
