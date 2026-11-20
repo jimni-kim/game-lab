@@ -46,6 +46,9 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stop", action="append", default=[], metavar="CONDITION",
                         help="stop and hand the work back when this is met (repeatable): 'lost' at a level or game lost, "
                              "anything else in words, told to the models that look at the screen")
+    parser.add_argument("--choices", metavar="WORDS",
+                        help="how a story's choices are to be made, in words (PLAN §27); without it a choice that "
+                             "cannot be taken back is not made and the work is handed back there")
     parser.add_argument("--allow", action="append", default=[], choices=sorted(META_ACTIONS),
                         help="a thing beside the board the work may use (repeatable); none unless given")
     parser.add_argument("--resume", action="store_true",
@@ -93,7 +96,7 @@ def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
     asked = getattr(args, "asked", None)
     goal = asked["goal"] if asked else GoalSpec(
         args.objective, args.target, scope=Scope.NEW_GAME, stop_conditions=tuple(getattr(args, "stop", None) or ()),
-        allowed_meta_actions=frozenset(getattr(args, "allow", None) or ()))
+        allowed_meta_actions=frozenset(getattr(args, "allow", None) or ()), choices=getattr(args, "choices", None) or None)
     if getattr(args, "resume", False):
         goal = replace(goal, scope=Scope.CURRENT_GAME)
     return (goal,

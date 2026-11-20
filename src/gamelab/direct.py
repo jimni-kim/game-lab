@@ -31,6 +31,14 @@ is no board, a tap sent again and again without asking for as long as each chang
 (`repeat`: a story's lines; PLAN §27, M1). A sequence of inputs on such a screen is sent the same way, each only
 once the one before changed a little of the screen.
 
+A story is played the same way with one more mark (PLAN §27, session T). An input the model says only moves the
+story on a line (`advance`) is sent again and again by the loop without asking, for as long as the screen stays a
+line: on a page that can be read, while the things to press stay the same (`pressable`); on a picture alone, while
+each input changes only where the model said the lines are shown or where lines changed before (`within`). Where the story asks the player to choose, the model
+says what is asked, the options, the one it picks and whether the choice lasts (`choice`); one that lasts is sent
+only when the person said how such choices are to be made (`goal.choices`), else the work is handed back there
+(`agent._play_direct`).
+
 What the model keeps for itself is in parts (`MEMORY`; PLAN §27, M4): the game's rules as far as it made them out,
 how the game gets from screen to screen outside a level, what it tried in vain, and its plan. All but the plan
 outlast the work: they are kept by the game (`adaptation.Store.memory`) and given to the model that plays it next.
@@ -121,6 +129,13 @@ RELAUNCHES_MOST = 2
 # a tap sent at most this many times at one answer (`repeat`), and the share of the screen a tap of them may
 # change and still be followed by the next: more is another scene, which the model looks at first
 REPEAT_MOST, REPEAT_SHARE = 8, 0.3
+# a story's line moved on by the same input again and again without asking (`advance`; PLAN §27, session T): at most
+# this many at one answer, and how many of a choice's options and how much of each text is kept
+LINES_MOST, OPTIONS_MOST, OPTION_MOST = 60, 8, 120
+# the tags of a page a thing to press has (`pressable`)
+PRESSED_TAGS = frozenset({"button", "a", "input", "select", "textarea", "summary"})
+# how near a change must be to where a story's lines changed before to be one more line (`within`), in pixels
+LINES_NEAR = 12
 
 
 def _point(value: Any, size: tuple[int, int]) -> list[float] | None:
@@ -190,6 +205,41 @@ def words(outline: Any) -> frozenset[str]:
     return frozenset(found)
 
 
+def pressable(outline: Any) -> frozenset[tuple[str, int, int]] | None:
+    """The things the page shows that can be pressed and that nothing lies over, each by its tag and place: what a
+    story's line leaves as it is and a choice, a prompt or another screen does not. None when the page gives no
+    account of the screen."""
+    if not isinstance(outline, dict) or not isinstance(outline.get("items"), list):
+        return None
+    return frozenset((str(item.get("tag")), round(item["at"][0] / 8), round(item["at"][1] / 8))
+                     for item in outline["items"]
+                     if (item.get("tag") in PRESSED_TAGS or item.get("pressed")) and "covered" not in (item.get("flags") or []))
+
+
+def within(boxes: list[list[int]], ground: list[list[int]]) -> bool:
+    """Whether every changed box has its middle inside one of `ground` (where a story's lines changed before)."""
+    def inside(box: list[int]) -> bool:
+        x, y = box[0] + box[2] / 2, box[1] + box[3] / 2
+        return any(left - LINES_NEAR <= x <= left + width + LINES_NEAR and top - LINES_NEAR <= y <= top + height + LINES_NEAR
+                   for left, top, width, height in ground)
+    return all(inside(box) for box in boxes)
+
+
+def _choice(value: Any) -> dict[str, Any] | None:
+    """A model's account of the choice a story puts on the screen: what is asked, the options, the one it picks,
+    and whether the choice lasts (it cannot be taken back). None when it gave none with at least two options."""
+    if not isinstance(value, dict) or not isinstance(value.get("options"), list):
+        return None
+    options = [option.strip()[:OPTION_MOST] for option in value["options"] if isinstance(option, str) and option.strip()]
+    if len(options) < 2:
+        return None
+    asks, picked = value.get("asks"), value.get("picked")
+    return {"asks": asks.strip()[:200] if isinstance(asks, str) else "", "options": options[:OPTIONS_MOST],
+            "picked": picked.strip()[:OPTION_MOST] if isinstance(picked, str) and picked.strip() else None,
+            # anything but a plain "it can be taken back" is a choice that lasts
+            "lasting": value.get("lasting") is not False}
+
+
 def can(kind: Any, kinds: frozenset[str]) -> bool:
     return kind in NEEDS and any(needs in kinds for needs in NEEDS[kind])
 
@@ -206,6 +256,15 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int =
         tap = recovery.check(action, size, kinds)
         return {**tap, "repeat": action["repeat"]} if tap is not None and type(action["repeat"]) is int \
             and 2 <= action["repeat"] <= REPEAT_MOST else None
+    if kind in (TAP, KEY) and action.get("advance") is True:
+        plain = check({name: value for name, value in action.items() if name not in ("advance", "repeat")}, size, kinds)
+        if plain is None:
+            return None
+        # where the story's lines are shown, when the model says: a change there is one more line
+        box = action.get("lines")
+        shown = isinstance(box, list) and len(box) == 4 and all(type(part) in (int, float) for part in box) \
+            and box[2] > 0 and box[3] > 0 and _point(box[:2], size) is not None
+        return {**plain, "advance": True, **({"lines": [float(part) for part in box]} if shown else {})}
     if kind in (TAP, SWIPE):
         return recovery.check(action, size, kinds)
     if kind == WAIT and action.get("until_change") is True:
@@ -272,6 +331,8 @@ def scaled(action: dict[str, Any], scale: float) -> dict[str, Any]:
             out[key] = point(out[key])
     if "path" in out:
         out["path"] = [point(value) for value in out["path"]]
+    if "lines" in out:
+        out["lines"] = point(out["lines"])
     if "inputs" in out:
         out["inputs"] = [scaled(part, scale) for part in out["inputs"]]
     return out
@@ -445,6 +506,9 @@ class Direct:
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
             self.first_score = self.score if self.first_score is None else self.first_score
+        if isinstance(answer.get("action"), dict) and answer["action"].get("advance") is True and "lines" in answer:
+            # where the lines are shown, given beside the action (as a model did, 2026-11-21)
+            answer["action"].setdefault("lines", answer["lines"])
         action = check(answer.get("action"), size, kinds, MOVES_MOST if self.scene == scenes.BOARD else SEQUENCE_MOST)
         used = uses(answer.get("action"))
         if action is None or used is None or action["kind"] not in offered + [DONE, OUT_OF_LIVES, GIVE_UP, STOP]:
@@ -470,7 +534,8 @@ class Direct:
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
         because = answer["action"].get("because") if action["kind"] == STOP else None
         made = recovery.profile(answer["action"]) if action["kind"] in (TAP, TEXT, KEY, SEQUENCE) else None
-        return {"action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
+        chosen = _choice(answer.get("choice")) if action["kind"] in NEEDS or action["kind"] == STOP else None
+        return {**({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {}),
                 **({"profile": made} if made is not None else {})}

@@ -6,8 +6,8 @@ model says is played without that. A page is played in the browser, an app on th
 names neither is not taken. The words about the game go on to the loop as its `hint`.
 
 The answer also gives the reach of the work (PLAN §25, R1 and R2): whether it goes on from the screen as it
-stands or starts the game again, when to stop short of the objective, and which things beside the board that
-cost something the person allowed. A permission is taken only by its name among `META_ACTIONS`; none is the
+stands or starts the game again, when to stop short of the objective, which things beside the board that
+cost something the person allowed, and how the person wants a story's choices made (`choices`; PLAN §27). A permission is taken only by its name among `META_ACTIONS`; none is the
 default, and stopping is the person's to say in their own words.
 """
 from __future__ import annotations
@@ -29,6 +29,8 @@ TASK_NAME = re.compile(r"[a-z][a-z0-9_]{0,23}")
 MOST = 2000
 # the conditions to stop at a request may give, and how much of each one's words
 STOPS_MOST, STOP_MOST = 4, 120
+# how much of the request's words on how a story's choices are to be made is kept
+CHOICES_MOST = 200
 # the installed apps a model is shown at most, and how much of each one's name
 APPS_MOST, LABEL_MOST = 200, 80
 
@@ -78,7 +80,8 @@ async def understand(model: Model, words: str, apps: list[dict[str, Any]] | None
             # left is handed back (`world`, PLAN §30)
             "wait": answer.get("wait") is True,
             "goal": GoalSpec(objective, target if objective != "play_until_end" else None, scope=_scope(answer.get("scope")),
-                             stop_conditions=_stops(answer.get("stop")), allowed_meta_actions=_allowed(answer.get("allowed"))),
+                             stop_conditions=_stops(answer.get("stop")), allowed_meta_actions=_allowed(answer.get("allowed")),
+                             choices=_choices(answer.get("choices"))),
             "hint": hint[:200] if isinstance(hint, str) and hint.strip() else None}
 
 
@@ -106,6 +109,11 @@ def _stops(value: Any) -> tuple[str, ...]:
         return ()
     said = [one.strip()[:STOP_MOST] for one in value if isinstance(one, str) and one.strip()]
     return tuple(dict.fromkeys(said))[:STOPS_MOST]
+
+
+def _choices(value: Any) -> str | None:
+    """How the request wants a story's choices made, in its own words; None when it says nothing of it."""
+    return value.strip()[:CHOICES_MOST] if isinstance(value, str) and value.strip() else None
 
 
 def _allowed(value: Any) -> frozenset[str]:

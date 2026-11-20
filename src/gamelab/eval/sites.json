@@ -573,5 +573,6 @@
         "wait_ms": 3000
       }
     ]
-  }
+  },
+  "monogatari_story": {"url": "https://demo.monogatari.io/", "viewport": [1280, 900], "_comment": "PLAN §27 (T): a story (the demo of the Monogatari visual novel engine, MIT) drawn by the page itself: a language to pick, a menu, a name to type, then lines told one at a tap with a typing effect, a second name to type and a list of topics to choose from that the story comes back to. No family is named and nothing in the setup starts the story. No answer key is read.", "setup": [{"reload": true}, {"wait_ms": 6000}]}
 }

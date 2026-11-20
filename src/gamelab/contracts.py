@@ -103,6 +103,9 @@ class GoalSpec:
     # the meta actions the person allowed, by name (META_ACTIONS); none unless they said so
     allowed_meta_actions: frozenset[str] = frozenset()
     budget_ref: str | None = None
+    # how the person wants a story's choices made, in their own words ("the kind way"); None when they said
+    # nothing of it: a choice that cannot be taken back is then not made, the work is handed back there (PLAN §27)
+    choices: str | None = None
 
     def __post_init__(self) -> None:
         unknown = set(self.allowed_meta_actions) - set(META_ACTIONS)
@@ -112,7 +115,8 @@ class GoalSpec:
     def to_json(self) -> dict[str, Any]:
         return {"objective": str(self.objective), "target_value": self.target_value, "scope": str(self.scope),
                 "stop_conditions": list(self.stop_conditions),
-                "allowed_meta_actions": sorted(self.allowed_meta_actions), "budget_ref": self.budget_ref}
+                "allowed_meta_actions": sorted(self.allowed_meta_actions), "budget_ref": self.budget_ref,
+                **({"choices": self.choices} if self.choices else {})}
 
 
 @dataclass(frozen=True)

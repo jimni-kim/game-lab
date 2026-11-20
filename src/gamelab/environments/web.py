@@ -105,7 +105,7 @@ _OUTLINE = """([most, textMost, nameMost, classesMost]) => {
      items.push({at: [Math.round(x), Math.round(y)], size: [Math.round(w), Math.round(h)],
                  tag: tag, text: text.slice(0, textMost), label: label === text ? '' : label.slice(0, nameMost),
                  classes: Array.from(holder.classList).slice(0, classesMost).map(name => name.slice(0, nameMost)),
-                 bg: bg, flags: flags});
+                 bg: bg, flags: flags, ...(pressed ? {pressed: true} : {})});
    }
  };
  walk(document);
@@ -160,7 +160,7 @@ class WebSurface:
 
     async def outline(self) -> dict[str, Any] | None:
         """What the page says stands in view (`_OUTLINE`): `{"size", "drawn", "cut", "items": [{"at", "size", "tag",
-        "text", "label", "classes", "bg", "flags"}]}` in the capture's pixels; None when the page cannot be read."""
+        "text", "label", "classes", "bg", "flags"}]}` (and `"pressed": True` on a thing that can be pressed) in the capture's pixels; None when the page cannot be read."""
         try:
             found = await self.page.evaluate(_OUTLINE, [OUTLINE_MOST, OUTLINE_TEXT, OUTLINE_NAME, OUTLINE_CLASSES])
         except Exception:

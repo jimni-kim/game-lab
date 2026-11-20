@@ -109,7 +109,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         # whatever was to be started again the host started before the work: each part plays on from the screen
         part = replace(goal, scope=Scope.CURRENT_GAME) if not levels else GoalSpec(
             "play_until_end", scope=Scope.CURRENT_GAME, stop_conditions=goal.stop_conditions,
-            allowed_meta_actions=goal.allowed_meta_actions)
+            allowed_meta_actions=goal.allowed_meta_actions, choices=goal.choices)
         began = time.monotonic()
         run, adapted = await agent.play(surface, model, family_id, goal=part, budget=left, cancel=cancel,
                                         watch=_Numbered(watch, used) if watch is not None and parts else watch,

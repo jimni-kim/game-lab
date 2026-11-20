@@ -164,6 +164,11 @@ TASK_DONE = "task_done"
 # why a game played for an errand ended with it undone: the game does not offer it yet, as the game's world memory
 # knew before anything was sent or as a model read it on the way (`world`, PLAN §30). The time left is handed back
 NOT_YET = "not_yet"
+# why the work is handed back where a story asks for a choice that cannot be taken back and the person did not say
+# how such choices are to be made (PLAN §27, session T)
+CHOICE = "choice"
+# how long a story's line that changed nothing is waited on before the screen is looked at once more
+LINE_WAIT_S = 1.0
 # when the person asked for the errand's time to be waited out with the game open: how often in one game, how
 # much longer than the time read, how much of the budget's seconds must be left over after it, and how long
 # between two looks at whether the work was cancelled
@@ -302,6 +307,10 @@ class Agent:
         # one input it sent among them when it was one a kept recovery can send again, and the input count a
         # family tried again on a screen named a board did not read it at
         self.trail = scenes.Trail()
+        # a story played on a picture alone: where its lines changed the screen so far, and what the last line
+        # sent by the loop changed elsewhere, until a model has looked at it (`direct.within`)
+        self.lines_ground: list[list[int]] = []
+        self.lines_pending: list[list[int]] | None = None
         self._stretch()
         # moves in a row that gained nothing towards the level's goals (`AIMLESS_MOST`), and what a model was
         # asked to pick among the code's moves: the questions, the picks that were not the code's own first, the
@@ -2460,6 +2469,10 @@ class Agent:
                                            "waited_for": "the time you read until the errand can be done"})
                     self._stretch()
                     continue
+            choice = answer.get("choice")
+            if choice is not None and action["kind"] == direct.STOP:
+                # the model itself handed a story's choice back: what was asked goes with it
+                self.found["choice"] = {**choice, "at_input": self.used + 1, "sent": False}
             if action["kind"] == direct.STOP:
                 raise _End(Outcome.STOPPED, "stop_condition", answer.get("because") or player.situation)
             if action["kind"] == direct.OUT_OF_LIVES:
@@ -2497,6 +2510,28 @@ class Agent:
                            WON if won else "end_screen", player.situation)
             if action["kind"] == direct.GIVE_UP:
                 raise _End(Outcome.GAVE_UP, "model_gave_up", player.situation)
+            if choice is not None:
+                # the story asks the player to choose (PLAN §27, session T): a choice that cannot be taken back is
+                # made only as the person said such choices are to be made; where they said nothing the input is
+                # not sent and the work is handed back with what is asked and the options
+                made = {**choice, "at_input": self.used + 1, **({"as_asked": self.goal.choices} if self.goal.choices else {})}
+                if choice["lasting"] and not self.goal.choices:
+                    self.found["choice"] = {**made, "sent": False}
+                    raise _End(Outcome.STOPPED, CHOICE, (
+                        f"the story asks: {choice['asks'] or player.situation} Options: {' / '.join(choice['options'])}. "
+                        "Nothing was chosen: the choice cannot be taken back and the request does not say how such "
+                        "choices are to be made")[:500])
+                self.found.setdefault("choices", []).append(made)
+            # an input that only moves a story on a line: sent again by the loop for as long as the screen stays one
+            advance = bool(action.pop("advance", False)) and not level and not answer["uses"] and choice is None
+            shown = action.pop("lines", None)
+            if advance and shown and shown not in self.lines_ground:
+                self.lines_ground.append(shown)
+            if advance and self.lines_pending:
+                # the model looked at what the last line changed elsewhere and still calls the screen a line: a
+                # change there is one more line from now on
+                self.lines_ground += self.lines_pending
+            self.lines_pending = None
             if scene == scenes.BOARD and not answer["guided"] and self.resumable is not None \
                     and self.resumes < RESUMES_MOST and action["kind"] not in (direct.WAIT, direct.RELAUNCH) \
                     and (self.unread_at is None or self.used - self.unread_at >= RESUME_EVERY):
@@ -2519,6 +2554,10 @@ class Agent:
                 queue = list(action["inputs"][1:])
             elif action.get("repeat") and not level and not answer["uses"]:
                 queue = [{"kind": direct.TAP, "at": action["at"]}] * (action["repeat"] - 1)
+            elif advance:
+                queue = [dict(action)] * (direct.LINES_MOST - 1)
+            # the things to press the page showed when the line was moved on: others coming up end the lines
+            pressed = direct.pressable(outline) if advance else None
             # the words the page showed when the moves were chosen: other words coming up end them
             worded = direct.words(outline) if moves and outline is not None else None
             carried = await self._sent(action["inputs"][0] if action["kind"] == direct.SEQUENCE else action, before)
@@ -2540,8 +2579,16 @@ class Agent:
                 # also once the page shows words it did not before: a result, a notice): the model looks at that
                 # first
                 sends, why, much = 1, "count", direct.MOVE_SHARE if moves else direct.REPEAT_SHARE
+                if pressed is not None:
+                    # the page says what can be pressed: a line may change all of the picture (another place)
+                    much = 2.0
                 for following in queue:
                     share = self._share(sent_on, after, moving)
+                    if advance and not share:
+                        # a line that is still coming (a scene fading in): looked at once more before giving up
+                        await asyncio.sleep(LINE_WAIT_S)
+                        after = await self._settled()
+                        share = self._share(sent_on, after, moving)
                     if not share or share >= much or self.used >= self.budget.max_actions:
                         why = "no_change" if not share else "scene_changed" if share >= much else "budget"
                         break
@@ -2551,6 +2598,17 @@ class Agent:
                     if worded is not None and direct.words(await self._outline()) - worded:
                         why = "new_text"
                         break
+                    if pressed is not None and direct.pressable(await self._outline()) != pressed:
+                        # a choice, a prompt, another screen: the model looks at it
+                        why = "other_to_press"
+                        break
+                    if advance and pressed is None:
+                        boxes = motion.outside(carry_boxes(sent_on, after), moving)
+                        if not direct.within(boxes, self.lines_ground):
+                            # a picture alone: something changed where no line changed before (a choice coming
+                            # up, a figure, another place), which the model looks at
+                            why, self.lines_pending = "elsewhere", boxes
+                            break
                     self._check_stops()
                     sent_on = after
                     screens.append(after)
@@ -2560,6 +2618,12 @@ class Agent:
                     moving = motion.joined(moving + self.seen.moving)
                 repeated = {"sent": sends, **({"of": len(queue) + 1} if action["kind"] == direct.SEQUENCE else {}),
                             "stopped": why}
+                if advance:
+                    # what the loop sent of a story's lines without asking, for the record
+                    story = self.found.setdefault("story", {"by_code": 0, "stretches": []})
+                    story["by_code"] += sends - 1
+                    story["stretches"].append({"at_input": self.used - sends + 1, "sent": sends, "stopped": why,
+                                               "by": "page" if pressed is not None else "picture"})
             # whether the last input sent changed anything
             tail = bool(self._share(sent_on, after, moving)) if moves else None
             if moves:
@@ -2569,7 +2633,12 @@ class Agent:
                 or bool(repeated and repeated["sent"] > 1)
             # the moves of a sequence sent before its last each changed the screen: confirmed moves of the level
             more = repeated["sent"] - 1 if moves and repeated else 0
-            if not level:
+            if not level and (advance or choice is not None):
+                # a story's line and its choice are no steps of a routine: a line is sent on by the loop only while
+                # the screen stays one, and a choice is the model's to look at each time (a line kept as a step
+                # was sent again on the choice's screen, which looked like it, 2026-11-21)
+                self.stretch.update(by_code=False, until=0.0)
+            elif not level:
                 self._learn(answer, screens, changed)
             if carried and carried.get("picked") and not changed:
                 self.carrier.doubt()
@@ -2594,10 +2663,12 @@ class Agent:
                 if idle >= MAX_IDLE:
                     raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
             self.since_tried += bool(changed)
-            if changed and self.resumable is None and self.named and self.game is None \
+            if changed and self.resumable is None and self.named and self.game is None and "story" not in self.found \
                     and self.reasked < REASK_MOST and self.since_tried >= RESUME_EVERY:
                 # the game was asked about on a screen that showed none yet (a splash, a notice) and so has no
                 # family: asked again now that the model's own moves are taken, it may be one there is play for
+                # (not a game whose lines the loop moved on: a story has no board to find, and the asking gets
+                # itself past screens with inputs of its own, which made a story's choice unasked, 2026-11-21)
                 self.reasked, self.since_tried = self.reasked + 1, 0
                 try:
                     asked = await self._identify()
