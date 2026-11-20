@@ -430,6 +430,22 @@
       }
     ]
   },
+  "tatham_singles": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/singles.html",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "Simon Tatham's Portable Puzzle Collection (MIT), Singles: a grid of numbers, a click blacks a square out. A game of no registered family, drawn on a canvas, whose every number has another look once blacked out. Development game for a family made while playing whose cells are read by samples (PLAN §27, S3); each reload deals a new one. No answer key is read.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
+  },
   "holdout_sudoku": {
     "url": "https://mashukui.github.io/web-games/sudoku/",
     "viewport": [

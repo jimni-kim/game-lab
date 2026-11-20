@@ -97,14 +97,21 @@ def distance(one: bytes, other: bytes) -> float:
     suit), which a mean over the whole would lose. Samples of different sizes are not the same thing."""
     if one[:2] != other[:2]:
         return 255.0
-    width, height = one[0], one[1]
-    across = -(-width // PART)
-    sums = [0] * (across * -(-height // PART))
-    for index in range(width * height):
-        at = 2 + index * 3
-        sums[(index // width) // PART * across + (index % width) // PART] += (
-            abs(one[at] - other[at]) + abs(one[at + 1] - other[at + 1]) + abs(one[at + 2] - other[at + 2]))
-    return max(sums) / (PART * PART * 3)
+    if one == other:
+        return 0.0
+    from PIL import Image, ImageChops
+
+    size = (one[0], one[1])
+    differing = ImageChops.difference(Image.frombytes("RGB", size, one[2:]), Image.frombytes("RGB", size, other[2:])).tobytes()
+    # (summed a part at a time from the picture's bytes: a bank of some hundred samples is gone through for every
+    # cell like none of them, on every frame, and a sum a pixel at a time took most of a move's time. PLAN §27, S3)
+    row, most = size[0] * 3, 0
+    for top in range(0, size[1] * row, PART * row):
+        band = differing[top:top + PART * row]
+        for left in range(0, row, PART * 3):
+            right = min(left + PART * 3, row)
+            most = max(most, sum(sum(band[at + left:at + right]) for at in range(0, len(band), row)))
+    return most / (PART * PART * 3)
 
 
 def _picture(sample: bytes) -> Any:

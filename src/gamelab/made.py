@@ -4,7 +4,9 @@ written by a model as code and held to what the screen then shows.
 The harness plays a registered family by its rule model and solver. A game of none is described by a model
 once (`describe`: is it a grid played by one kind of move, how is a cell written down, what are its rules in
 words); from that a descriptor is built, as a registered family has one, and the model writes the game's
-rules as a module (`legal_actions`, `assess`, `status`, `choose`). The module runs in the sandbox, behind the
+rules as a module (`legal_actions`, `assess`, `status`, `choose`, and `result`: the state a move leaves, where
+the rules decide all of it, from which the loop takes what a reader could not make out of the next screen:
+`Code.outcomes`, PLAN §27, S3). The module runs in the sandbox, behind the
 same interface a hand-written rule model and solver have, so the one loop plays it: the model reads each
 screen by the descriptor, the code picks each move, and each move's result must be one the written rules
 allow. A result they refuse is shown to the model, and the rules are written again from it; rules that keep
@@ -328,7 +330,39 @@ class Code:
             ok, taken = said("assess", before=example["state"], action=example["action"], after=example["after"], rules=rules)
             if ok and taken is not True:
                 problems.append(f"assess on example {number} refuses the result that was really seen")
+            if self.foresees:
+                ok, left = said("result", state=example["state"], action=example["action"], rules=rules)
+                if ok and left is not None and (not isinstance(left, dict) or left.get("grid") != example["after"]["grid"]):
+                    problems.append(f"result on example {number} gives another state than the one that was really seen "
+                                    "(None is the answer when the rules do not decide all of it)")
         return problems[:limit]
+
+    @property
+    def foresees(self) -> bool:
+        """Whether the module says what a move leaves (`result`): one written before that was asked for does not."""
+        return self.source is not None and "def result(" in self.source
+
+    def outcomes(self, state: dict[str, Any], action: dict[str, Any], rules: dict[str, Any]
+                 ) -> list[tuple[Any, dict[str, Any]]]:
+        """What the move can leave, as far as the written rules decide all of it (PLAN §27, S3): the one state
+        they say it leaves, when they take that themselves as the move's result; none when they leave it open,
+        do not say, or fail. What a reader could not make out of the next screen is taken from it."""
+        if not self.foresees:
+            return []
+        try:
+            left = self._call("result", state=state, action=action, rules=rules)
+        except SandboxError:
+            return []
+        if not isinstance(left, dict) or "grid" not in left:
+            return []
+        # (the scene as the module gives it, when it gives one: rules that call the last move's result won may
+        # take it as nothing else)
+        for scene in dict.fromkeys((left.get("scene"), PLAYING)):
+            told = {**state, "grid": left["grid"], "scene": scene}
+            if scene in (PLAYING, WON, OVER) and not self.validate(told, rules) and not self.unknown_fields(told) \
+                    and self.assess(state, action, told, rules)["effect"] == "confirmed":
+                return [(None, told)]
+        return []
 
     # ── a rule model, as the loop calls one ───────────────────────────
 

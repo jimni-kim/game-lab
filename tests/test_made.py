@@ -116,7 +116,7 @@ class Maker:
             action = self.inputs.pop(0) if self.inputs else {"kind": "done", "end": "won"}
             return TurnResult(text=json.dumps({"situation": "lamps", "score": None, "action": action, "expect": "", "notes": ""}))
         won = all(cell for row in self.fake.grid for cell in row)
-        return TurnResult(text=json.dumps({"screen": "board", "board": BOARD, "rules": {"rows": ROWS, "cols": COLS},
+        return TurnResult(text=json.dumps({"screen": "board", "board": BOARD, "rules": {"rows": len(self.fake.grid), "cols": len(self.fake.grid[0])},
                                            "state": {"grid": self.fake.grid, "score": None, "scene": "won" if won else "playing"}}))
 
     def count(self, kind):
@@ -300,3 +300,250 @@ async def test_a_family_made_for_a_game_is_kept_and_taken_up_again_with_nothing_
     assert found["made_kept"] == "not_taken" and "restored" not in found["made"] and store.made(site)["source"] == RIGHT.strip()
     # nothing kept is a family: a record that is none is left alone
     assert made.Game.restore(site, {"told": {"rows": 2}, "source": 3}) is None and made.Game.restore(site, None) is None
+
+
+# ── what the written rules say a move leaves, and the cells a reader by samples cannot make out (PLAN §27, S3) ──
+
+FORESEEING = RIGHT + '''
+def result(state, action, rules):
+    r, c = action["cell"]
+    grid = [list(row) for row in state["grid"]]
+    grid[r][c] = 1
+    return {**state, "grid": grid}
+'''
+
+
+class Rows(Lamps):
+    """A 4 by 5 grid of lamps drawn otherwise in each row: a lit lamp has its row's colour, and the dark lamps of
+    the row last tapped in are drawn marked, in a shade of that row. `deaf`: taps the game does not take."""
+
+    def __init__(self, deaf=()):
+        self.grid, self.taps, self.marked, self.deaf = [[0] * 5 for _ in range(4)], [], None, list(deaf)
+
+    async def capture(self, region=None):
+        image = Image.new("RGB", SIZE, (245, 245, 245))
+        draw = ImageDraw.Draw(image)
+        left, top, width, height = BOARD
+        for r, row in enumerate(self.grid):
+            for c, cell in enumerate(row):
+                x, y = left + c * width / 5, top + r * height / 4
+                colour = (250, 60 * r, 0) if cell else (90 + 20 * r, 90, 140) if r == self.marked else (90, 90, 90)
+                draw.rectangle((x + 4, y + 4, x + width / 5 - 4, y + height / 4 - 4), fill=colour)
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+    async def tap(self, x, y, duration_ms):
+        self.taps.append((x, y))
+        left, top, width, height = BOARD
+        row, col = int((y - top) / (height / 4)), int((x - left) / (width / 5))
+        self.marked = row
+        if len(self.taps) not in self.deaf:
+            self.grid[row][col] = 1
+
+
+class Vouching:
+    """A light model that says of each cell cut out what `sure` is."""
+
+    def __init__(self, sure):
+        from gamelab.checker import Spent
+
+        self.sure, self.asked, self.spent = sure, [], Spent()
+
+    async def ask(self, checks, context):
+        self.asked.append(checks)
+        return {check.key: {"p": self.sure} for check in checks}
+
+
+async def rows(monkeypatch, module, light, deaf=()):
+    monkeypatch.setattr(adaptation, "PLAIN_INSETS", (0.2,))
+    fake = Rows(deaf)
+    model = Maker(fake, [module], described={**DESCRIBED, "rows": 4, "cols": 5})
+    played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(60, 1, 120), light=light)
+    assert ending(played)[0] == "goal_reached" and played.record["actions_used"] >= 20, (played.record, found)
+    assert model.count("play") == 0
+    return fake, model, found
+
+
+async def test_cells_a_reader_by_samples_cannot_make_out_are_taken_from_what_the_written_rules_say_the_move_left(monkeypatch):
+    """The first moves are read by the model and the host's plain adapter reads the rest by their samples. A row
+    first played in shows looks no sample has: its dark lamps drawn marked, which the move left as they were, and
+    the lamp it lit, which a light model is asked about once. No screen goes back to the reading model for them."""
+    light = Vouching(1.0)
+    fake, model, found = await rows(monkeypatch, FORESEEING, light)
+    # the first screen, the moves before the adapter, and the last screen (the game's end is the model's to see)
+    assert model.count("label") <= adaptation.EXPLORE_MOVES + 3 and found["relearned"] <= 1, (model.count("label"), found)
+    # rows 1 and 0 were first lit in after the adapter was taken: one question each, of the one lamp
+    assert [len(checks) for checks in light.asked] == [1, 1] and "written down as 1" in light.asked[0][0].instructions
+    assert found["told_by_rules"] >= 8 and found["light"]["named"] == 2
+
+
+async def test_a_changed_cell_no_light_model_vouches_for_is_the_reading_models(monkeypatch):
+    """Rules written while playing are not taken at their word for the cell a move changed: without a light model's
+    yes the screen is read by the model, as before, and the game is played to its end all the same. A look it would
+    not vouch for is not asked about twice."""
+    light = Vouching(0.2)
+    fake, model, found = await rows(monkeypatch, FORESEEING, light)
+    assert found["relearned"] >= 2 and found["light"]["named"] == 0 and len(light.asked) == found["light"]["refused"] == 2
+    # and rules that do not say what a move leaves play as they did
+    fake, model, found = await rows(monkeypatch, RIGHT, None)
+    assert found["told_by_rules"] == 0 and found["relearned"] >= 2
+
+
+async def test_a_move_the_game_did_not_take_is_not_learned_as_its_result(monkeypatch):
+    """A tap the game ignores still marks the row: the cell the rules say is lit looks new and is not lit. The light
+    model says so, the model reads the screen, and nothing wrong is kept (the game is won with every lamp lit)."""
+    class Seeing(Vouching):
+        async def ask(self, checks, context):
+            self.asked.append(checks)
+            answers = {}
+            for check in checks:
+                image = Image.open(BytesIO(check.image)).convert("RGB")
+                answers[check.key] = {"p": 1.0 if image.getpixel((image.width // 2, image.height // 2))[0] == 250 else 0.0}
+            return answers
+    # the eleventh tap is the first in row 1
+    fake, model, found = await rows(monkeypatch, FORESEEING, Seeing(None), deaf=(11,))
+    assert all(cell == 1 for row in fake.grid for cell in row) and found["light"]["refused"] >= 1
+
+
+async def test_a_game_the_family_named_for_it_never_reads_is_described_again_on_its_board_and_played_by_written_rules(monkeypatch):
+    """A model names a registered family whose rules the board is none of, and the first screen is described as no
+    game written rules could play (a tutorial stands on it). The model plays; when the family is tried again on the
+    board and still does not read it, the game is described once more and taken up by rules written for it."""
+    monkeypatch.setattr(agent, "RESUME_EVERY", 2)
+
+    class Late(Maker):
+        def __init__(self, fake):
+            super().__init__(fake, [RIGHT])
+            self.descriptions = [{"screen": "game", "fits": False}, DESCRIBED]
+
+        async def complete(self, request):
+            context = json.loads(request.messages[0].content[0]["text"])
+            if "families" in context:
+                self.asked.append(("identify", context))
+                return TurnResult(text=json.dumps({"screen": "game", "families": ["slide_merge"], "situation": "lamps"}))
+            if context.get("play"):
+                self.asked.append(("play", context))
+                left, top, width, height = BOARD
+                r, c = next((r, c) for r, row in enumerate(self.fake.grid) for c, cell in enumerate(row) if not cell)
+                at = [round(left + (c + 0.5) * width / COLS), round(top + (r + 0.5) * height / ROWS)]
+                return TurnResult(text=json.dumps({"situation": "lamps", "scene": "board", "guided": False, "score": None,
+                                                   "action": {"kind": "tap", "at": at}, "expect": "", "notes": ""}))
+            if "family" not in context and "game" not in context:
+                self.asked.append(("describe", context))
+                return TurnResult(text=json.dumps(self.descriptions.pop(0)))
+            return await super().complete(request)
+
+    fake = Lamps()
+    model = Late(fake)
+    played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 120))
+    assert ending(played)[0] == "goal_reached", (played.record, found)
+    assert model.count("describe") == 2 and model.count("write") == 1 and 1 <= model.count("play") < ROWS * COLS
+    taken = [entry for entry in found["resumes"] if entry["taken"]]
+    assert len(taken) == 1 and taken[0]["made"] == found["made"]["family"] == played.record["family"]
+    assert sum(move["level"] != "L0" for move in played.record["history"]) >= 1
+
+
+async def test_cells_that_look_the_same_and_hold_different_things_are_read_as_the_rules_said(monkeypatch):
+    """In the two rows played last a lamp lights as one of two kinds, by its column, and both are drawn the same: no
+    sample tells them apart, and once the reader has seen both it leaves every such lamp unread on every screen. The
+    screen is then what the written rules said the move left, and the reading model is not asked move after move."""
+    module = FORESEEING.replace("grid[r][c] = 1\n", "grid[r][c] = 1 + c % 2 if r < 2 else 1\n").replace(
+        "want[r][c] = LIT", "want[r][c] = 1 + c % 2 if r < 2 else 1").replace("cell == 1 for", "cell != 0 for")
+
+    class Kinds(Rows):
+        async def capture(self, region=None):
+            shown, self.grid = self.grid, [[min(cell, 1) for cell in row] for row in self.grid]
+            try:
+                return await super().capture(region)
+            finally:
+                self.grid = shown
+
+        async def tap(self, x, y, duration_ms):
+            await super().tap(x, y, duration_ms)
+            self.grid = [[cell and (1 + c % 2 if r < 2 else 1) for c, cell in enumerate(row)] for r, row in enumerate(self.grid)]
+
+    monkeypatch.setattr(adaptation, "PLAIN_INSETS", (0.2,))
+    fake, light = Kinds(), Vouching(1.0)
+    model = Maker(fake, [module], described={**DESCRIBED, "rows": 4, "cols": 5})
+    played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(60, 1, 120), light=light)
+    assert ending(played)[0] == "goal_reached" and played.record["actions_used"] == 20, (played.record, found)
+    # the first screen and six moves, then a screen or two once the two kinds first look the same, and the last
+    assert model.count("label") <= adaptation.EXPLORE_MOVES + 6 and model.count("play") == 0, (model.count("label"), found)
+
+
+async def test_a_family_kept_of_a_game_is_taken_up_once_a_notice_on_its_first_screen_is_put_away(tmp_path):
+    """The game opens under a start notice: the family kept of it does not read that screen. Once the model's input
+    has put the notice away the kept family is tried again, before anything is described or written anew."""
+    from gamelab.adaptation import Store
+
+    store = Store(tmp_path)
+    fake = Lamps()
+    played, found = await play(fake, Maker(fake, [RIGHT]), None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 120), store=store)
+    assert ending(played) == ("goal_reached", "won") and store.made("https://lamps.example/grid") is not None
+
+    class Covered(Lamps):
+        covered = True
+
+        async def capture(self, region=None):
+            if not self.covered:
+                return await super().capture(region)
+            out = BytesIO()
+            Image.new("RGB", SIZE, (20, 20, 60)).save(out, format="PNG")
+            return out.getvalue()
+
+        async def tap(self, x, y, duration_ms):
+            if self.covered:
+                self.covered = False
+            else:
+                await super().tap(x, y, duration_ms)
+
+    class Opening(Maker):
+        async def complete(self, request):
+            context = json.loads(request.messages[0].content[0]["text"])
+            if self.fake.covered and "families" in context:
+                self.asked.append(("identify", context))
+                return TurnResult(text=json.dumps({"screen": "other", "families": [], "situation": "a start notice"}))
+            if self.fake.covered and "family" in context and "reason" not in context:
+                self.asked.append(("label", context))
+                return TurnResult(text=json.dumps({"screen": "other", "board": None, "rules": None, "state": None}))
+            if self.fake.covered:
+                self.asked.append(("recover", context))
+                return TurnResult(text=json.dumps({"situation": "a start notice", "scene": "popup", "action": {"kind": "tap", "at": [300, 200]}}))
+            return await super().complete(request)
+
+    fake = Covered()
+    model = Opening(fake, [])
+    played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 120), store=store)
+    assert ending(played) == ("goal_reached", "won"), (played.record, found)
+    assert found["made_kept"] == "taken_past_first_screen" and found["made"]["restored"], ([k for k, _ in model.asked], found)
+    assert (model.count("describe"), model.count("write"), model.count("play")) == (0, 0, 0)
+
+
+async def test_a_family_kept_of_a_game_is_taken_up_when_the_adapter_kept_with_it_does_not_read_the_new_board(tmp_path, monkeypatch):
+    """The next game of a site shows its board in looks the kept adapter has no sample of. The family made for the
+    game is still its family: the board is read by the model, and nothing is described or written anew."""
+    from gamelab.adaptation import Store
+
+    monkeypatch.setattr(adaptation, "PLAIN_INSETS", (0.2,))
+    store = Store(tmp_path)
+
+    async def once(fake):
+        model = Maker(fake, [FORESEEING], described={**DESCRIBED, "rows": 4, "cols": 5})
+        played, found = await play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(60, 1, 120),
+                                   light=Vouching(1.0), store=store)
+        assert ending(played)[0] == "goal_reached" and played.record["actions_used"] == 20, (played.record, found)
+        return model, found
+
+    model, found = await once(Rows())
+    assert model.count("write") == 1 and store.load("https://lamps.example/grid", found["made"]["family"]) is not None
+
+    class Tinted(Rows):
+        async def capture(self, region=None):
+            image = Image.open(BytesIO(await super().capture(region))).convert("RGB")
+            out = BytesIO()
+            image.point(lambda value: value // 2 + 40).save(out, format="PNG")
+            return out.getvalue()
+
+    model, found = await once(Tinted())
+    assert found["made"]["restored"] and (model.count("describe"), model.count("write"), model.count("play")) == (0, 0, 0)

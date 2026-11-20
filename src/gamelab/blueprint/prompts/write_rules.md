@@ -22,6 +22,12 @@ Write one Python module, standard library only, with exactly these functions. St
         reasoning within about a second, or None when there is none. Play to win or to score: this is what
         the program's results depend on.
 
+    def result(state, action, rules) -> dict | None
+        The state the move leaves, as a new state written exactly as `state` is, when the rules decide all of
+        it; None when chance or something hidden takes part (a piece the game adds by itself). It must be a
+        state assess(state, action, it, rules) takes. The program reads the next screen against it: what it
+        cannot make out there it takes from this.
+
 No IO, no clock, no printing; randomness only from a generator you seed yourself. Each call must finish within two seconds.
 
 When the context has `previous`, it is your earlier module with what was wrong with it (`problems`: an error, or an example it did not agree with). Fix the cause; do not special-case the example.

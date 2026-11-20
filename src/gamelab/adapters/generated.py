@@ -69,6 +69,8 @@ class GeneratedAdapter:
         self.partial: dict[str, Any] | None = None
         # what the things the code leaves to the host looked like on screens a model read (`samples`)
         self.bank = samples.Bank()
+        # the samples the rules gave for cells the code left unread on a move's result (`teach`)
+        self.taught: list[tuple[Any, bytes]] = []
 
     # ── what the environment asks ─────────────────────────────────────
 
@@ -146,6 +148,30 @@ class GeneratedAdapter:
                 continue
             for label, group in samples.learn(raw, look.state, [look.png, *look.frames])[0]:
                 self.bank.add(label, *group)
+        for label, sample in self.taught:
+            self.bank.add(label, sample)
+
+    def add(self, look: Any) -> bool:
+        """Keep the samples of one more look, and say whether the code then reads that look as the model did."""
+        if isinstance(self.measure(look.png), NeedObservation) or not isinstance(raw := self.raw(look.png), dict):
+            return False
+        found, problem = samples.learn(raw, look.state, [look.png, *look.frames])
+        if problem is not None:
+            return False
+        for label, group in found:
+            self.bank.add(label, *group)
+        return _board(samples.resolve(raw, look.png, self.bank)) == _board(look.state)
+
+    def told(self, observation: Observation, payload: dict[str, Any]) -> StateEstimate | NeedObservation:
+        """A state told by the rules of a screen the code read in part, as a reading of it."""
+        state = self._family.estimate(replace(observation, public_facts={"state": payload}, geometry_ref=self.geometry_ref))
+        return NeedObservation(CELLS_UNREAD) if isinstance(state, StateEstimate) and state.unknown_fields else state
+
+    def teach(self, told: list[tuple[Any, bytes]]) -> None:
+        """Samples of what cells hold that no model read: told by the rules of a move's result."""
+        for label, sample in told:
+            self.taught.append((label, sample))
+            self.bank.add(label, sample)
 
     def locate(self, png: bytes, box: list[int]) -> bool | None:
         return None
@@ -255,6 +281,11 @@ class GeneratedAdapter:
 
     def close(self) -> None:
         self.sandbox.close()
+
+
+def _board(state: Any) -> Any:
+    """What a reading is compared on: the board itself, not a score or scene read from elsewhere."""
+    return {key: value for key, value in state.items() if key not in ("score", "scene")} if isinstance(state, dict) else state
 
 
 def _number(value: Any) -> bool:

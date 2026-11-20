@@ -29,6 +29,7 @@ board that the family's reader reads (`scenes`, `_resume`; PLAN §25, R5 and R6)
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import json
 from dataclasses import dataclass, replace
 import logging
@@ -41,7 +42,7 @@ from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS
 from .adapters.generated import GeneratedAdapter
 from .adapters.kit import KitAdapter
 from .carry import Carrier
-from .checker import CHOICE, Check
+from .checker import CHOICE, NOUL, Check
 from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
@@ -176,6 +177,15 @@ WAIT_AGAIN_TIMES, WAIT_UNREAD_S = 2.0, 5.0
 LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
                   "with a little of its neighbours around it.")
 LIGHT_CONTEXT = "A cell of the board of this game: {game}"
+# what it is asked of a cell a move changed that a reader by samples cannot make out (PLAN §27, S3), how sure it
+# must be of each, how much of the cell's neighbours it is shown (of the cell's size, each side), and how many
+# such cells one move may leave
+CHANGED_QUESTION = ("Does the cell in the middle of {image} hold what is written down as {value}? The picture is one "
+                    "cell of the game's board with a little of its neighbours around it. How cells are written "
+                    "down: {cells}")
+CHANGED_SURE, CELL_AROUND, CHANGED_MOST = 0.8, 0.6, 4
+# the share of a board's cells a reader by samples may leave unread and still have them told by the rules
+UNREAD_SHARE = 0.6
 
 
 class Watch(Protocol):
@@ -311,6 +321,14 @@ class Agent:
         self.light = light
         # the questions put to it, the cells its answers named, and the answers the rules did not take
         self.light_told = {"questions": 0, "named": 0, "refused": 0}
+        # a reader by samples and the one result the rules say a move has (`_teach`): the screen's unread cells kept
+        # for a light model's word on those the move changed, the looks left unread on the frame before, and the
+        # looks a light model would not vouch for
+        self.foreseen: tuple[bytes, list[Any], list[Any], dict[str, Any]] | None = None
+        # the state the rules told of the frame being read, when its unread cells were taken from it
+        self.told: dict[str, Any] | None = None
+        self.unread_looks: list[bytes] = []
+        self.unvouched: set[bytes] = set()
         # the ways of moving the game was seen to take or not (`_learn_ways`)
         self.ways: dict[str, Any] = {}
         # the move just refused taught something (a way the game does not take, a thing that is no piece): it
@@ -423,6 +441,8 @@ class Agent:
         # (`_resume`), the times that was tried, and whether play is by a family gone back to
         self.resumable: str | None = None
         self.resumes = 0
+        # whether the game was described a second time, on a board the family named for it did not read (`_resume`)
+        self.described_again = False
         self.resumed = False
         # the model's own moves confirmed since the family was last tried
         self.since_tried = 0
@@ -489,6 +509,9 @@ class Agent:
                 "screen": self.screen,
                 "situation": self.player.situation if self.player is not None and self.policy == "model" else self._situation(),
                 **({"profiles": list(self.profiles)} if self.profiles else {}),
+                # a light model asked of the cells a move changed, where no family's reader of its own is (`_teach`)
+                **({"light": {**self.light_told, **self.light.spent.summary()}}
+                   if self.light is not None and self.light_told["questions"] and self._kit_summary() is None else {}),
                 **({"routines": self.book.summary()} if self.book.summary() else {}),
                 **({"generation_failures": self.failures} if self.failures else {})}
 
@@ -561,6 +584,12 @@ class Agent:
                 self.candidates, self.found["identified"] = kept[:1], {"family": kept[0], "source": "kept", "questions": 0}
             else:
                 asked = await self._identify()
+                if asked["inputs"] and self.found.get("made_kept") == "not_taken" and await self._made_again():
+                    # the family kept of this game did not read the first screen because something stood on it (a
+                    # start notice), which the inputs that got to the game have since put away (PLAN §27, S3:
+                    # 2026-11-20, a family kept of a game was passed over twice at its start notice)
+                    self.found["made_kept"] = "taken_past_first_screen"
+                    return
                 self.candidates, self.named = list(asked["families"]), True
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
@@ -593,6 +622,11 @@ class Agent:
                     # read by the adapter kept with it: that reading is the first screen
                     self.carried = await self._read_code(None)
                     first = self.carried.state if self.carried is not None else None
+                    if first is None and await self._take(game.id, kept=False):
+                        # the adapter kept with it does not read this game's first board (another deal shows looks
+                        # it has no sample of): the family is still this game's, read by the model as when it was
+                        # made (2026-11-20: a kept family was passed over for that on four games. PLAN §27, S3)
+                        first = self.adaptation.first[1] if self.adaptation.first is not None else None
                 holds = first is not None and not game.code.check([first], [])
         except _End:
             holds = False
@@ -1452,6 +1486,10 @@ class Agent:
                     # the rules, or a light model shown the cells alone, told what the code could not read: it
                     # reads it now
                     state, why = self._observe(png)
+                    if state is None and self.told is not None:
+                        # cells that look the same and hold different things (a number under a square blacked out)
+                        # no sample tells apart: the screen is what the rules said, which all it did read agrees with
+                        state, why = self._given(self.told), None
             usable = state is not None
             if not usable:
                 # a screen read through small moving things that could not be read is drawn through next time
@@ -1583,30 +1621,73 @@ class Agent:
             return bool(learned)
         if not agreeing or any(_board(state) != _board(agreeing[0]) for state in agreeing[1:]):
             return False
+        return self._teach(png, expect, agreeing[0], partial)
+
+    def _given(self, payload: dict[str, Any]) -> Any:
+        """A state the rules told, as the adapter's reading of the screen it could not read whole."""
+        self.sequence += 1
+        observation = Observation(f"o{self.sequence}", self.sequence, self.surface.name, 0, time.monotonic(), "agent")
+        state = self.adapter.told(observation, payload)
+        return None if isinstance(state, NeedObservation) else state
+
+    def _teach(self, png: bytes, expect: tuple[Reading, dict[str, Any]], foreseen: dict[str, Any], partial: dict[str, Any]) -> bool:
+        """The cells a reader by samples left unread, taken from the one result the rules say the move has
+        (PLAN §27, S3). A registered family's rules are taken at their word. Rules written while the game is played
+        (`made`) are held to more: what the move left as it was is taken once two frames in a row leave the same cells
+        unread, looking the same: a cell drawn otherwise than before (the game marks the cell picked, and its row)
+        still holds what it held. A cell the move changed and the reader cannot make out is not taken on the rules'
+        word alone (a move the game did not take leaves a cell looking new too): it is kept for a light model to say
+        (`_ask_light`), and the screen is the reading model's when that does not."""
+        self.foreseen = self.told = None
         raw = self.adapter.raw(png)
         if not isinstance(raw, dict):
             return False
-        image, kept = samples._open(png), []
+        image, kept, moved = samples._open(png), [], []
         try:
             for path, box in samples.marks(raw):
                 if samples._at(partial, path) is not None:
                     continue            # read already: only what was left unread is told
-                value, sample = samples._at(agreeing[0], path), samples.cut(image, box)
+                value, sample = samples._at(foreseen, path), samples.cut(image, box)
                 if value is None or sample is None:
                     return False
                 kept.append((value, sample))
+                if samples._at(expect[0].state, path) != value:
+                    moved.append((value, sample, box))
+            cells = sum(1 for _ in samples.marks(raw))
         except (KeyError, IndexError, TypeError):
             return False
-        for value, sample in kept:
-            self.adapter.bank.add(value, sample)
+        if not self._made_plays():
+            # a registered family's rules are taken at their word, as before
+            self.adapter.teach(kept)
+            self.told_by_rules += len(kept)
+            return bool(kept)
+        looks = [sample for _, sample in kept]
+        steady, self.unread_looks = looks == self.unread_looks, looks
+        # most of a board left unread is something lying over it (a notice, the game's end), not cells drawn anew
+        if not kept or not steady or len(kept) > cells * UNREAD_SHARE:
+            return False
+        try:
+            if self.family.model.status(foreseen, self.family.rules, {"objective": str(self.goal.objective),
+                                                                      "target_value": self.goal.target_value})["terminal"]:
+                return False            # the game's end is the reading model's to see
+        except (ValueError, KeyError, TypeError):
+            return False
+        if moved:
+            self.foreseen = (png, kept, moved, foreseen)
+            return False
+        self.adapter.teach(kept)
         self.told_by_rules += len(kept)
-        return bool(kept)
+        self.told = foreseen
+        return True
 
     async def _ask_light(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
         """What the family's reader left unread on the result of a move and the rules leave open, put to a light
         model: each kind of unread cell cut out and shown alone, to be named one of the values the family's cells
         hold (PLAN §20, X1). Its answers are kept only when the screen then reads as a result the rules allow of
         the move; else the screen is the reading model's, as before. True when the reader learned from them."""
+        if self.light is not None and self.foreseen is not None and self.foreseen[0] is png:
+            return await self._ask_changed(*self.foreseen[1:])
+        self.told = None
         if self.light is None or not isinstance(self.adapter, KitAdapter) or self.adapter.partial is None:
             return False
         asked = self.adapter.questions(png)
@@ -1644,6 +1725,42 @@ class Agent:
         learned = self.adapter.teach(png, state, "light")
         self.light_told["named"] += learned
         return bool(learned)
+
+    async def _ask_changed(self, kept: list[tuple[Any, bytes]], moved: list[tuple[Any, bytes, list[float]]],
+                           foreseen: dict[str, Any]) -> bool:
+        """The cells a move changed that a reader by samples cannot make out, each cut out and put to a light
+        model: does it hold what the rules say the move left there (`_teach`). When it says so of each, the reader
+        keeps the looks of all the screen left unread; a look it would not vouch for is not asked about again."""
+        png, self.foreseen = self.foreseen[0], None
+        if any(sample in self.unvouched for _, sample, _ in moved) or len(moved) > CHANGED_MOST:
+            return False
+        image = samples._open(png)
+        checks = []
+        for index, (value, _, (left, top, width, height)) in enumerate(moved):
+            out = BytesIO()
+            image.crop((max(0, round(left - width * CELL_AROUND)), max(0, round(top - height * CELL_AROUND)),
+                        min(image.width, round(left + width * (1 + CELL_AROUND))),
+                        min(image.height, round(top + height * (1 + CELL_AROUND))))).save(out, format="PNG")
+            checks.append(Check(f"c{index}", NOUL, CHANGED_QUESTION.format(
+                image="{image}", value=json.dumps(value), cells=self.family.descriptor["state_fields"].get("grid", "")), out.getvalue()))
+        self.light_told["questions"] += 1
+        started = time.monotonic()
+        try:
+            answers = await self.light.ask(checks, LIGHT_CONTEXT.format(game=self.family.descriptor["summary"]))
+        except Exception as error:
+            log.info("the light model could not be asked: %s", error)
+            return False
+        finally:
+            self.model_seconds += time.monotonic() - started
+        if any(((answers.get(check.key) or {}).get("p") or 0.0) < CHANGED_SURE for check in checks):
+            self.light_told["refused"] += 1
+            self.unvouched.update(sample for _, sample, _ in moved)
+            return False
+        self.adapter.teach(kept)
+        self.told_by_rules += len(kept) - len(moved)
+        self.light_told["named"] += len(moved)
+        self.told = foreseen
+        return True
 
     async def _read_model(self, expect: tuple[Reading, dict[str, Any]] | None, partial: dict[str, Any] | None) -> Reading | None:
         """The screen read by the model into a state the rule model accepts, and kept as a look. With `expect`
@@ -1731,6 +1848,12 @@ class Agent:
         """What is known of the screen about to be read: what the rules say the move just played leaves (where
         the rule model says), else the last state read."""
         predict = getattr(self.family.model, "apply", None) if expect is not None else None
+        if predict is None and expect is not None and self._made_plays():
+            # rules written while playing that say what the move leaves (`made.Code.outcomes`): a cell the model
+            # cannot make out on the result (a number under a square blacked out) is what they say, not what it was
+            # before the move (2026-11-20: six moves the game took were each read as not taken. PLAN §27, S3)
+            left = self.family.model.outcomes(expect[0].state, expect[1], self.family.rules)
+            return left[0][1] if len(left) == 1 else self.state
         if predict is None:
             return self.state
         try:
@@ -1784,6 +1907,14 @@ class Agent:
             if self.rewrites >= MAX_RELEARNS:
                 self.kit_demoted = True
                 self._demote("relearn_limit")
+            return
+        if self.adapter.add(self.trace.looks[-1]):
+            # the look just read gave its samples and the code reads it by them: the looks before it, which it read
+            # when it was taken, are not gone through again (each is some calls of the code, and a game whose cells
+            # keep taking new looks came to a minute of that a move: PLAN §27, S3)
+            self.distrusted, self.blind, self.trial = False, False, TRIAL_MOVES
+            if self.store is not None:
+                self.store.save(self.trace, self.made)
             return
         report = adopt(self.made.source, self.trace)
         if report["passed"]:
@@ -2500,6 +2631,15 @@ class Agent:
             log.info("the family could not be tried again: %s", error)
             tried["error"] = f"{type(error).__name__}: {error}"[:300]
             taken = False
+        if not taken and board and self.game is None and self.direct and self.used and not self.resumed \
+                and not self.described_again and all(move["level"] == L0 for move in self.moves):
+            # the family a model named never read this game's board, and the game was described on a screen before
+            # its board (a tutorial, a notice) as none written rules could play: on a board in play it is
+            # described once more, and played by rules written for it when it is one after all (PLAN §27, S3)
+            self.described_again = True
+            taken = await self._make_family()
+            if taken:
+                family_id = tried["made"] = self.game.id
         if not taken:
             # the model's own play goes on: the model's reading of the screen was no board the rules take
             tried.setdefault("why", "error" if "error" in tried else "not_read_as_board")
