@@ -80,8 +80,10 @@ class Screen:
         self._slide(DIRECTIONS[key])
 
     def _slide(self, direction):
-        if not self.no_effect and not self.covered:
-            self.board = self.family.next_state(self.board, {"kind": "slide", "direction": direction}, 0)
+        # a key that moves no tile does nothing, as on a real game (a board misread may ask for one)
+        action = {"kind": "slide", "direction": direction}
+        if not self.no_effect and not self.covered and action in self.family.model.legal_actions(self.board, self.family.rules):
+            self.board = self.family.next_state(self.board, action, 0)
 
     async def tap(self, x, y, duration_ms):
         self.taps.append((x, y))

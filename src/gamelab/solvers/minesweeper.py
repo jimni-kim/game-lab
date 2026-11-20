@@ -22,11 +22,14 @@ class _OverBudget(Exception):
     pass
 
 
-def _preference(cell: tuple[int, int], rows: int, cols: int) -> tuple[int, int, int]:
+def _preference(cell: tuple[int, int], rows: int, cols: int, edge: bool = False) -> tuple[int, int, int]:
     """Among equally likely cells, the one nearest the middle (a first open there clears the most when a game
-    keeps the cells around it free), then row by row."""
+    keeps the cells around it free), then row by row. With `edge` (a game that promises the first cell alone,
+    PLAN §33 P4) the one with the fewest cells around it instead, so a corner first: a cell with fewer
+    neighbours more often has no mine around it, and only such a cell opens more than itself."""
     r, c = cell
-    return (2 * r - rows + 1) ** 2 + (2 * c - cols + 1) ** 2, r, c
+    middle = (2 * r - rows + 1) ** 2 + (2 * c - cols + 1) ** 2
+    return (-middle if edge else middle), r, c
 
 
 def _constraints(grid, rows: int, cols: int, safe: set, mines: set) -> list[tuple[frozenset, int]] | None:
@@ -248,7 +251,8 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
 
 def _choose(state: dict, rules: dict, policy: str, budget: int, legal: list[dict]) -> dict:
     grid, rows, cols = state["grid"], rules["rows"], rules["cols"]
-    open_cells = sorted((tuple(action["cell"]) for action in legal), key=lambda cell: _preference(cell, rows, cols))
+    edge = rules.get("first_open") == "cell"
+    open_cells = sorted((tuple(action["cell"]) for action in legal), key=lambda cell: _preference(cell, rows, cols, edge))
     decided = _deduce(grid, rules, policy == "solver")
     if decided is None:
         return {"action": None, "certain": False}

@@ -8,6 +8,13 @@ policy plays the same seeds, so policies are compared game by game, not only on 
   .venv/bin/python -m gamelab.eval policies --games 100 --out out/policies.json
   .venv/bin/python -m gamelab.eval policies --family minesweeper --games 400 --hide mines
 
+`--rule NAME=VALUE` (a JSON value) plays every family that has that rule by it instead of its standard one
+(a larger grid, another count of mines, three cards a turn of the stock), and `--policy NAME` plays only the
+policies named:
+
+  .venv/bin/python -m gamelab.eval policies --family minesweeper --policy solver --games 10000 \
+      --rule rows=16 --rule cols=30 --rule mines=99 --rule first_open=cell
+
 `--hide RULE` adds a run of each family's own policy told nothing of that rule value (null), where the family
 lets it be unknown: the game is still played by the real value, so the run says what not knowing it costs.
 
@@ -43,13 +50,25 @@ DEFAULT_COMPUTE = {"slide_merge": (50, 500, 2000), "block_placement": (50, 200, 
 TILE_MILESTONES = (512, 1024, 2048, 4096)
 
 
-def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int, hidden: tuple[str, ...] = ()) -> dict[str, Any]:
+def bound(family_id: str, values: dict[str, Any] | None):
+    """The family playing by `values` where it has those rules (`--rule`), else by its standard ones."""
     family = catalog.family(family_id)
+    own = {name: value for name, value in (values or {}).items() if name in family.rules}
+    if problems := resources.validate(own, catalog.rules_schema(family.descriptor)):
+        raise SystemExit(f"--rule: {family_id}: {'; '.join(problems)}")
+    return family.bind({"rules": own}) if own else family
+
+
+def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int, hidden: tuple[str, ...] = (),
+         values: dict[str, Any] | None = None) -> dict[str, Any]:
+    family = bound(family_id, values)
     # the rules the policy is told: the game's own, without the values hidden from it
     told = family.bind({"rules": {**family.rules, **{name: None for name in hidden}}}) if hidden else family
     rng = random.Random(seed)
     state = family.initial_state(rng.getrandbits(DRAW_BITS))
     moves, took_ms = 0, []
+    # what a policy keeps of the screens it saw in this game (a solver that keeps nothing has none)
+    memory = None
     ended = "capped"
     while moves < max_moves:
         started = time.perf_counter()
@@ -57,7 +76,9 @@ def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int, h
         # a real game takes no move once it has ended, whatever a policy told less would still try
         over = bool(hidden) and family.model.status(family.shown(copy.deepcopy(state)), family.rules,
                                                     {"objective": "play_until_end"})["terminal"]
-        action = None if over else told.choose(family.shown(copy.deepcopy(state)), policy, compute)
+        seen = family.shown(copy.deepcopy(state))
+        memory = told.recall(memory, seen)
+        action = None if over else told.choose(seen, policy, compute, memory=memory)
         took_ms.append((time.perf_counter() - started) * 1000)
         if action is None:
             ended = "no_move"
@@ -110,6 +131,16 @@ def _quantile(ordered: list[float], q: float) -> float:
     return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
 
 
+def rule_value(text: str) -> tuple[str, Any]:
+    name, mark, value = text.partition("=")
+    if not mark or not name:
+        raise argparse.ArgumentTypeError("NAME=VALUE")
+    try:
+        return name, json.loads(value)
+    except ValueError:
+        return name, value                 # a bare word is a string
+
+
 def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--family", action="append", choices=sorted(catalog.MODELS),
                         help="family to measure (repeatable; default: every family)")
@@ -118,6 +149,10 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compute", type=int, action="append",
                         help="compute budget for the searching policy (repeatable; default per family)")
     parser.add_argument("--max-moves", type=int, default=DEFAULT_MAX_MOVES)
+    parser.add_argument("--rule", action="append", default=[], metavar="NAME=VALUE", type=rule_value,
+                        help="play by this rule value (JSON) in every family that has the rule (repeatable)")
+    parser.add_argument("--policy", action="append", default=[], metavar="NAME",
+                        help="play only these policies (repeatable; default: the baseline, the family's own, the general)")
     parser.add_argument("--hide", action="append", default=[], metavar="RULE",
                         help="also play each family's own policy told nothing of this rule value (repeatable)")
     parser.add_argument("--workers", type=int, default=None, help="processes (default: CPU count)")
@@ -131,8 +166,9 @@ def main(args: argparse.Namespace) -> int:
     seeds = range(args.first_seed, args.first_seed + args.games)
     runs: list[tuple[str, str, int, tuple[str, ...]]] = []
     chosen: dict[str, str] = {}
+    values = dict(args.rule)
     for family_id in args.family or sorted(catalog.MODELS):
-        family = catalog.family(family_id)
+        family = bound(family_id, values)
         baseline, own = family.baseline_policy, family.descriptor["default_policy"]
         chosen[family_id] = own
         # the baseline ignores the budget; it is played once at the smallest one
@@ -145,25 +181,36 @@ def main(args: argparse.Namespace) -> int:
         hidden = tuple(name for name in args.hide if name in family.rules and not resources.validate(
             None, family.descriptor["rule_parameters"][name]["values"]))
         runs += [(family_id, own, budget, hidden) for budget in budgets if hidden]
+        if args.policy:
+            # only the policies named, any the family offers: the baseline first and once, as above
+            named = [name for name in dict.fromkeys([baseline, *family.policies()]) if name in args.policy]
+            runs = [run for run in runs if run[0] != family_id]
+            runs += [(family_id, name, budget, ()) for name in named
+                     for budget in ([min(budgets)] if name == baseline else budgets)]
+    if not runs:
+        raise SystemExit("--policy: no family has a policy of that name")
+    runs = list(dict.fromkeys(runs))
 
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        futures = {run: [pool.submit(play, *run[:3], seed, args.max_moves, run[3]) for seed in seeds] for run in runs}
+        futures = {run: [pool.submit(play, *run[:3], seed, args.max_moves, run[3], values) for seed in seeds] for run in runs}
         games = {run: [f.result() for f in fs] for run, fs in futures.items()}
 
     report: dict[str, Any] = {"revision": revision(), "games_per_run": args.games, "first_seed": args.first_seed,
                               "max_moves": args.max_moves, "families": {}}
     for family_id in dict.fromkeys(run[0] for run in runs):
-        family = catalog.family(family_id)
+        family = bound(family_id, values)
         family_runs = [run for run in runs if run[0] == family_id]
-        base = games[family_runs[0]]
+        # the first run is the baseline unless `--policy` left it out: then the runs are compared with nothing
+        base = games[family_runs[0]] if family_runs[0][1] == family.baseline_policy else None
+        own_runs = {run[2]: run for run in family_runs if run[1] == chosen[family_id] and not run[3]}
         report["families"][family_id] = {
             "family_revision": family.revision, "rules": family.rules,
             "runs": [{"policy": policy, "compute": compute, **({"hidden": list(hidden)} if hidden else {}),
                       **summarize(games[run]),
-                      **({"vs_baseline": paired(base, games[run])} if run != family_runs[0] else {}),
+                      **({"vs_baseline": paired(base, games[run])} if base is not None and run != family_runs[0] else {}),
                       # a general solver against the family's own at the same budget
-                      **({"vs_own": paired(games[(family_id, chosen[family_id], run[2], ())], games[run])}
-                         if run[1] in solvers.GENERIC or hidden else {}),
+                      **({"vs_own": paired(games[own_runs[run[2]]], games[run])}
+                         if (run[1] in solvers.GENERIC or hidden) and run[2] in own_runs else {}),
                       "per_game": [{k: v for k, v in g.items() if k != "ms_decisions"} for g in games[run]]}
                      for run in family_runs for _, policy, compute, hidden in [run]]}
     if args.out:

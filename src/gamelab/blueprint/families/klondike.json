@@ -111,10 +111,11 @@
   },
   "policies": [
     "first",
-    "greedy"
+    "greedy",
+    "hindsight"
   ],
   "baseline_policy": "first",
-  "default_policy": "greedy",
+  "default_policy": "hindsight",
   "default_compute": 200,
   "goal_value": "the cards on the foundations",
   "verify_every": 1

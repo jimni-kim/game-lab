@@ -25,7 +25,9 @@ COVERED, FLAG, MINE, EXPLODED = 9, 10, 11, 12
 # cell once a game is won; with `flags` off nobody else places one) and a mine shown is one
 MARKED = (FLAG, MINE)
 NEIGHBOURS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
-DEFAULT_RULES = {"rows": 9, "cols": 9, "mines": 10, "flags": False}
+# first_open: what the game promises of the first cell opened, "around" (no mine on it nor around it) or "cell"
+# (none on it alone). Only the replay game places mines by it; a policy told "cell" starts in a corner
+DEFAULT_RULES = {"rows": 9, "cols": 9, "mines": 10, "flags": False, "first_open": "around"}
 # what a general solver may rely on (`solvers.fits`): where the mines lie is hidden and what a move opens
 # cannot be listed, so there is no `outcomes`; the numbers shown constrain it
 CAPABILITIES = ("hidden", "constraints")
@@ -211,8 +213,8 @@ def _numbers(mines: set, rows: int, cols: int, r: int, c: int) -> int:
 
 
 def _place(rules: dict, draw: int, clear: list[tuple[int, int]]) -> list[list[int]]:
-    """The mines, drawn once the first cell is opened: never on it, nor around it while there is room (the
-    replay game's own guarantee; games differ in what their first move promises)."""
+    """The mines, drawn once the first cell is opened: never on a `clear` cell (the first one, and the cells
+    around it when the rule `first_open` promises them) while there is room."""
     rows, cols = rules["rows"], rules["cols"]
     if rules["mines"] is None:
         raise ValueError("mines_unknown")       # a game played needs its mines placed: only a screen's may be unknown
@@ -241,7 +243,8 @@ def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
     r, c = action["cell"]
     if state["grid"][r][c] != COVERED or _lost(state["grid"]):
         raise ValueError("illegal_action")
-    placed = state["mines"] or _place(rules, draw, [(r, c), *neighbours(r, c, rows, cols)])
+    around = [] if rules.get("first_open") == "cell" else neighbours(r, c, rows, cols)
+    placed = state["mines"] or _place(rules, draw, [(r, c), *around])
     mines = {tuple(cell) for cell in placed}
     grid = [list(row) for row in state["grid"]]
     if (r, c) in mines:

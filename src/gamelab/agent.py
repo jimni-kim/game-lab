@@ -418,6 +418,8 @@ class Agent:
         self.used = self.confirmed = self.stalled = self.tries = self.shots = self.sequence = 0
         self.shrugged = False
         self.ineffective: dict[str, Any] | None = None
+        # what the family's solver keeps of the game from screen to screen (`GridFamily.recall`)
+        self.recalled: dict[str, Any] | None = None
         # confirmed moves the adapter read since it was last written, and rewrites in a row it had not earned
         self.earned = self.churn = 0
         # a move whose result nobody read yet, with the board it was played from: the next reading is held to it
@@ -656,6 +658,7 @@ class Agent:
         game.close()
         self.game, self.named, self.adapter, self.adaptation, self.recovery = None, False, None, None, None
         self.family_id = self.family = self.policy = self.trace = self.made = self.board = self.carried = None
+        self.recalled = None
         self.found.pop("identified", None)
         self.found["made_kept"] = "not_taken"
         return False
@@ -921,7 +924,15 @@ class Agent:
                 before = self._own(said)
                 self.state = before.state
         excluded = self.ineffective["actions"] if self.ineffective and self.ineffective["state"] == before.id else []
-        action = self.family.choose(before.state, self.policy, self.budget.compute, tuple(excluded))
+        # what the family's solver keeps from screen to screen (the cards a stock has shown, PLAN §33 P3); a
+        # screen that does not follow from the last one starts it again, so it is never reset here
+        self.recalled = self.family.recall(self.recalled, before.state)
+        action = self.family.choose(before.state, self.policy, self.budget.compute, tuple(excluded),
+                                    **({"memory": self.recalled} if self.recalled is not None else {}))
+        if action is None and not excluded and self.family.spent(self.recalled):
+            # the solver's own memory shows the game going nowhere (a stock turned all the way round with nothing
+            # to play): it is over, whatever moves it still offers, as a state come back to is below
+            raise _End(Outcome.GAME_OVER, "no_progress")
         if action is None or action["kind"] in self.family.meta_actions:
             # every move this board offers was tried without effect, or the game waits at a message of its own
             await self._unstick("absent" if action is None else action["kind"], "no_move" if action is None else "message")

@@ -64,12 +64,25 @@ class GridFamily:
                              payload=payload, unknown_fields=tuple(self.model.unknown_fields(payload)),
                              evidence=observation.id, geometry_ref=observation.geometry_ref)
 
+    def recall(self, memory: dict[str, Any] | None, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """What the family's solver keeps of a game once it has seen `payload` too (JSON, the solver's own:
+        the cards a stock has shown); None for a solver that keeps nothing. A game starts with None."""
+        recall = getattr(self.solver, "recall", None)
+        return recall(memory, payload, self.rules) if recall is not None else None
+
+    def spent(self, memory: dict[str, Any] | None) -> bool:
+        """Whether what the solver kept shows a game with nothing left to gain though it still offers moves."""
+        spent = getattr(self.solver, "spent", None)
+        return bool(memory is not None and spent is not None and spent(memory, self.rules))
+
     def choose(self, payload: dict[str, Any], policy: str, compute: int,
-               excluded: tuple[dict[str, Any], ...] = ()) -> dict[str, Any] | None:
+               excluded: tuple[dict[str, Any], ...] = (), memory: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """The move `policy` picks on a fully read state: the family's own solver's, or a general solver's
-        over the rule model alone."""
+        over the rule model alone. `memory` is what `recall` kept of this game, for a solver that keeps any."""
         if policy in solvers.GENERIC:
             return solvers.GENERIC[policy].choose(payload, self.rules, self.model, compute, list(excluded))["action"]
+        if memory is not None:
+            return self.solver.choose(payload, self.rules, policy, compute, list(excluded), memory)["action"]
         return self.solver.choose(payload, self.rules, policy, compute, list(excluded))["action"]
 
     def rank(self, payload: dict[str, Any], compute: int, excluded: tuple[dict[str, Any], ...] = ()) -> list[dict[str, Any]]:

@@ -90,6 +90,15 @@
       "values": {
         "const": false
       }
+    },
+    "first_open": {
+      "description": "what the first cell opened is promised: \"around\" (no mine on it nor on the cells around it) or \"cell\" (none on it alone); only the simulated game places its mines by it",
+      "values": {
+        "enum": [
+          "around",
+          "cell"
+        ]
+      }
     }
   },
   "policies": [

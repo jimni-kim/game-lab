@@ -78,3 +78,22 @@ def test_a_page_played_on_from_the_screen_is_opened_with_no_setup_and_keeps_what
     args = parser.parse_args(["--compute", "1", "--out", str(tmp_path), "--site", "ovolve_2048", "--resume"])
     _, site = web.site_for(args, None)
     assert site["setup"] == [] and web.profile_for(args, site) == web.PROFILES / "ovolve.github.io"
+
+
+def test_a_rule_value_given_to_the_policies_run_is_the_game_played_and_the_policy_named_is_the_one_run():
+    """PLAN §33 P1: `--rule` binds the families that have the rule (a larger grid, the first cell's promise),
+    `--policy` plays any policy the family offers."""
+    parser = argparse.ArgumentParser()
+    policies.configure(parser)
+    args = parser.parse_args(["--rule", "rows=16", "--rule", "mines=40", "--rule", "first_open=cell", "--rule", "draw=3"])
+    values = dict(args.rule)
+    assert values == {"rows": 16, "mines": 40, "first_open": "cell", "draw": 3}
+    assert policies.bound("minesweeper", values).rules == {"rows": 16, "cols": 9, "mines": 40, "flags": False, "first_open": "cell"}
+    assert policies.bound("klondike", values).rules == {"draw": 3} and policies.bound("slide_merge", values).rules["size"] == 4
+    with pytest.raises(SystemExit):
+        policies.bound("minesweeper", {"rows": 1})
+    game = policies.play("minesweeper", "solver", 20000, 0, 400, (), {"rows": 12, "cols": 12, "mines": 20, "first_open": "cell"})
+    assert game["won"] in (True, False) and game["ended"] == "no_move"
+    # a deal greedy cannot win ends with no move left, not at the cap of moves
+    deals = [policies.play("klondike", "greedy", 30, seed, 3000) for seed in range(6)]
+    assert all(deal["ended"] == "no_move" or deal["won"] for deal in deals) and not all(deal["won"] for deal in deals)

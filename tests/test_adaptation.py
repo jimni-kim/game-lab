@@ -54,6 +54,9 @@ class Author:
         if self.misread and labels > 1:       # never the first look: nothing yet says a first reading is wrong
             self.misread -= 1
             grid[0][0] = 3 if self.misread % 2 else (grid[0][0] or 2) * 2
+            if not self.misread % 2:
+                # (two cells off: one alone may pass for the new tile, whichever move the solver chose)
+                grid[3][3] = (grid[3][3] or 2) * 2
         left, top, width, height = self.fake.rect
         return TurnResult(text=json.dumps({"screen": "board", "board": [left - 3, top + 2, width + 4, height - 3],
                                            "rules": {"size": 4, "target": 2048}, "state": {"grid": grid, "score": 0, "scene": "playing"}}))

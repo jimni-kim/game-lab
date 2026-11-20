@@ -226,3 +226,87 @@ def test_a_block_score_goal_without_a_target_is_not_judged_reached_or_missed():
     state = {"board": [[0] * 8 for _ in range(8)], "tray": [[[0, 0]], None, None], "score": 40}
     seen = block_placement.status(state, block_placement.DEFAULT_RULES, {"objective": "reach_value"})
     assert seen["goal"] == "unknown"
+
+
+# ── PLAN §33, session P: the solvers' strength ─────────────────────────
+
+def test_a_game_that_promises_the_first_cell_alone_may_lay_mines_around_it_and_is_begun_in_a_corner():
+    """P1/P4: `first_open` is the replay game's promise. "cell" keeps only the opened cell free, so the cells
+    around it may hold mines; a solver told so opens a corner first (fewest cells around it)."""
+    rules = {**minesweeper.DEFAULT_RULES, "first_open": "cell"}
+    beside = 0
+    for seed in range(40):
+        state = minesweeper.next_state(minesweeper.initial_state(rules, seed), rules, {"kind": "open", "cell": [4, 4]}, seed)
+        mines = {tuple(cell) for cell in state["mines"]}
+        assert (4, 4) not in mines and len(mines) == rules["mines"]
+        beside += any(cell in mines for cell in minesweeper.neighbours(4, 4, 9, 9))
+        around = minesweeper.next_state(minesweeper.initial_state(minesweeper.DEFAULT_RULES, seed), minesweeper.DEFAULT_RULES,
+                                        {"kind": "open", "cell": [4, 4]}, seed)
+        assert not any(tuple(cell) in set(minesweeper.neighbours(4, 4, 9, 9)) for cell in around["mines"])
+    assert beside > 10, beside
+    fresh = minesweeper.shown(minesweeper.initial_state(rules, 0))
+    assert minesweeper_solver.choose(fresh, rules, "solver", 20000)["action"]["cell"] in ([0, 0], [0, 8], [8, 0], [8, 8])
+    assert minesweeper_solver.choose(fresh, minesweeper.DEFAULT_RULES, "solver", 20000)["action"]["cell"] == [4, 4]
+
+
+def test_expectimax_reaches_1024_on_a_small_budget():
+    """P2: the line evaluation (free cells, a line rising one way, joins, small tiles over large) with the
+    table of grids met reaches 1024 within 900 moves on these seeds at a quarter of the budget the earlier
+    evaluation was measured at (where it reached 2048 in two games of three)."""
+    for seed in (1, 2, 3):
+        end, _ = _play("slide_merge", slide_merge.DEFAULT_RULES, "expectimax", 500, seed, 900)
+        assert max(max(row) for row in end["grid"]) >= 1024, (seed, end["grid"])
+
+
+def _klondike(policy, budget, seed, moves=600):
+    """A whole simulated deal with what the solver remembers carried from screen to screen: how it ended."""
+    rules = klondike.DEFAULT_RULES
+    draws = _draws(seed)
+    state, memory = klondike.initial_state(rules, next(draws)), None
+    for count in range(moves):
+        seen = klondike.shown(state)
+        memory = klondike_solver.recall(memory, seen, rules)
+        chosen = klondike_solver.choose(seen, rules, policy, budget, (), memory)["action"]
+        if chosen is None:
+            return state, count
+        state = klondike.next_state(state, rules, chosen, next(draws))
+    return state, moves
+
+
+def test_a_klondike_policy_stops_once_the_stock_went_round_for_nothing():
+    """P3 (a): with what `recall` keeps, greedy turns the stock once all the way round with nothing else to
+    play and then has no move, where it turned it for ever (56% of 1000 deals ran into the cap of moves)."""
+    for seed in range(12):
+        end, count = _klondike("greedy", 30, seed)
+        assert count < 600, seed
+        assert end["scene"] == klondike.WON or klondike_solver.choose(klondike.shown(end), klondike.DEFAULT_RULES, "greedy", 30)["action"] is not None
+
+
+def test_what_is_remembered_of_the_stock_is_the_cards_it_showed_in_their_order():
+    rules = klondike.DEFAULT_RULES
+    state, memory = klondike.initial_state(rules, 5), None
+    turned = []
+    memory = klondike_solver.recall(memory, klondike.shown(state), rules)
+    assert memory["stock"] == [None] * 24 and memory["waste"] == [] and memory["rounds"] == 0
+    for _ in range(24):
+        state = klondike.next_state(state, rules, {"kind": "draw"}, 0)
+        memory = klondike_solver.recall(memory, klondike.shown(state), rules)
+        turned.append(klondike.shown(state)["waste"])
+    assert memory["waste"] == turned and memory["stock"] == [] and memory["rounds"] == 0
+    state = klondike.next_state(state, rules, {"kind": "recycle"}, 0)
+    memory = klondike_solver.recall(memory, klondike.shown(state), rules)
+    # put back, the first card turned is the next one again
+    assert memory["stock"] == turned[::-1] and memory["waste"] == [] and memory["stock"] == state["stock"]
+    assert memory["rounds"] == 1
+    # a screen that does not follow from the last one starts again from what it shows alone
+    other = klondike.shown(klondike.initial_state(rules, 6))
+    assert klondike_solver.recall(memory, other, rules)["stock"] == [None] * 24
+
+
+def test_hindsight_wins_deals_greedy_does_not_and_plays_the_same_game_twice():
+    """P3 (b): the unseen cards dealt at random and each move followed to the end of every such deal. Same
+    seeds as greedy; the deals come from a fixed generator, so a game is played the same way twice."""
+    won = {policy: [_klondike(policy, 40, seed)[0]["scene"] == klondike.WON for seed in range(24)]
+           for policy in ("greedy", "hindsight")}
+    assert sum(won["hindsight"]) > sum(won["greedy"]), won
+    assert _klondike("hindsight", 40, 3) == _klondike("hindsight", 40, 3)
