@@ -124,9 +124,14 @@ class KitAdapter:
         self.kit.tally(ticked)
 
     def agrees(self, look: Any) -> bool:
-        """Whether a look a model read is read the same here."""
+        """Whether a look a model read is read the same here: in every cell, or, by a reader that tells what a
+        cell is better than what a model calls it (`alike`), in all but a few. Held to every cell, a reader that
+        lost a board once never agreed with a model again while one piece on it was called otherwise each time
+        (2026-11-20: ten moves of a level, the reader taught again at each and doubted at each)."""
         state, _ = self.kit.read(look.png)
-        return state is not None and self.kit.same(state, look.state)
+        if state is None:
+            return False
+        return self.kit.same(state, look.state) or self.alike(state, look.state)
 
     def alike(self, state: dict[str, Any], said: dict[str, Any]) -> bool:
         """Whether this reader's own reading of a screen a model just read may stand for the model's: it reads

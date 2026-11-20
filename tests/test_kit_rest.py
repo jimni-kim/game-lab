@@ -325,3 +325,21 @@ async def test_a_screen_the_reader_gave_up_on_is_kept_with_why(tmp_path):
     listed = json.loads((tmp_path / "game.json").read_text())["unread"]
     assert listed[0]["file"] == "game-unread-p1-a3-scene_changed.png" and (tmp_path / listed[0]["file"]).is_file()
     assert "png" not in listed[0]
+
+
+def test_a_reader_agrees_with_a_reading_that_calls_a_few_cells_otherwise_and_not_with_one_that_calls_many():
+    from types import SimpleNamespace
+
+    grid = [[(row * 2 + col) % 6 + 1 for col in range(8)] for row in range(8)]
+    png = board_png(grid)
+
+    def said(wrong):
+        """A reading that calls the first `wrong` cells of the top rows by the next colour."""
+        told = [list(row) for row in grid]
+        for index in range(wrong):
+            told[index // 8][index % 8] = told[index // 8][index % 8] % 6 + 1
+        return SimpleNamespace(png=png, board=list(gems.BOARD), state={"grid": told}, sources=None, panel=None)
+
+    for wrong, agreed in ((0, True), (3, True), (20, False)):
+        reader = KitAdapter("match3", rules={"rows": 8, "cols": 8})
+        assert reader.keep([said(wrong)]) and reader.agrees(said(wrong)) is agreed, wrong
