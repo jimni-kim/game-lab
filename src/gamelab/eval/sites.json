@@ -446,6 +446,22 @@
       }
     ]
   },
+  "tatham_singles_seeded": {
+    "url": "https://www.chiark.greenend.org.uk/~sgtatham/puzzles/js/singles.html#6x6de#20261120",
+    "viewport": [
+      1280,
+      900
+    ],
+    "_comment": "tatham_singles with the puzzle fixed by its seed in the address, so every reload deals the same one: for measuring one way of playing against another on the same puzzle (PLAN §26, session G). Development game, as tatham_singles.",
+    "setup": [
+      {
+        "reload": true
+      },
+      {
+        "wait_ms": 2000
+      }
+    ]
+  },
   "holdout_sudoku": {
     "url": "https://mashukui.github.io/web-games/sudoku/",
     "viewport": [

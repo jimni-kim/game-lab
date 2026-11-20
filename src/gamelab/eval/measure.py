@@ -57,6 +57,11 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--task", metavar="NAME",
                         help="an errand beside the levels, by a plain name ('daily_reward'): its steps are kept as a "
                              "routine of their own and the game ends when it is done (a request in words names it itself)")
+    parser.add_argument("--way", choices=("direct", "made"),
+                        help="for measuring one way of playing against another on the same game (PLAN §26, session G): "
+                             "direct: no family is looked for, the model plays with its own inputs; made: no registered "
+                             "family, and a family is made from the model's description even when it says the game is "
+                             "not one for written rules. The harness's own choice unless given")
     parser.add_argument("--policy")
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
@@ -104,6 +109,11 @@ def game_within(args: argparse.Namespace) -> str | None:
 def task_named(args: argparse.Namespace) -> str | None:
     """The errand beside the levels the request in words named, else the one `--task` did."""
     return (getattr(args, "asked", None) or {}).get("task") or getattr(args, "task", None)
+
+
+def way_named(args: argparse.Namespace) -> str | None:
+    """The one way of playing a measurement holds the harness to (`--way`), else none: its own choice."""
+    return getattr(args, "way", None)
 
 
 def task_waits(args: argparse.Namespace) -> bool:

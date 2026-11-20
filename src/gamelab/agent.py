@@ -265,7 +265,7 @@ class Agent:
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                  notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-                 task: str | None = None, wait: bool = False) -> None:
+                 task: str | None = None, wait: bool = False, way: str | None = None) -> None:
         # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
         # (`adaptation.keyed`)
         self.game_name = game
@@ -345,6 +345,10 @@ class Agent:
         self.goal, self.budget, self.store, self.fresh, self.hint = goal, budget, store, fresh, hint
         # whether a game of no registered family is played by the model's own inputs, not left unplayed
         self.direct = direct
+        # one way of playing a measurement holds the game to (PLAN §26, session G): "direct", the model's own
+        # inputs with no family looked for; "made", a family made from the model's description whatever it says
+        # of written rules. None: the harness's own choice
+        self.way = way
         # the family made for this game when none is registered for it (`made`), the moves played by its
         # written rules that the screen bore out, and a move whose real result those rules refused
         self.game: made.Game | None = None
@@ -574,6 +578,11 @@ class Agent:
                 await self._until_due("")
             await self._play_direct("")
             return
+        if self.way == "direct":
+            # measured against the other ways on the same game: nothing kept or named is taken up (session G)
+            self.found["way"] = "direct"
+            await self._play_direct("")
+            return
         if self.family_id is None and self._falling_kept() is not None:
             # a game in which time moves, played here before: what the model said of it then is held against
             # the screen and the loop starts with no question (PLAN §29, S4)
@@ -598,7 +607,7 @@ class Agent:
                     # 2026-11-20, a family kept of a game was passed over twice at its start notice)
                     self.found["made_kept"] = "taken_past_first_screen"
                     return
-                self.candidates, self.named = list(asked["families"]), True
+                self.candidates, self.named = ([] if self.way == "made" else list(asked["families"])), True
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
@@ -2200,7 +2209,9 @@ class Agent:
             return False
         self._afford()
         try:
-            game = await self._asking(made.describe(self.seen, self.model, self.site, hint=self.hint))
+            game = await self._asking(made.describe(self.seen, self.model, self.site, hint=self.hint,
+                                                    told=self.found.setdefault("described", []),
+                                                    anyway=self.way == "made"))
         except Exception as error:
             log.info("the game could not be described: %s", error)
             self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -2900,7 +2911,8 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-               task: str | None = None, wait: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               task: str | None = None, wait: bool = False, way: str | None = None, **ignored: Any
+               ) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
@@ -2908,4 +2920,4 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
                        direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
-                       task=task, wait=wait).run()
+                       task=task, wait=wait, way=way).run()

@@ -69,9 +69,12 @@ def _text(value: Any, most: int) -> str | None:
     return value.strip()[:most] if isinstance(value, str) and value.strip() else None
 
 
-async def describe(surface: Any, model: Model, site: str, *, hint: str | None = None) -> Game | None:
+async def describe(surface: Any, model: Model, site: str, *, hint: str | None = None, told: list | None = None,
+                   anyway: bool = False) -> Game | None:
     """The game on the screen as a model describes it, when it is one that can be played by written rules;
-    None when it is not, or the description is not one a family can be made from."""
+    None when it is not, or the description is not one a family can be made from. `told` gets what the model
+    answered of the screen and of written rules (`fits`); `anyway`, for measuring (PLAN §26, session G), makes a
+    family of a whole description even when the model says it is not one for written rules."""
     shown, _ = recovery.view(await surface.capture())
     context = {"screen": list(recovery._size(shown)), **({"hint": hint} if hint else {})}
     image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -83,7 +86,10 @@ async def describe(surface: Any, model: Model, site: str, *, hint: str | None = 
         answer = json.loads(result.text or "")
     except ValueError:
         return None
-    if not isinstance(answer, dict) or answer.get("screen") != "game" or answer.get("fits") is not True:
+    if told is not None:
+        told.append({"screen": answer.get("screen") if isinstance(answer, dict) else None,
+                     "fits": answer.get("fits") if isinstance(answer, dict) else None})
+    if not isinstance(answer, dict) or answer.get("screen") != "game" or (answer.get("fits") is not True and not anyway):
         return None
     move = answer.get("move") if isinstance(answer.get("move"), dict) else {}
     rows, cols = answer.get("rows"), answer.get("cols")

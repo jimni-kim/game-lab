@@ -329,7 +329,7 @@ async def play_one(args: argparse.Namespace, number: int, page: Any, name: str, 
                                         watch=watching(recorder) if watching else recorder,
                                         accept_consent=args.accept_consent, writer=writer, hint=hint,
                                         game=measure.game_within(args),
-                                        task=measure.task_named(args), wait=measure.task_waits(args),
+                                        task=measure.task_named(args), wait=measure.task_waits(args), way=measure.way_named(args),
                                         light=measure.light_model(args))
     finally:
         await game.tidy()
