@@ -512,6 +512,11 @@ class Agent:
             # what a model playing this game before noted of it (PLAN §27, M4)
             self.notes = self.store.memory(self.site) or ""
         self.candidates = [self.family_id] if self.family_id else []
+        if self._errand():
+            # an errand is done on the game's screens beside its boards: no family is looked for, the model finds
+            # the way once and the routine kept of it goes it again (PLAN §24, U2)
+            await self._play_direct("")
+            return
         if self.family_id is None and await self._made_again():
             return
         if self.family_id is None:
@@ -2087,6 +2092,8 @@ class Agent:
         self.found["direct"] = told = player.summary()
         self.levels.setdefault(L0, 0)
         objective, idle, silent = str(self.goal.objective), 0, 0
+        # the screen an errand's work found: shown to the model beside each later one (`direct.Direct.ask`)
+        found: bytes | None = None
         while True:
             told.update(player.summary())
             if objective == "actions" and self.confirmed >= (self.goal.target_value or 1):
@@ -2100,6 +2107,7 @@ class Agent:
             looked = time.monotonic()
             self.shots += 1
             self.last_png = before
+            found = found or before
             if self.watch is not None:
                 await self.watch.seen(before)
             left = {"inputs": self.budget.max_actions - self.used,
@@ -2119,7 +2127,10 @@ class Agent:
             self._afford()
             try:
                 answer = await self._asking(player.ask(before, self.surface.kinds, self.goal.to_json(), left, moving,
-                                                       onward=between, been_here=been, anew=self._before_own()))
+                                                       onward=between, been_here=been,
+                                                       anew=self._before_own() and not self._errand(),
+                                                       errand=self.errand if self._errand() else None,
+                                                       began=found if self._errand() and found is not before else None))
             except Exception as error:
                 log.info("the model could not be asked for a move: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -2132,6 +2143,10 @@ class Agent:
                 continue
             silent = 0
             action, scene = answer["action"], answer["scene"]
+            if self._errand() and scene in (None, scenes.BOARD):
+                # an errand has no board of its own: the screen it is done on is the game's own ground, whatever
+                # the model called it, and an input on it is a step of the errand, not a move of a level
+                scene = answer["scene"] = scenes.MAP
             self.screen = scene or self.screen
             # a move of a level: an input on a screen the model names a board (or names nothing)
             level = scene in (None, scenes.BOARD)
@@ -2141,7 +2156,7 @@ class Agent:
                 self._out_of_lives(action, player.situation)
             if "moves_left" in action:
                 self.found["moves_left"] = action["moves_left"]
-            if action["kind"] == direct.DONE and action["end"] == WON and self.errand and not self.onward:
+            if action["kind"] == direct.DONE and action["end"] == WON and self._errand():
                 # the errand is done: the stretch got where it was going, and the steps learned on the way are kept
                 self.book.of(self.errand).proved()
                 raise _End(Outcome.GOAL_REACHED, TASK_DONE, player.situation)
@@ -2339,6 +2354,10 @@ class Agent:
         if self.errand and not self.level_moves:
             return self.errand
         return routine.NEW_GAME if self._before_own() else None
+
+    def _errand(self) -> bool:
+        """Whether this game is played for the errand the request named, and for nothing else."""
+        return bool(self.errand) and not self.onward
 
     def _stretch(self) -> None:
         """A stretch of the model's own play begins: nothing of the routine was sent in it yet. `sends`: how often

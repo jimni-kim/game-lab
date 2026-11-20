@@ -301,14 +301,18 @@ class Direct:
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
-                  been_here: dict[str, Any] | None = None, anew: bool = False) -> dict[str, Any] | None:
+                  been_here: dict[str, Any] | None = None, anew: bool = False,
+                  errand: str | None = None, began: bytes | None = None) -> dict[str, Any] | None:
         """The model's answer for the screen as it is: `{"action", "expect", "uses", "scene", "guided"}` with the
         action in the screen's pixels, or None when it gave none the surface can be given or one that uses what
         `goal` does not allow. `moving`: where something kept moving over the screen, left out of the picture.
         `onward`: more levels are wanted and none was played in this part of the work yet: whatever the screen
         shows, the next level is to be reached and played (`agent.Agent.onward`). `been_here`: play left a
         screen like this one before (`scenes.Trail`). `anew`: a game from its start was asked for and nothing was
-        played here yet: a game the screen shows ended was played before (`agent.Agent.anew`)."""
+        played here yet: a game the screen shows ended was played before (`agent.Agent.anew`). `errand`: the one
+        thing beside the levels the person asked for, by its plain name (`agent.Agent.errand`): that is the work,
+        and it ends when it is done. `began`: the screen as the work found it, shown beside this one for the
+        model to tell what the work itself did from what stood there before (an errand's end has no other check)."""
         shown, scale = recovery.view(png)
         size = recovery._size(shown)
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
@@ -321,15 +325,19 @@ class Direct:
                  "scenes": scenes.KINDS,
                  **({"onward": True} if onward else {}),
                  **({"anew": True} if anew else {}),
+                 **({"errand": errand} if errand else {}),
+                 **({"began": "second image"} if began else {}),
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(shown).decode("ascii")}}
+        first = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                              "data": base64.b64encode(recovery.view(began)[0]).decode("ascii")}}] if began else []
         prompt = (resources.FRAGMENT / "prompts" / "play_direct.md").read_text(encoding="utf-8")
         self.questions += 1
         result = await self.model.complete(TurnRequest(
             system_stable=prompt, max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
-            messages=[Msg("user", [{"type": "text", "text": json.dumps(asked)}, image])]))
+            messages=[Msg("user", [{"type": "text", "text": json.dumps(asked)}, image, *first])]))
         try:
             answer = json.loads(result.text or "")
         except ValueError:

@@ -474,15 +474,16 @@ class Errands:
     the errand done on the home screen once the reward is claimed."""
 
     def __init__(self, fake):
-        self.fake, self.asked = fake, []
+        self.fake, self.asked, self.pictures = fake, [], []
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
         if "families" in context:
-            return TurnResult(text=json.dumps({"screen": "game", "families": [], "situation": "a town"}))
+            raise AssertionError("an errand is no game to find a family for")
         if not context.get("play"):
             return TurnResult(text=json.dumps({"screen": "other", "board": None, "rules": None, "state": None}))
         self.asked.append(context)
+        self.pictures.append(sum(part.get("type") == "image" for part in request.messages[0].content))
         if self.fake.stage == "home":
             scene, action = "map", {"kind": "tap", "at": middle(PLAY)}
         elif self.fake.stage == "window":
@@ -500,6 +501,8 @@ async def test_an_errand_the_request_names_is_a_routine_of_its_own_played_by_cod
                                    store=Store(tmp_path), task="daily_reward")
     assert ending(played) == ("goal_reached", "task_done"), (played.record, made)
     assert [move["level"] for move in played.moves] == ["L0", "L0"] and len(model.asked) == 3
+    # the model is told what the errand is, and not that a game from its start is wanted
+    assert all(asked["errand"] == "daily_reward" and "anew" not in asked for asked in model.asked)
     # the steps are kept under the errand's name, apart from the steps between levels
     kept = Store(tmp_path).routines("https://town.example/")
     assert set(kept) == {"daily_reward"} and [step["scene"] for step in kept["daily_reward"]] == ["map", "popup"]
@@ -512,4 +515,6 @@ async def test_an_errand_the_request_names_is_a_routine_of_its_own_played_by_cod
     assert ending(played) == ("goal_reached", "task_done"), (played.record, made)
     assert [(move["level"], move.get("step")) for move in played.moves] == [("R", "d1"), ("R", "d2")]
     assert len(model.asked) == 1 and model.asked[0]["history"][-1]["sent_by"] == "program"
+    # the end is checked against the screen the work found: the model is shown both
+    assert model.asked[0]["began"] and model.pictures[-1] == 2
     assert "next_level" not in Store(tmp_path).routines("https://town.example/")
