@@ -104,6 +104,12 @@ ANIMATION_MARGIN_S, ANIMATION_MAX_S = 0.1, 2.0
 # a screen the model is to read is waited for until its game shows the same twice, this far apart, compared
 # as small grey pictures that may differ this much on average (of 255), and for no longer than this
 STILL_GAP_S, STILL_SIDE, STILL_DISTANCE, STILL_TIMEOUT_S = 0.3, 32, 0.6, 5.0
+# a reader that takes a board at rest (`KitAdapter.foresees` off) takes one that read the same SAME_READS frames in a
+# row while its pixels still change somewhere not known to keep changing only once it read the same this long (a
+# glint on a piece made by the move just played: PLAN §26, C3)
+UNQUIET_S = 2.0
+# the screens a family's reader gave up on, kept of one game for whoever looks into why (C3)
+SCREENS_KEPT = 8
 # an adapter earns being written again by reading moves: one that read fewer than EARNED confirmed moves since
 # it was last written is churning, and after MAX_CHURN such rewrites in a row the game goes on read by the
 # model (writing costs about what EXPLORE_MOVES readings do)
@@ -145,6 +151,9 @@ WON = "won"
 # the goal (`Agent.anew`)
 MET_BEFORE = "met_before"
 OUT_OF_LIVES = recovering.OUT_OF_LIVES
+# why a game played for an errand the request named beside the levels (a daily reward) ended: the model read the
+# errand done (`Agent.errand`)
+TASK_DONE = "task_done"
 # what a light model is asked of one cell cut out of a board, and what it is told of the game
 LIGHT_QUESTION = ("What does the cell in the middle of {image} hold? The picture is one cell of the game's board "
                   "with a little of its neighbours around it.")
@@ -178,6 +187,9 @@ class Reading:
     by: str
     # the look it was kept as, when the model read it
     look: Look | None = None
+    # where the screen kept changing while this board stood on it at rest (a glint, a hint's wiggle), as boxes on
+    # the screen; None when nothing told (`motion.Resting`)
+    moving: list[list[int]] | None = None
 
     @property
     def id(self) -> str:
@@ -224,10 +236,14 @@ class Agent:
                  store: Store | None = None, policy: str | None = None, fresh: bool = False, hint: str | None = None,
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
-                 notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None) -> None:
+                 notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
+                 task: str | None = None) -> None:
         # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
         # (`adaptation.keyed`)
         self.game_name = game
+        # the errand the request names beside the game's levels (collecting a daily reward), by its plain name
+        # (`request.understand`): its steps are a routine of their own, and the game ends when the model reads it done
+        self.errand = task
         # the game's routines (`routine`): the steps kept of its screens between levels, sent again by code. The
         # work's own book when it has parts, so that what one part learned the next can send
         self.book = book if book is not None else routine.Book()
@@ -318,6 +334,8 @@ class Agent:
         # how often a screen the model read gave the level's goals anew (`_take_goals`), and the moves in a row
         # whose lines hit things fixed that did not change (`_learn_beside`)
         self.goals_read = self.unbroken = 0
+        # whether a model was asked to look at a level the kept reader read first, for its goals (`_turn`)
+        self.goals_asked = False
         self.goals_seen: list[dict[str, Any]] = []
         self.kit_demoted = False
         # the game's rule values were taken anew from a screen (a board of another size, a tray grown): what they
@@ -368,6 +386,10 @@ class Agent:
         self.told_by_rules = 0
         # each screen the model read while there was an adapter, and why (`_reread`)
         self.rereads: list[dict[str, Any]] = []
+        # how the last wait for a screen the model was to read went (`_rest`), and the screens the family's
+        # reader gave up on, each with why (`_keep_screen`)
+        self.rest_told: dict[str, Any] | None = None
+        self.screens: list[dict[str, Any]] = []
         self.need = adaptation.EXPLORE_MOVES
         self.failures: list[dict[str, Any]] = []
         self.model_seconds = 0.0
@@ -416,7 +438,7 @@ class Agent:
                       "level_moves": self.level_moves,
                       "levels": dict(self.levels), "history": self.moves[-HISTORY_KEPT:]}
             run = Run(record, list(self.moves), looks=self.shots, last_screen=self.last_png,
-                      recoveries=list(self.recovery.log) if self.recovery else [])
+                      recoveries=list(self.recovery.log) if self.recovery else [], screens=list(self.screens))
             failed = {"failed": reason, "detail": detail} if outcome is Outcome.UNSUPPORTED else {}
             return run, {**self.summary(), **self.found, **failed}
         finally:
@@ -794,6 +816,18 @@ class Agent:
             await self._unstick(NEXT_LEVEL if self.onward else NEW_GAME, "ended")
             return
         self._judge(before.state)
+        if before.by == L3 and not self.goals_asked and not self.trace.looks and self._goals_unread():
+            # the reader kept of the site read the level's first board, and no model has looked at this level: what
+            # the level asks for only a model's reading tells. It reads the screen once, the reader learns it again
+            # from that, and the reader's own reading is still what is played from (PLAN §26, C3: 2026-11-20,
+            # levels taken up by the kept reader were played with no goals, one for all its 31 moves)
+            self.goals_asked = True
+            said = await self._read_model(None, None)
+            self._reread("goals")
+            if said is not None:
+                await self._recheck(vouched=False)
+                before = self._own(said)
+                self.state = before.state
         excluded = self.ineffective["actions"] if self.ineffective and self.ineffective["state"] == before.id else []
         action = self.family.choose(before.state, self.policy, self.budget.compute, tuple(excluded))
         if action is None or action["kind"] in self.family.meta_actions:
@@ -937,16 +971,13 @@ class Agent:
         self.taught = False
         if learned is None or self.trace is None:
             return
-        if isinstance(self.adapter, KitAdapter) and before.by == L3:
-            if effect == "confirmed":
-                self.adapter.took(before.png, action)
-            elif effect == "absent" and self.adapter.refused(before.png, action):
-                self.taught = True
-                return
+        reader = isinstance(self.adapter, KitAdapter) and before.by == L3
+        if reader and effect == "confirmed":
+            self.adapter.took(before.png, action)
         try:
             rules = learned(before.state, action, effect, self.family.rules)
         except (ValueError, KeyError, IndexError, TypeError):
-            return
+            rules = self.family.rules
         changed = {name: value for name, value in rules.items() if self.family.rules.get(name) != value}
         if changed:
             self.taught = effect == "absent"
@@ -954,6 +985,11 @@ class Agent:
             self.trace.rules = {**self.trace.rules, **changed}
             self.family = catalog.family(self.family_id).bind({"rules": self.trace.rules})
             self.ways = {**self.ways, **changed}
+        elif reader and effect == "absent" and self.adapter.refused(before.png, action):
+            # (only a move no way of moving still open made: one refused that tried a way the game was not yet
+            # seen to take says the game does not take it, not that its pieces are none. 2026-11-20: four in a
+            # square refused made a colour of piece something fixed)
+            self.taught = True
 
     async def _settle(self, after: Reading, expect: tuple[Reading, dict[str, Any]]) -> None:
         """A board at rest that shows looks the family's reader has not learned (`KitAdapter.settle`): what the
@@ -1239,15 +1275,39 @@ class Agent:
                 if reading is not None:
                     self.relearned += 1
                     await self._recheck()
+                    reading = self._own(reading)
                 elif expect is None and self.why == "inconsistent":
                     # the model's reading and what the adapter made of the screen do not go together: the
                     # adapter is doubted, and the screen read without it
                     self.distrusted = True
                 return reading
+        doubted = self.adapter is not None
         reading = await self._read_model(expect, None)
-        if self.adapter is not None:
+        if doubted and self.adapter is not None:
             self._reread("distrusted")
-        return reading
+            if reading is not None and isinstance(self.adapter, KitAdapter):
+                # a doubted reader of the family's own is held against every screen the model reads whole and the
+                # rules take, not only against one a confirmed move vouches for: a game whose results the model
+                # keeps reading with cells left out confirms none, and the reader never came back (PLAN §26, C3:
+                # 2026-11-18, seven moves of a level read by the model after the reader lost the board once).
+                # Learning the screen again costs no question; when it then reads otherwise than the model, it
+                # stays doubted and nothing counts against it
+                await self._recheck(vouched=False)
+        return self._own(reading) if reading is not None else None
+
+    def _own(self, reading: Reading) -> Reading:
+        """A screen the model just read, as the family's reader reads it once taught by that reading: the move
+        is played from the reader's own reading (its kinds are the screen's, whatever a model called each cell, and
+        its board is fitted to the picture), so the first move of a level is read by the same reader on both sides.
+        The model's reading stands when the reader is doubted, does not read the screen whole, or reads it
+        otherwise than the model in more than a few cells."""
+        if not isinstance(self.adapter, KitAdapter) or self.distrusted or reading.by != L2 or self.adapter.layout is None:
+            return reading
+        self.adapter.expecting(None, None)
+        state, _ = self._observe(reading.png)
+        if state is None or not self.adapter.alike(state.payload, reading.state):
+            return reading
+        return replace(reading, state=state.payload, by=L3)
 
     def _rereads(self) -> dict[str, Any]:
         by: dict[str, int] = {}
@@ -1258,7 +1318,15 @@ class Agent:
     def _reread(self, why: str) -> None:
         """A screen the adapter was there for and the model read: why, and whether what kept moving on it was
         left out of the picture the model was shown (`motion`)."""
-        self.rereads.append({"at_action": self.used, "why": why, "moving": bool(self.seen.moving)})
+        self.rereads.append({"at_action": self.used, "why": why, "moving": bool(self.seen.moving),
+                             **({"rest": self.rest_told} if self.rest_told else {})})
+        self.rest_told = None
+
+    def _keep_screen(self, png: bytes, why: str) -> None:
+        """A screen the family's reader gave up on is kept as it was, with why: whether something lay over the
+        board or the reader failed on a board in plain sight is told from the picture (PLAN §26, C3)."""
+        if len(self.screens) < SCREENS_KEPT:
+            self.screens.append({"at_action": self.used, "why": why, "png": png})
 
     def _observe(self, png: bytes) -> tuple[Any, str | None]:
         """One capture read by the adapter: its state, or why there is none."""
@@ -1289,6 +1357,14 @@ class Agent:
         # a family's own reader knows what the move leaves and is asked as soon as the screen may show it: no time
         # measured on other moves is waited out first (a move that clears nothing is done at once)
         fast = kit and self.adapter.foresees
+        # one whose rules leave the result open (what comes in from above is the game's) takes it once the board has
+        # come to rest: each frame is read as it is, and the result is the reading that stays (PLAN §26, C3). What
+        # keeps changing in the same places while a board stands (`Reading.moving` of the one the move was played
+        # from) says nothing of whether this one came to rest
+        rests = kit and not fast and expect is not None
+        watched = motion.Resting(self._region(self.adapter.regions()), self._recurring(expect[0]), STILL_SIDE,
+                                 STILL_DISTANCE) if rests else None
+        recent: list[bytes] = []
         wait = KIT_FIRST_S if fast else policy.animation_s
         after = clock() + wait if expect is not None and wait else None
         deadline = (after or clock()) + policy.timeout_s
@@ -1310,13 +1386,19 @@ class Agent:
         while True:
             self._check_time()
             # a screen something kept moving over is read as it is under that, for as long as it keeps moving
-            through = self.seen.animating and not (kit and self._moving_beside())
+            # (not while a board is waited on to come to rest: frames drawn through one another show a board in
+            # between, and what moved in them is the move's own doing, not something that keeps moving)
+            through = not rests and self.seen.animating and not (kit and self._moving_beside())
             taken = self.frames.taken if hasattr(self.frames, "taken") else 0
             frame = await (self.seen.steady(after) if through else self.frames.frame(after))
             told["frames"] += (self.frames.taken - taken) if hasattr(self.frames, "taken") else 1
             told["drawn_through"] += through
             told["s"] = round(clock() - began, 2)
             png, looked = frame.png, frame.at
+            # whether the game's part of the screen shows the same as on the frame before
+            quiet = watched.seen(png) if watched is not None else True
+            if rests:
+                recent = [*recent, png][-motion.FRAMES:]
             self.shots += 1
             self.last_png = png
             if self.watch is not None:
@@ -1340,10 +1422,14 @@ class Agent:
                     unread, unread_since, unread_frames = seen, looked, 0
                 unread_frames += 1
                 # left unread the same way for long enough, on two frames at least (a device whose captures take
-                # longer than that wait would else be given up on at its first: 2026-11-17, a capture took 1.3 s)
-                if (unread_frames >= 2 and clock() - unread_since >= max(policy.stable_s, RESTLESS_S)) or clock() >= deadline:
+                # longer than that wait would else be given up on at its first: 2026-11-17, a capture took 1.3 s).
+                # A board still changing is not given up on: what lies over it may be the move's own effect
+                if (unread_frames >= 2 and quiet and clock() - unread_since >= max(policy.stable_s, RESTLESS_S)) \
+                        or clock() >= deadline:
+                    if kit and expect is not None:
+                        self._keep_screen(png, why)
                     return None
-            image = self.adapter.picture(png) if usable and policy.still else None
+            image = self.adapter.picture(png) if usable and policy.still and not rests else None
             key = (state.id, state.geometry_ref, image) if usable else None
             if key is None or key != previous:
                 stable_since = clock()
@@ -1352,9 +1438,13 @@ class Agent:
                 read_since = looked
             same_reads = same_reads + 1 if key is not None and key[:-1] == read else (1 if key is not None else 0)
             read = key[:-1] if key is not None else None
-            restless = policy.still and usable and clock() - read_since >= RESTLESS_S
+            restless = policy.still and usable and not rests and clock() - read_since >= RESTLESS_S
             settled = (not dealt or key == previous) if fast else (
                 not policy.still or image == pictured or (kit and same_reads >= SAME_READS))
+            if rests:
+                # at rest: read the same that often with nothing changing between the last two frames; or, where
+                # something not known to recur keeps changing, read the same for longer
+                settled = same_reads >= SAME_READS and (quiet or clock() - read_since >= UNQUIET_S)
             if kit and expect is not None and not ticked:
                 ticked = bool(self.adapter.ticked(expect[0].png, png))
             if image is None or image != pictured:
@@ -1363,7 +1453,7 @@ class Agent:
             self.rested_at = read_since if restless else rested
             if usable:
                 self.kit_reads += isinstance(self.adapter, KitAdapter)
-                reading = Reading(png, state.payload, looked, L3)
+                reading = Reading(png, state.payload, looked, L3, moving=self._kept_moving(watched, expect))
                 effect = self._effect(expect[0].state, expect[1], state.payload) if expect is not None else None
                 if expect is not None and (settled or restless) and effect == "confirmed":
                     return reading
@@ -1376,6 +1466,17 @@ class Agent:
                 if stable and (expect is None or clock() >= deadline):
                     return reading
                 if clock() >= deadline:
+                    if rests:
+                        # (kept as it was: what kept the board from reading the same is told from the picture)
+                        self._keep_screen(png, "unsettled")
+                    if rests and len(recent) >= 3:
+                        # it never read the same for long: where something keeps passing over a cell, the frames
+                        # drawn through one another show the board under it (`motion.middle`)
+                        drawn = motion.middle(recent)
+                        told["drawn_through"] += 1
+                        state, _ = self._observe(drawn)
+                        if state is not None:
+                            return Reading(drawn, state.payload, looked, L3, moving=expect[0].moving)
                     self.why, self.unread = "surface_unsettled", None
                     return None
             # the next frame: one taken this long after this one, and no later than the deadline
@@ -1390,6 +1491,30 @@ class Agent:
                 if left < x1 and x0 < left + width and top < y1 and y0 < top + height:
                     return False
         return True
+
+    @staticmethod
+    def _region(regions: list[list[int]]) -> list[int]:
+        """The part of the screen that holds all of these ([left, top, right, bottom] each)."""
+        return [min(box[0] for box in regions), min(box[1] for box in regions),
+                max(box[2] for box in regions), max(box[3] for box in regions)]
+
+    def _recurring(self, before: Reading) -> list[list[int]]:
+        """The small places that kept changing while the board a move was played from stood at rest: a wait for
+        the move's result to come to rest leaves them out. Where nothing told of that board, the places the screen
+        was last seen to keep moving at (`motion.Steady`)."""
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(before.png)) as image:
+            area = image.width * image.height
+        return motion.small(before.moving if before.moving is not None else self.seen.moving, area)
+
+    @staticmethod
+    def _kept_moving(watched: Any, expect: tuple[Reading, dict[str, Any]] | None) -> list[list[int]] | None:
+        """Where a board just read at rest kept changing between the last two frames of it; what was known of the
+        board before it when these tell nothing."""
+        found = watched.changing() if watched is not None else None
+        return found if found is not None else (expect[0].moving if expect is not None else None)
 
     def _learn_unread(self, png: bytes, expect: tuple[Reading, dict[str, Any]]) -> bool:
         """What the adapter's code left unread on the result of a move (a look of a value it has no sample of
@@ -1490,7 +1615,7 @@ class Agent:
         tool, first = self.adaptation, self.trace is None
         if expect is not None:
             await asyncio.sleep(adaptation.SETTLE_S)
-            await self._rest()
+            await self._rest(expect[0])
 
         def accept(state: dict[str, Any]) -> bool:
             # a result the rules allow of the move just played needs no leave from the adapter: what the adapter
@@ -1531,35 +1656,35 @@ class Agent:
         self.trace.looks.append(look)
         if expect is None and partial is None:
             self.unproven = look
+        reading = Reading(png, state, started, L2, look, moving=list(self.seen.moving))
         if self.adapter is None and kits.has(self.family_id) and not self.kit_demoted:
             # a family with a reader of its own is read by it from the first look on
-            self._adopt_kit()
-        return Reading(png, state, started, L2, look)
+            if self._adopt_kit():
+                return self._own(reading)
+        return reading
 
-    async def _rest(self) -> None:
+    async def _rest(self, before: Reading | None = None) -> None:
         """Wait until the game's part of the screen shows the same twice in a row: a move's result is read by
         the model, and kept as a look to write an adapter from, once what the move set off (blocks clearing, a
-        banner flashing over the board) is over; not waited for longer than STILL_TIMEOUT_S."""
-        from io import BytesIO
-        from PIL import Image
-
-        if self.seen.animating:
-            # it never rests: the reading leaves out what keeps moving instead
-            return
+        banner flashing over the board) is over. What keeps changing in the same places while a board stands (a
+        glint on a piece, a hint's wiggle, a button pulsing: `_recurring` of the board the move was played from)
+        never is over and is left out; a thing that changes other places from frame to frame is waited on until it
+        ends. Not waited for longer than STILL_TIMEOUT_S, whatever still moves: what covers a cell then is left
+        out of the picture the model is shown by the frames drawn through one another (`motion.middle`)."""
         boxes = [self.board, *(box for look in self.trace.looks[-1:] if isinstance(look.sources, list)
                                for box in look.sources if box)]
-        left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
-        right, bottom = max(box[0] + box[2] for box in boxes), max(box[1] + box[3] for box in boxes)
-        previous, after, deadline = None, None, time.monotonic() + STILL_TIMEOUT_S
+        watched = motion.Resting(self._region([[box[0], box[1], box[0] + box[2], box[1] + box[3]] for box in boxes]),
+                                 self._recurring(before) if before is not None else None, STILL_SIDE, STILL_DISTANCE)
+        began, after, deadline, frames = time.monotonic(), None, time.monotonic() + STILL_TIMEOUT_S, 0
         while True:
             frame = await self.frames.frame(after)
-            with Image.open(BytesIO(frame.png)) as image:
-                seen = list(image.convert("L").crop((left, top, right, bottom)).resize((STILL_SIDE, STILL_SIDE)).tobytes())
-            if previous is not None and sum(abs(a - b) for a, b in zip(seen, previous)) / len(seen) <= STILL_DISTANCE:
+            frames += 1
+            rested = watched.seen(frame.png)
+            if rested or time.monotonic() >= deadline:
+                self.rest_told = {"s": round(time.monotonic() - began, 2), "frames": frames, "rested": rested,
+                                  "left_out": len(watched.masked)}
                 return
-            if time.monotonic() >= deadline:
-                return
-            previous, after = seen, frame.at + STILL_GAP_S
+            after = frame.at + STILL_GAP_S
 
     def _prior(self, expect: tuple[Reading, dict[str, Any]] | None) -> dict[str, Any] | None:
         """What is known of the screen about to be read: what the rules say the move just played leaves (where
@@ -1601,9 +1726,10 @@ class Agent:
             self.carried = None
         self.need = sum(look.action is not None for look in self.trace.looks) + RETRY_LOOKS
 
-    async def _recheck(self) -> None:
+    async def _recheck(self, vouched: bool = True) -> None:
         """The adapter against every look so far, the one just read included: kept when it reads them all,
-        else written again from them."""
+        else written again from them. `vouched` off: no confirmed move vouches for the look just read, so a
+        reader that reads it otherwise is doubted on, and that is not counted against it."""
         if isinstance(self.adapter, KitAdapter):
             # the family's reader learns the screen again from what the model just read: nothing is written
             if self._adopt_kit() and self.adapter.agrees(self.trace.looks[-1]):
@@ -1611,6 +1737,8 @@ class Agent:
                     self._keep_profile()
                 return
             self.distrusted = True
+            if not vouched:
+                return
             self.rewrites += 1
             if self.rewrites >= MAX_RELEARNS:
                 self.kit_demoted = True
@@ -1694,7 +1822,9 @@ class Agent:
     def _time_trial(self, rested_s: float) -> None:
         """A trial move's time to come to rest; after the last, a game that had to be still waits the longest
         of them and looks once."""
-        if not self.settling.still:
+        if not self.settling.still or (isinstance(self.adapter, KitAdapter) and not self.adapter.foresees):
+            # (a reader whose rules leave a move's result open goes on taking it at rest: what a move sets off
+            # lasts as long as it lasts, whatever the moves before it took)
             return
         self.rested.append(round(rested_s, 3))
         if self.trial == 0:
@@ -1828,6 +1958,7 @@ class Agent:
             # the end of a game played before the work: none was started for it
             raise _End(Outcome.GAVE_UP, "new_game_not_found", self._situation())
         if action.get("kind") == GIVE_UP and "end" in action:
+            self._ended(action["end"], self.recovery.log[-1].get("scene"))
             won = action["end"] == WON and self._won_meets_goal()
             raise _End(Outcome.GOAL_REACHED if won else Outcome.GAME_OVER, WON if won else "end_screen", self._situation())
         if action.get("kind") == NONE and not self.shrugged:
@@ -2010,12 +2141,17 @@ class Agent:
                 self._out_of_lives(action, player.situation)
             if "moves_left" in action:
                 self.found["moves_left"] = action["moves_left"]
+            if action["kind"] == direct.DONE and action["end"] == WON and self.errand and not self.onward:
+                # the errand is done: the stretch got where it was going, and the steps learned on the way are kept
+                self.book.of(self.errand).proved()
+                raise _End(Outcome.GOAL_REACHED, TASK_DONE, player.situation)
             if action["kind"] == direct.DONE and self._before_any():
                 raise _End(Outcome.GAVE_UP, "next_level_not_found", player.situation)
             if action["kind"] == direct.DONE and self._before_own():
                 # the end of a game played before the work, which was asked for from its start: not its own end
                 raise _End(Outcome.GAVE_UP, "new_game_not_found", player.situation)
             if action["kind"] == direct.DONE:
+                self._ended(action["end"], scene)
                 won = action["end"] == WON
                 raise _End(Outcome.GOAL_REACHED if won and objective == "play_until_end" else Outcome.GAME_OVER,
                            WON if won else "end_screen", player.situation)
@@ -2186,12 +2322,23 @@ class Agent:
         self.trail.clear()
         return True
 
+    def _goals_unread(self) -> bool:
+        """Whether the family plays levels by goals its reader takes from a model's look (`_take_goals`) and none
+        are known of this one."""
+        return isinstance(self.adapter, KitAdapter) and getattr(self.adapter.kit, "goals", None) is not None \
+            and self.family is not None and "goals" in self.family.rules and not self.family.rules.get("goals")
+
     # ── the game's routine (PLAN §28) ─────────────────────────────────
 
     def _task(self) -> str | None:
         """What the model's own play is for now, when it is a stretch the game has again and again: getting to
-        the next level's board, or to a new game's. None on a level's board, where an input depends on the position."""
-        return routine.NEXT_LEVEL if self._before_any() else routine.NEW_GAME if self._before_own() else None
+        the next level's board, the errand the request named (`errand`) while no move of a level was made, or
+        getting to a new game's board. None on a level's board, where an input depends on the position."""
+        if self._before_any():
+            return routine.NEXT_LEVEL
+        if self.errand and not self.level_moves:
+            return self.errand
+        return routine.NEW_GAME if self._before_own() else None
 
     def _stretch(self) -> None:
         """A stretch of the model's own play begins: nothing of the routine was sent in it yet. `sends`: how often
@@ -2199,9 +2346,10 @@ class Agent:
         long enough, `waits`: since when each screen to wait on has been, `last`: the last
         input sent that is a step (by code or by the model), `by_code`: whether code sent the last input, `until`:
         the time up to which a screen no step fits is looked at again before anyone is asked, `seen` and `since`:
-        the last such screen and since when it has looked the same."""
+        the last such screen and since when it has looked the same, `via`: by step id, the steps by way of which
+        play came back to that step's screen when code sent it again (`routine.Routine.spent`)."""
         self.stretch = {"sends": {}, "avoid": set(), "total": 0, "waits": {}, "last": None,
-                        "by_code": False, "until": 0.0, "first": True, "seen": None, "since": 0.0}
+                        "by_code": False, "until": 0.0, "first": True, "seen": None, "since": 0.0, "via": {}}
 
     async def _by_routine(self, before: bytes, moving: list[list[int]], looked: float) -> str:
         """The screen passed by a step kept of this game's screens, when one fits it (`routine.Routine.find`):
@@ -2218,7 +2366,8 @@ class Agent:
             stretch["until"] = time.monotonic() + FIRST_S
         step = None
         if stretch["total"] < routine.STRETCH_MOST:
-            spent = {step["id"] for step in kept.steps if stretch["sends"].get(step["id"], 0) >= kept.most(step)}
+            spent = {step["id"] for step in kept.steps
+                     if kept.spent(step, stretch["sends"].get(step["id"], 0), stretch["last"], stretch["via"])}
             step = kept.find(before, avoid=stretch["avoid"] | spent, at=self.used)
         if step is None:
             now, seen = time.monotonic(), recovering.signature(before)
@@ -2249,6 +2398,9 @@ class Agent:
             await asyncio.sleep(LOOK_AGAIN_S)
             stretch.update(by_code=True, until=time.monotonic() + TRANSIT_S)
             return AGAIN
+        if stretch["sends"].get(step["id"], 0) >= kept.most(step):
+            # sent again because play came back by way of another step: that one lets it be sent again only once
+            stretch["via"].setdefault(step["id"], set()).add(stretch["last"]["id"])
         action = {key: value for key, value in step["action"].items() if key != "repeat"}
         scale = min(1.0, recovering.VIEW_SIDE / max(recovering._size(before)))
         told = direct.scaled(action, 1 / scale)
@@ -2296,6 +2448,16 @@ class Agent:
                 if not waits:
                     self.stretch["last"] = step
 
+    def _ended(self, said: str, scene: str | None) -> None:
+        """How a level's end was told, kept for the record: what a model said of it, on which kind of screen, and
+        what the family still counted of the level's goals. Nothing but the model's word says how a level ended, and
+        on a screen that is no result screen (a game that goes from a lost level straight to its map) that word is
+        a guess from what the screen shows after (`inferred`): such an end is to be looked at before it is believed."""
+        goals = self.trace.rules.get("goals") if self.trace is not None else None
+        left = [goal.get("count") for goal in goals or [] if isinstance(goal, dict)]
+        self.found["end"] = {"said": said, "screen": scene, "inferred": scene != scenes.RESULT,
+                             **({"goals_left": left} if left else {})}
+
     def _won_meets_goal(self) -> bool:
         """Whether the game's own win message, with nothing under it read, is the goal reached: the rule
         model's to say (a win is the family's own target, which a run may have set higher)."""
@@ -2336,11 +2498,12 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-               **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               task: str | None = None, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
     family's reader could not."""
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
-                       direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book).run()
+                       direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
+                       task=task).run()

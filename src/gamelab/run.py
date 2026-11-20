@@ -20,6 +20,8 @@ class Run:
     last_screen: bytes | None = None
     # each time play stopped on a screen and what a model did about it (`recovery.Recovery.log`)
     recoveries: list[dict[str, Any]] = field(default_factory=list)
+    # screens the family's reader gave up on, each with the input it was at, why, and its picture (`png`)
+    screens: list[dict[str, Any]] = field(default_factory=list)
 
 
 def check(goal: GoalSpec, budget: Budget, family_id: str, policy: str | None) -> str:

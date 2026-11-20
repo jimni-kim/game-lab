@@ -94,6 +94,75 @@ def _area(png: bytes) -> int:
         return image.width * image.height
 
 
+def small(boxes: list[list[int]], area: int) -> list[list[int]]:
+    """The places among those that kept moving that are no larger than a glint or a badge (SMALL_SHARE of the
+    screen): what goes on in one place without hiding what is under it, not a thing on its way across the screen."""
+    return [list(box) for box in boxes if box[2] * box[3] <= SMALL_SHARE * area]
+
+
+class Resting:
+    """A part of the screen watched until it has come to rest (PLAN §26, C3). What a move sets off changes other
+    places from frame to frame and then ends (pieces clearing, falling in); what a game draws over a board that
+    waits (a glint on a piece, a hint's wiggle, a button pulsing) goes on in the same places for as long as the
+    board stands. Only the first is waited out: the places known to keep changing while the screen stood at rest
+    (`recurring`) are left out of the comparison, and the part is at rest when two frames in a row show the same
+    outside them. Whoever waits sets the limit: a thing not yet known to recur is waited on until then, never
+    longer.
+
+    The part is compared made `side` grey levels a side: two frames show the same when their blocks outside the
+    recurring places differ by no more than `near` on average (of 255)."""
+
+    def __init__(self, region: list[int], recurring: list[list[int]] | None = None, side: int = 32,
+                 near: float = 0.6) -> None:
+        # [left, top, right, bottom]
+        self.region, self.side, self.near = [round(part) for part in region], side, near
+        self.masked = self._blocks(recurring or [])
+        if len(self.masked) > side * side // 2:
+            # places that cover most of the part say nothing of where it keeps changing: none is left out
+            self.masked = set()
+        self.last: bytes | None = None
+        self.before: bytes | None = None
+
+    def _blocks(self, boxes: list[list[int]]) -> set[int]:
+        """The blocks of the small picture that places on the screen reach into."""
+        left, top, right, bottom = self.region
+        wide, high = max(1, right - left) / self.side, max(1, bottom - top) / self.side
+        found = set()
+        for x, y, w, h in boxes:
+            for row in range(max(0, int((y - top) // high)), min(self.side, int((y + h - 1 - top) // high) + 1)):
+                for col in range(max(0, int((x - left) // wide)), min(self.side, int((x + w - 1 - left) // wide) + 1)):
+                    found.add(row * self.side + col)
+        return found
+
+    def seen(self, png: bytes) -> bool:
+        """One more frame: whether the part shows the same as on the frame before, left out where it keeps
+        changing. False for the first."""
+        from PIL import Image
+
+        with Image.open(BytesIO(png)) as image:
+            # each block the mean of its own pixels: what changes in one place shows in no block beside it
+            now = image.convert("L").crop(tuple(self.region)).resize((self.side, self.side), Image.BOX).tobytes()
+        self.before, self.last = self.last, now
+        if self.before is None:
+            return False
+        compared = [abs(one - other) for index, (one, other) in enumerate(zip(now, self.before)) if index not in self.masked]
+        return not compared or sum(compared) / len(compared) <= self.near
+
+    def changing(self, most: float = 0.1, apart: int = 8) -> list[list[int]] | None:
+        """Where the last two frames differed (a block by more than `apart`, of 255), as boxes on the screen: on
+        a part at rest, the places that keep changing all the same. None when nothing tells: fewer than two frames
+        were seen, or more than this share of the part differed (that is no part at rest)."""
+        if self.before is None or self.last is None:
+            return None
+        blocks = [index for index, (one, other) in enumerate(zip(self.last, self.before)) if abs(one - other) > apart]
+        if len(blocks) > most * self.side * self.side:
+            return None
+        left, top, right, bottom = self.region
+        wide, high = max(1, right - left) / self.side, max(1, bottom - top) / self.side
+        return [[round(left + (index % self.side) * wide), round(top + (index // self.side) * high),
+                 max(1, round(wide)), max(1, round(high))] for index in blocks]
+
+
 async def _still(source: Any, known: list[list[int]] | None = None, first: Frame | None = None,
                  after: float | None = None) -> tuple[Frame, list[list[int]], Frame]:
     """The screen drawn through what keeps moving on it (a frame taken when the first was), where that was, and

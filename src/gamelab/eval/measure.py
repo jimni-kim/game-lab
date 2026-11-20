@@ -54,6 +54,9 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--game", metavar="NAME",
                         help="the one game of several the page or app holds: what is kept is kept by it too (a request "
                              "in words names it itself)")
+    parser.add_argument("--task", metavar="NAME",
+                        help="an errand beside the levels, by a plain name ('daily_reward'): its steps are kept as a "
+                             "routine of their own and the game ends when it is done (a request in words names it itself)")
     parser.add_argument("--policy")
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
@@ -96,6 +99,11 @@ def goal_and_budget(args: argparse.Namespace) -> tuple[GoalSpec, Budget]:
 def game_within(args: argparse.Namespace) -> str | None:
     """The one game of several a page or app holds, as the request in words named it, else as `--game` did."""
     return (getattr(args, "asked", None) or {}).get("within") or getattr(args, "game", None)
+
+
+def task_named(args: argparse.Namespace) -> str | None:
+    """The errand beside the levels the request in words named, else the one `--task` did."""
+    return (getattr(args, "asked", None) or {}).get("task") or getattr(args, "task", None)
 
 
 def vision_model(args: argparse.Namespace) -> tuple[model.ChatClient | None, model.Recorded | None]:
@@ -229,12 +237,19 @@ def handed(adapted: dict[str, Any]) -> dict[str, Any]:
 
 def write_game(out: Path, name: str, summary: dict[str, Any], request: dict[str, Any], run: Run, recorder: Recorder,
                answers: list[dict[str, Any]], screen: bytes | None) -> None:
-    """One game's files: `NAME.json` (its figures, request, record, every move and input, the model's answers)
-    and `NAME-final.png`, the screen it ended on."""
+    """One game's files: `NAME.json` (its figures, request, record, every move and input, the model's answers),
+    `NAME-final.png`, the screen it ended on, and each screen the family's reader gave up on as
+    `NAME-unread-pP-aN-WHY.png` (the part of the work, the input it was at, why), listed in the JSON (`unread`)."""
     out.mkdir(parents=True, exist_ok=True)
+    unread = []
+    for kept in run.screens:
+        file = f"{name}-unread-p{kept.get('part', 1)}-a{kept['at_action']}-{kept['why']}.png"
+        (out / file).write_bytes(kept["png"])
+        unread.append({**{key: value for key, value in kept.items() if key != "png"}, "file": file})
     (out / f"{name}.json").write_text(json.dumps({
         "result": summary, "request": request, "record": run.record, "geometry": run.geometry, "vision": run.vision,
-        "recoveries": run.recoveries, "model_answers": answers, "moves": run.moves, "inputs": recorder.inputs}, indent=2, default=str) + "\n", encoding="utf-8")
+        "recoveries": run.recoveries, "unread": unread, "model_answers": answers, "moves": run.moves,
+        "inputs": recorder.inputs}, indent=2, default=str) + "\n", encoding="utf-8")
     if screen is not None:
         (out / f"{name}-final.png").write_bytes(screen)
 

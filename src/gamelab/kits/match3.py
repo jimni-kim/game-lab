@@ -96,8 +96,22 @@ class Match3Kit(Valued):
         if not self._shaped(grid):
             return False
         image = open_picture(png)
-        self._place(image, fit(image, board, self.rows, self.cols))
+        fitted = fit(image, board, self.rows, self.cols)
+        # the board this reader stands on, read again: what was learned on it of things that are no piece of a
+        # colour (something fixed, something that falls, a power as a light model named it) is kept, and gives way
+        # where this reading says otherwise (`Looks.add`). Such a thing gone from the screen for now (boxes all
+        # broken) comes back with the level played again, and was then like nothing known (PLAN §26, C3). The
+        # pieces are gathered anew each time: which number a kind has is this reading's to say
+        same = self.board is not None and self.size == list(image.size) and (all(
+            abs(one - other) <= self.SAME_BOX for one, other in zip(fitted, self.board)) or self._still_shows(image, grid))
+        kept = {value: looks for value, looks in self.looks.kept.items()
+                if same and type(value) is int and not self._plain(value) and not colour_of(value) and value != EMPTY}
+        if not same:
+            # (a model places the same board a little differently each time it is asked: where it was learned to
+            # be is not let go for that, `Valued.calibrate`)
+            self._place(image, fitted)
         self.looks = Looks(self.near, self.apart)
+        self.looks.kept.update({value: list(looks) for value, looks in kept.items()})
         self.holes = {(r, c) for r in range(self.rows) for c in range(self.cols) if grid[r][c] == EMPTY}
         under = state.get("under")
         layers = under if self._shaped(under) else None
@@ -140,6 +154,13 @@ class Match3Kit(Valued):
                 if (r, c) not in self.holes and isinstance(under[r][c], int):
                     self.unders.add(under[r][c], self._corners(image, box))
         return len(self.looks) > 0
+
+    def _still_shows(self, image: Any, grid: list[list[Any]]) -> bool:
+        """Whether the board as it was learned still lies where it lay: most of the cells a reading calls
+        something look like something known there."""
+        named = [self.looks.name(self._look(image, box))[0] for r, c, box in self._cells()
+                 if grid[r][c] is not None and grid[r][c] != EMPTY]
+        return bool(named) and sum(value is not None for value in named) >= (1 - CHANGED_SHARE) * len(named)
 
     def _corners(self, image: Any, box: list[float]) -> bytes:
         """What a cell's four corners look like, where what lies under its piece shows."""
@@ -203,6 +224,17 @@ class Match3Kit(Valued):
             return mine == theirs
         return all(one == other or (power_of(other) == POWER and power_of(one) and colour_of(one) == colour_of(other))
                    for row, told in zip(mine, theirs) for one, other in zip(row, told))
+
+    def alike(self, state: dict[str, Any], said: dict[str, Any]) -> bool:
+        """Whether a screen read here is read as a model read it in all but a few cells (ALIKE): a model calls a
+        cell or two of a kind by another colour, and the kinds as gathered by their looks are then the screen's."""
+        mine, theirs = state.get(self.field), said.get(self.field)
+        if not self._shaped(mine) or not self._shaped(theirs):
+            return False
+        cells = [(one, other) for row, told in zip(mine, theirs) for one, other in zip(row, told)]
+        same = sum(one == other or (power_of(other) == POWER and power_of(one) and colour_of(one) == colour_of(other))
+                   for one, other in cells)
+        return same >= ALIKE * len(cells)
 
     @staticmethod
     def _plain(value: Any) -> bool:

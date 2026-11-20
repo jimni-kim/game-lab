@@ -82,3 +82,16 @@ async def test_a_request_with_a_page_is_the_web_even_when_an_app_is_named_and_wi
     assert (asked["url"], asked["app"]) == ("https://example.com/2048", None)
     asked = await request.understand(Says({"url": None, "app": None, "objective": "play_until_end"}), "play something", APPS)
     assert (asked["url"], asked["app"]) == (None, None)
+
+
+async def test_an_errand_beside_the_levels_is_taken_by_a_plain_name_and_nothing_else_is_one():
+    async def task(said):
+        answer = {"url": None, "app": "com.tpcstld.twozerogame", "objective": "play_until_end",
+                  **({"task": said} if said is not ... else {})}
+        return (await request.understand(Says(answer), "일일 보상 받아줘", APPS))["task"]
+    assert await task("daily_reward") == "daily_reward" and await task(" Daily Reward ") == "daily_reward"
+    assert await task("claim-gifts") == "claim_gifts"
+    # a name the routine keeps for itself, one that is no name, one too long, none at all
+    assert await task("next_level") is None and await task("New Game") is None
+    assert await task(3) is None and await task("") is None and await task("보상") is None and await task("x" * 25) is None
+    assert await task(None) is None and await task(...) is None

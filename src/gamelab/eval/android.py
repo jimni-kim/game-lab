@@ -254,6 +254,7 @@ async def play_one(args: argparse.Namespace, number: int, surface: AndroidSurfac
                                     fresh=args.regenerate, cancel=cancel, watch=watching(recorder) if watching else recorder,
                                     accept_consent=args.accept_consent, writer=writer, hint=hint,
                                     game=measure.game_within(args),
+                                    task=measure.task_named(args),
                                     light=measure.light_model(args))
     result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, **measure.handed(adapted))
     request = {"family": args.family, "app": await surface.address(),
@@ -285,7 +286,7 @@ async def main(args: argparse.Namespace) -> int:
         args.asked = await request.understand(model, args.ask, await installed(surface.run))
         print(json.dumps({"asked": {"url": args.asked["url"], "app": args.asked["app"],
                                     "goal": measure.goal_and_budget(args)[0].to_json(), "hint": args.asked["hint"],
-                                    "within": args.asked["within"]}},
+                                    "within": args.asked["within"], "task": args.asked["task"]}},
                          ensure_ascii=False), flush=True)
         if args.asked["url"] is not None:
             raise SystemExit("the request names a page: play it with eval web --ask")

@@ -174,9 +174,11 @@ async def test_play_that_keeps_coming_back_to_one_screen_is_told_so_and_given_up
     played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=Budget(200, COMPUTE, 600))
     assert ending(played) == ("gave_up", "going_round"), (played.record, made["work"])
     assert made["work"]["levels"]["won"] == 1 and fake.dealt == 1 and fake.shopped == scenes.ROUND_MOST
-    # back on the map the second time, the model was told it was there before and what it sent from it
+    # back on the map, the model was told it was there before and what it sent from it: the first time play came
+    # back by way of the shop's close button, code sent the shop's step again (`routine.Routine.spent`), and the
+    # model was asked the second time
     back = [context["been_here"] for context in plays(model) if "been_here" in context]
-    assert back[0] == {"times": 1, "tried": [{"kind": "tap", "at": [float(part) for part in middle(SHOP)]}]}
+    assert back[0] == {"times": 2, "tried": [{"kind": "tap", "at": [float(part) for part in middle(SHOP)]}] * 2}
     assert max(told["times"] for told in back) == scenes.ROUND_MOST - 1
     assert made["work"]["stopped_at"]["screen"] == "result"
 

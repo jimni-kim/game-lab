@@ -198,7 +198,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
                          for name in dict.fromkeys(name for run, _ in parts for name in run.record["levels"])},
               "history": moves[-agent.HISTORY_KEPT:], "parts": len(parts)}
     run = Run(record, moves, geometry=last_run.geometry, vision=last_run.vision, looks=sum(run.looks for run, _ in parts),
-              last_screen=last_run.last_screen, recoveries=[entry for run, _ in parts for entry in run.recoveries])
+              last_screen=last_run.last_screen, recoveries=[entry for run, _ in parts for entry in run.recoveries],
+              screens=[{**kept, "part": number} for number, (run, _) in enumerate(parts, 1) for kept in run.screens])
     return run, {**last, "tokens": {"input": tokens_in, "output": tokens_out}, "questions": questions,
                  "seconds": round(sum(adapted["seconds"] for _, adapted in parts), 1), "account": account, "work": handback}
 
@@ -226,6 +227,9 @@ def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
             "seconds": seconds, "input_tokens": (adapted.get("tokens") or {}).get("input"),
             "questions": adapted.get("questions"),
             **({"moves_left": adapted["moves_left"]} if adapted.get("moves_left") is not None else {}),
+            # how the level's end was told: what a model said, on which kind of screen, whether that was no result
+            # screen (`inferred`), and what the family still counted of the goals (`agent.Agent._ended`)
+            **({"end": adapted["end"]} if adapted.get("end") else {}),
             **{name: kit[name] for name in ("goals_seen", "ways", "picks") if kit.get(name)},
             **({"resumes": adapted["resumes"][-RESUMES_TOLD:]} if adapted.get("resumes") else {}),
             **({"let_go": adapted["let_go"][-RESUMES_TOLD:]} if adapted.get("let_go") else {}),

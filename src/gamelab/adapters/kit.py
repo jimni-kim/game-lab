@@ -128,6 +128,14 @@ class KitAdapter:
         state, _ = self.kit.read(look.png)
         return state is not None and self.kit.same(state, look.state)
 
+    def alike(self, state: dict[str, Any], said: dict[str, Any]) -> bool:
+        """Whether this reader's own reading of a screen a model just read may stand for the model's: it reads
+        the screen as the model did but for the few cells a reader of this family is right to read otherwise
+        (`kits.match3`: what a cell is by its look, not by what it was called). False for a family whose reader
+        says no such thing: the model's reading is then what is played from."""
+        alike = getattr(self.kit, "alike", None)
+        return bool(alike(state, said)) if alike is not None else False
+
     # ── what a screen leaves unread ───────────────────────────────────
 
     def teach(self, png: bytes, state: dict[str, Any], by: str = "rules") -> int:

@@ -163,7 +163,9 @@ async def test_match_three_is_read_by_the_familys_reader_by_what_its_pieces_look
     played, made = await agent.play(fake, jeweller, "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120),
                                     store=Store(tmp_path))
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
-    assert played.record["levels"] == {"L2": 1, "L3": 19} and [kind for kind, _ in jeweller.asked] == ["label"], made
+    # the model read the first screen once; the reader, taught by that reading, read it itself, and every move was
+    # played from the reader's reading (PLAN §26, C3)
+    assert played.record["levels"] == {"L2": 0, "L3": 20} and [kind for kind, _ in jeweller.asked] == ["label"], made
     assert not fake.refused and [move["action"] for move in played.moves] == fake.swaps and made["generations"] == 0
 
 
@@ -174,7 +176,7 @@ async def test_one_kind_of_piece_a_model_calls_two_colours_is_one_kind_by_what_i
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "actions"), (played.record, made)
     # six kinds of piece on the screen are six values, whatever the model called them, and the game is read by
     # the reader from the first screen on
-    assert made["kit"]["values"] == len(gems.INKS) and played.record["levels"] == {"L2": 1, "L3": 19}, (played.record, made)
+    assert made["kit"]["values"] == len(gems.INKS) and played.record["levels"] == {"L2": 0, "L3": 20}, (played.record, made)
     assert not fake.refused and [kind for kind, _ in muddled.asked] == ["label"]
 
 

@@ -29,11 +29,14 @@ anywhere else (the model stopped, gave up, went round) leaves none of its new st
 on the way to nowhere is not pressed again by code (2026-11-19: a stretch that ended at a stop had left two taps
 that spent the game's energy).
 
-A step is sent once in a stretch: play that comes back to a screen it left by that step is the model's to look at
-(it went round). The exceptions are a step the model itself asked to be repeated (a story's lines) and one the
-model sent more than once in a stretch on screens alike (a reward's pages), which may be sent that often.
+A step is sent once in a stretch: play that comes straight back to a screen it left by that step is the model's to
+look at (it went round). The exceptions are a step the model itself asked to be repeated (a story's lines) and one
+the model sent more than once in a stretch on screens alike (a reward's pages), which may be sent that often. And
+play that came back by way of another step (a reward window the game put over the map after its button, closed
+again) may send the step again: once for each step between, a few times at most (`Routine.spent`).
 
-A routine is the steps of one task (what a stretch of play is for: the next level, a new game); a game's routines
+A routine is the steps of one task (what a stretch of play is for: the next level, a new game, an errand the
+request names beside the levels, such as a daily reward); a game's routines
 are a book, kept by the game (`adaptation.Store.routines`). The same steps serve wherever in the stretch play
 stands, since a step is found by the screen and not by its place in an order.
 """
@@ -44,7 +47,8 @@ from typing import Any
 
 from . import direct, recovery, scenes
 
-# the tasks a stretch of the model's own play may be for (`agent.Agent._task`)
+# the tasks a stretch of the model's own play may be for (`agent.Agent._task`), beside an errand the request names
+# (`request.understand`, its `task`), which is never one of these
 NEXT_LEVEL, NEW_GAME = "next_level", "new_game"
 # what a step may send: an input to a place, a key, the back button; and a wait, which is a screen to wait on
 SENT = frozenset({direct.TAP, direct.DOUBLE_TAP, direct.LONG_PRESS, direct.KEY, direct.SWIPE, direct.BACK})
@@ -64,8 +68,9 @@ SPOT_SHARE, SPOT_SIDE, SPOT_ALIKE = 0.06, 12, 0.7
 # two inputs of one kind this near (the share of the screen's longer side) are the same input
 SAME_PLACE = 0.03
 # a step is sent this often in one stretch, unless the model sent it more often itself (`again`); one the model
-# asked to be repeated (a story's lines), this often
-STEP_MOST, REPEATED_MOST = 1, direct.REPEAT_MOST
+# asked to be repeated (a story's lines), this often. Play that came back to its screen by way of another step
+# may send it again, once for each such step and this many times more at most (`Routine.spent`)
+STEP_MOST, REPEATED_MOST, RETURNS_MOST = 1, direct.REPEAT_MOST, 2
 # a screen to wait on is waited on for a few times as long as the model waited there, within these bounds (seconds):
 # a board still drawing that a model once waited a moment on is no loading screen to sit out
 PATIENCE_TIMES, PATIENCE_LEAST, PATIENCE_MOST = 3, 3.0, 30.0
@@ -250,6 +255,18 @@ class Routine:
     def most(self, step: dict[str, Any]) -> int:
         """How often a step may be sent in one stretch."""
         return REPEATED_MOST if step["action"].get("repeat") else max(STEP_MOST, step.get("again", 1))
+
+    def spent(self, step: dict[str, Any], sends: int, last: dict[str, Any] | None, via: dict[str, set[str]]) -> bool:
+        """Whether a step sent `sends` times in this stretch is sent no more in it. One sent as often as it may be
+        (`most`) is spent, unless play came back to its screen by way of another step (`last`: the last step sent
+        that changed the screen) that has not let it be sent again before (`via`: those that did, by step id), and
+        it was sent fewer than RETURNS_MOST times more. Play that comes straight back by the step itself went
+        round, and so does play that comes back again by the same way."""
+        if sends < self.most(step):
+            return False
+        if last is None or last["id"] == step["id"] or last["id"] in via.get(step["id"], ()):
+            return True
+        return sends >= self.most(step) + RETURNS_MOST
 
     def opened(self, step: dict[str, Any] | None) -> None:
         """A level's board was read after this step: after it the family is tried without the model being asked."""

@@ -357,3 +357,159 @@ async def test_a_stretch_that_reaches_no_board_leaves_no_step_behind(tmp_path):
     assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
     assert [step["scene"] for step in Store(tmp_path).routines("https://mines.example/")["next_level"]] == ["map"]
     assert all("trial" not in step for step in Store(tmp_path).routines("https://mines.example/")["next_level"])
+
+
+class Reward(Garden):
+    """The garden, whose map's button puts a reward window (the shop's screen) over the map before some levels in
+    place of dealing the next (`rewards`: the levels dealt before which it does, once each; `always`: every time);
+    the window's close button brings the map back."""
+
+    def __init__(self, draws, rewards=(), always=False):
+        super().__init__(draws)
+        self.rewards, self.always, self.given = set(rewards), always, set()
+
+    async def tap(self, x, y, duration_ms):
+        if self.stage == "map" and inside(x, y, PLAY) and (self.always or self.dealt in self.rewards - self.given):
+            self.taps.append((x, y))
+            self.given.add(self.dealt)
+            self.stage = "shop"
+            return
+        await super().tap(x, y, duration_ms)
+
+
+def steps(played, part):
+    """Who sent each input on the map and the window over it in one part of the work, and by which step."""
+    return [(move["level"], move.get("step")) for move in played.moves
+            if move["part"] == part and move.get("scene") in ("map", "popup")]
+
+
+async def test_a_step_is_sent_again_when_play_came_back_to_its_screen_by_way_of_another_and_not_round_and_round(tmp_path):
+    # the map's button puts a reward window over the map before the third level and the fourth; closed, the map
+    # stands there again and its button deals the level
+    fake = Reward([WINNING] * 4, rewards={2, 3})
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 4), budget=budget(),
+                                   store=Store(tmp_path))
+    assert ending(played) == ("goal_reached", "levels"), (played.record, made["work"])
+    # the stretch to the third level: the model at the window, which no step was kept for (the family tried on it
+    # first, the map's step having opened a level before, and let go: a stretch of its own from there)
+    assert between(played, 3) == [("R", "result")] + [("R", "story")] * LINES + [("R", "map"), ("L0", "popup"), ("R", "map")]
+    assert steps(played, 3) == [("R", "n3"), ("L0", None), ("R", "n3")]
+    # the stretch to the fourth, one stretch all of it the code's: the map's button pressed again once play came
+    # back to the map by way of the window's step, and the model asked nothing
+    assert steps(played, 4) == [("R", "n3"), ("R", "n4"), ("R", "n3")] and len(plays(model)) == 5
+    kept = Store(tmp_path).routines("https://mines.example/")["next_level"]
+    assert [step["scene"] for step in kept] == ["result", "story", "map", "popup"] and "again" not in kept[2]
+    # a game whose window comes back every time the map's button is pressed: the button is pressed by code again
+    # once by way of the window, and the second time play comes back that way the model is asked
+    fake = Reward([WINNING] * 2, always=True)
+    model = Guide(fake, repeat=5)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=budget(),
+                                   store=Store(tmp_path))
+    assert ending(played) == ("gave_up", "going_round"), (played.record, made["work"])
+    assert steps(played, 2)[:5] == [("R", "n3"), ("R", "n4"), ("R", "n3"), ("R", "n4"), ("L0", None)]
+    assert plays(model)[0]["been_here"]["times"] == 2
+
+
+def test_a_step_is_spent_when_play_comes_straight_back_or_back_again_by_the_same_way():
+    town = page((120, 190, 140), [(PLAY, (40, 120, 220)), (SHOP, (220, 160, 40))])
+    shop = page((60, 60, 70), [((60, 60, 400, 380), (250, 250, 250)), (CLOSE, (200, 40, 40))])
+    kept = routine.Routine("next_level")
+    button = kept.learn(town, {"kind": "tap", "at": middle(PLAY)}, scene="map")
+    close = kept.learn(shop, {"kind": "tap", "at": middle(CLOSE)}, scene="popup")
+    other = kept.learn(page((60, 60, 70)), {"kind": "back"}, scene="popup")
+    assert not kept.spent(button, 0, None, {}) and not kept.spent(button, 0, button, {})
+    # straight back to its screen: by the step itself, or with no step between that changed the screen
+    assert kept.spent(button, 1, button, {}) and kept.spent(button, 1, None, {})
+    # back by way of the window's step: once more, and not again by the same way
+    assert not kept.spent(button, 1, close, {})
+    assert kept.spent(button, 2, close, {button["id"]: {close["id"]}})
+    # by way of another step it may once more, up to RETURNS_MOST more sends in all
+    assert not kept.spent(button, 2, other, {button["id"]: {close["id"]}})
+    assert kept.spent(button, 1 + routine.RETURNS_MOST, other, {button["id"]: {close["id"]}})
+
+
+class Town:
+    """A game's home screen with nothing to play on it: a reward's button, which opens a window with a claim
+    button; claimed, the home screen stands there again without the reward's button."""
+    name = "fake"
+    reads_dom = False
+    kinds = frozenset({"keys", "tap", "drag"})
+
+    def __init__(self):
+        self.stage, self.taps = "home", []
+
+    async def size(self):
+        return list(SIZE)
+
+    async def address(self):
+        return "https://town.example/"
+
+    async def capture(self, region=None):
+        if self.stage == "home":
+            return page((90, 140, 200), [(PLAY, (240, 200, 40))])
+        if self.stage == "window":
+            return page((60, 60, 70), [((60, 60, 400, 380), (250, 250, 250)), (CLOSE, (40, 200, 40))])
+        return page((90, 140, 200))
+
+    async def tap(self, x, y, duration_ms):
+        self.taps.append((x, y))
+        if self.stage == "home" and inside(x, y, PLAY):
+            self.stage = "window"
+        elif self.stage == "window" and inside(x, y, CLOSE):
+            self.stage = "claimed"
+
+    async def key(self, key):
+        pass
+
+    async def drag(self, *args):
+        raise AssertionError("nothing here is dragged")
+
+    async def release(self):
+        pass
+
+
+class Errands:
+    """The model, which names no family for the town and passes its screens: the reward's button, the claim, and
+    the errand done on the home screen once the reward is claimed."""
+
+    def __init__(self, fake):
+        self.fake, self.asked = fake, []
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if "families" in context:
+            return TurnResult(text=json.dumps({"screen": "game", "families": [], "situation": "a town"}))
+        if not context.get("play"):
+            return TurnResult(text=json.dumps({"screen": "other", "board": None, "rules": None, "state": None}))
+        self.asked.append(context)
+        if self.fake.stage == "home":
+            scene, action = "map", {"kind": "tap", "at": middle(PLAY)}
+        elif self.fake.stage == "window":
+            scene, action = "popup", {"kind": "tap", "at": middle(CLOSE)}
+        else:
+            scene, action = "map", {"kind": "done", "end": "won"}
+        return TurnResult(text=json.dumps({"situation": self.fake.stage, "scene": scene, "guided": False, "score": None,
+                                           "action": action, "expect": "the reward", "memory": {}}))
+
+
+async def test_an_errand_the_request_names_is_a_routine_of_its_own_played_by_code_the_next_time(tmp_path):
+    fake = Town()
+    model = Errands(fake)
+    played, made = await work.play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60),
+                                   store=Store(tmp_path), task="daily_reward")
+    assert ending(played) == ("goal_reached", "task_done"), (played.record, made)
+    assert [move["level"] for move in played.moves] == ["L0", "L0"] and len(model.asked) == 3
+    # the steps are kept under the errand's name, apart from the steps between levels
+    kept = Store(tmp_path).routines("https://town.example/")
+    assert set(kept) == {"daily_reward"} and [step["scene"] for step in kept["daily_reward"]] == ["map", "popup"]
+    assert next(tmp_path.glob("*/routines/daily_reward.json")).is_file()
+    # the same errand asked again: the code sends both steps, and the model is asked only where it is done
+    fake = Town()
+    model = Errands(fake)
+    played, made = await work.play(fake, model, None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60),
+                                   store=Store(tmp_path), task="daily_reward")
+    assert ending(played) == ("goal_reached", "task_done"), (played.record, made)
+    assert [(move["level"], move.get("step")) for move in played.moves] == [("R", "d1"), ("R", "d2")]
+    assert len(model.asked) == 1 and model.asked[0]["history"][-1]["sent_by"] == "program"
+    assert "next_level" not in Store(tmp_path).routines("https://town.example/")
