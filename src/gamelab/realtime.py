@@ -10,7 +10,9 @@ is another one, and no model is in it:
     tick      the well is captured and read as filled and empty cells; what is filled beyond the settled stack the
               code keeps is the falling piece
     plan      once a piece: every turn of it dropped in every column, weighed as such games long have been (the
-              holes it leaves, the height, the unevenness, the lines it clears) (`best`)
+              holes it leaves, the height, the unevenness, the lines it clears), with the next piece where the game
+              shows it and the level's goal where the model read one: the falling family's solver
+              (`solvers/falling.py`, over the rules of `rules/falling.py`), given to the loop as a module
     act       one step towards the plan each tick, by what the screen shows now: a turn while the piece is not
               yet the shape planned, then sideways, then down. Nothing is assumed of how the game turns a piece
     confirm   when the stack changed, it must be what the plan said (or the piece come down where it was last
@@ -33,6 +35,13 @@ from typing import Any, Awaitable, Callable
 from . import pixels, resources
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
+from .rules import falling as falling_rules
+# the rules and the solver the loop plays by (PLAN §34, F3): what a well becomes when a piece comes to lie, and where
+# a piece goes. They are the falling family's, given to the loop as modules (`Loop(rules=, solver=)`); the names are
+# kept here for what reads them of this module
+from .rules.falling import Cells, drops, fall, normal, settle, turns  # noqa: F401
+from .solvers import falling as falling_solver
+from .solvers.falling import best, weigh  # noqa: F401
 from .surface import DRAG, KEYS, TAP
 
 SETUP_TOKENS, SETUP_TIMEOUT_S = 1500, 90.0
@@ -54,8 +63,6 @@ SUB = 4
 FILLED_LEAST, CLEAR = 28.0, 2.5
 # what falls is one piece of at most this many cells
 PIECE_MOST = 6
-# the weights such games are played by (the height of all columns, lines cleared, holes, unevenness)
-W_HEIGHT, W_LINES, W_HOLES, W_BUMPS = -0.510066, 0.760666, -0.35663, -0.184483
 # turns asked of one piece before the shape it has is played as it is; a piece asked sideways this often without
 # moving is dropped where it is
 TURNS_MOST, SHIFTS_MOST = 5, 3
@@ -118,85 +125,19 @@ STILL_S = 3.0
 # what is kept for looking at afterwards: the last captures of the well and what was made of each look, written
 # out where the well was read otherwise than the code expected (at most so often a game)
 FRAMES_KEPT, TICKS_KEPT, DUMPS_MOST = 12, 240, 5
+# (PLAN §34, F3) the box where a game shows the next piece is read at most this many pixels a side, a pixel lit when
+# a channel lies this far from the box's edge; fewer lit than so many is no piece. A split into cells is square
+# within this share. A preview read wrong this often, and more often than right, is not read any more
+PREVIEW_PX, PREVIEW_FAR, PREVIEW_LIT, PREVIEW_SQUARE, PREVIEW_MISSES = 96, 40, 6, 0.25, 3
+# the cells of a piece in the games the loop's rules are of
+PIECE_CELLS = 4
+# what a model says of the next piece's box when the screen does not show the game going yet
+NEXT_LATER = "after_start"
+# a level's goal is believed up to this many rows or pieces
+GOAL_MOST = 999
 # what makes rows vanish in the games the loop's rules are of
 ROWS_CLEAR = "rows"
 RT = "RT"
-
-Cells = frozenset
-
-
-def turns(cells: Cells) -> list[Cells]:
-    """A piece's shapes as it turns a quarter at a time, each with its top-left at (0, 0), without repeats."""
-    out: list[Cells] = []
-    shape = normal(cells)
-    for _ in range(4):
-        if shape not in out:
-            out.append(shape)
-        shape = normal(Cells((c, -r) for r, c in shape))
-    return out
-
-
-def normal(cells: Any) -> Cells:
-    top, left = min(r for r, _ in cells), min(c for _, c in cells)
-    return Cells((r - top, c - left) for r, c in cells)
-
-
-def fall(stack: Cells, cells: Cells, rows: int, cols: int) -> Cells | None:
-    """Where a piece standing at `cells` comes to lie when it goes straight down; None when it does not fit where
-    it stands."""
-    if any(not (0 <= c < cols and r < rows) or (r, c) in stack for r, c in cells):
-        return None
-    down = 0
-    while all(r + down + 1 < rows and (r + down + 1, c) not in stack for r, c in cells):
-        down += 1
-    return Cells((r + down, c) for r, c in cells)
-
-
-def settle(stack: Cells, placed: Cells, rows: int, cols: int) -> tuple[Cells, int]:
-    """The stack with a piece come to lie on it, its full rows gone and what was above them moved down; and how
-    many rows went."""
-    filled = stack | placed
-    full = [r for r in range(rows) if all((r, c) in filled for c in range(cols))]
-    if not full:
-        return Cells(filled), 0
-    return Cells((r + sum(row > r for row in full), c) for r, c in filled if r not in full), len(full)
-
-
-def weigh(stack: Cells, rows: int, cols: int, lines: int) -> float:
-    heights = [rows - min((r for r, c in stack if c == col), default=rows) for col in range(cols)]
-    holes = sum((r, c) not in stack for c in range(cols) for r in range(rows - heights[c], rows))
-    bumps = sum(abs(a - b) for a, b in zip(heights, heights[1:]))
-    return W_HEIGHT * sum(heights) + W_LINES * lines + W_HOLES * holes + W_BUMPS * bumps
-
-
-def best(stack: Cells, piece: Cells, rows: int, cols: int, only: Cells | None = None) -> dict[str, Any] | None:
-    """Where to put the piece: `{"shape", "column", "placed", "after", "lines"}`, the turn of it and the column of
-    its leftmost cell that leave the best stack when it is dropped straight down from the top. `only`: this turn
-    of it alone (the game would not turn it further). None when it fits nowhere."""
-    found = None
-    for shape in ([only] if only is not None else turns(piece)):
-        wide = max(c for _, c in shape) + 1
-        for column in range(cols - wide + 1):
-            placed = fall(stack, Cells((r, c + column) for r, c in shape), rows, cols)
-            if placed is None:
-                continue
-            after, lines = settle(stack, placed, rows, cols)
-            score = weigh(after, rows, cols, lines)
-            if found is None or score > found["score"]:
-                found = {"shape": shape, "column": column, "placed": placed, "after": after, "lines": lines, "score": score}
-    return found
-
-
-def drops(stack: Cells, piece: Cells, rows: int, cols: int) -> list[Cells]:
-    """Every place the piece may come to lie when it is dropped straight down from the top, in any turn of it."""
-    out = []
-    for shape in turns(piece):
-        for column in range(cols - max(c for _, c in shape)):
-            placed = fall(stack, Cells((r, c + column) for r, c in shape), rows, cols)
-            if placed is not None and placed not in out:
-                out.append(placed)
-    return out
-
 
 def whole(cells: Cells) -> bool:
     """Whether the cells are one piece: a few of them, each beside another."""
@@ -271,6 +212,16 @@ def piece_in(stack: Cells, extra: Cells, rows: int, cols: int, known: list[Cells
     return extra if whole(extra) else None
 
 
+def within(image: Any, box: list[int], region: list[int] | None = None) -> Any:
+    """The part of a capture that shows `box` (screen pixels): the capture itself when it is of the box alone, the
+    box within it when it is of `region`, else the box within the whole screen."""
+    if image.size == (box[2] - box[0], box[3] - box[1]):
+        return image
+    if region is not None and image.size == (region[2] - region[0], region[3] - region[1]):
+        return image.crop((box[0] - region[0], box[1] - region[1], box[2] - region[0], box[3] - region[1]))
+    return image.crop(tuple(box))
+
+
 class Well:
     """Where the well is on the screen and what its empty cells look like: a capture of it read as the set of
     its filled cells."""
@@ -280,13 +231,11 @@ class Well:
         self.empty: tuple[float, float, float] | None = None
         self.near = FILLED_LEAST
 
-    def _colours(self, png: bytes) -> list[tuple[float, float, float]]:
-        """Each cell's colour, row by row, from a capture of the well alone or of the whole screen."""
+    def _colours(self, png: bytes, region: list[int] | None = None) -> list[tuple[float, float, float]]:
+        """Each cell's colour, row by row, from a capture of the well alone, of `region`, or of the whole screen."""
         from PIL import Image
 
-        image = pixels.decode(png, None)
-        if image.size != (self.box[2] - self.box[0], self.box[3] - self.box[1]):
-            image = image.crop(tuple(self.box))
+        image = within(pixels.decode(png, None), self.box, region)
         wide = self.cols * SUB
         raw = image.resize((wide, self.rows * SUB), Image.BOX).tobytes()
         # the middle of each cell alone: what lies between two cells (a line, a neighbour's edge) is left out
@@ -327,14 +276,70 @@ class Well:
             return max(abs(a[band] - b[band]) for band in range(3)) > self.near
         return apart
 
-    def read(self, png: bytes) -> Cells:
-        colours = self._colours(png)
+    def read(self, png: bytes, region: list[int] | None = None) -> Cells:
+        colours = self._colours(png, region)
         return Cells((index // self.cols, index % self.cols) for index, colour in enumerate(colours)
                      if self._far(colour) > self.near)
 
     def to_json(self) -> dict[str, Any]:
         return {"box": self.box, "rows": self.rows, "cols": self.cols,
                 "empty": [round(band) for band in self.empty] if self.empty else None, "near": round(self.near, 1)}
+
+
+class Preview:
+    """Where the game shows the piece that comes next: a box around it alone. Its cells are told from the box's
+    background (the colour of its edge) without knowing their size: the piece's extent, split into as many columns
+    and rows as make square cells that each are filled or empty, is the piece (a split into more cells than a piece
+    has is none)."""
+
+    def __init__(self, box: list[int]) -> None:
+        self.box = box
+
+    def read(self, png: bytes, region: list[int] | None = None, size: int | None = None) -> Cells | None:
+        """The next piece's shape, or None when the box shows none that can be told. `size`: the cells the game's
+        pieces have had (four, the rules' own, until one came to lie), preferred over any other split."""
+        from PIL import Image
+
+        image = within(pixels.decode(png, None), self.box, region)
+        scale = min(1.0, PREVIEW_PX / max(image.size))
+        if scale < 1.0:
+            image = image.resize((max(1, round(image.size[0] * scale)), max(1, round(image.size[1] * scale))), Image.BOX)
+        wide, high = image.size
+        raw = image.tobytes()
+        colour = [tuple(raw[3 * i:3 * i + 3]) for i in range(wide * high)]
+        edge = [colour[i] for i in range(wide * high) if i < wide or i >= wide * (high - 1) or i % wide in (0, wide - 1)]
+        ground = tuple(statistics.median(c[band] for c in edge) for band in range(3))
+        lit = [max(abs(c[band] - ground[band]) for band in range(3)) > PREVIEW_FAR for c in colour]
+        xs = [i % wide for i, on in enumerate(lit) if on]
+        ys = [i // wide for i, on in enumerate(lit) if on]
+        if len(xs) < PREVIEW_LIT:
+            return None
+        x0, x1, y0, y1 = min(xs), max(xs) + 1, min(ys), max(ys) + 1
+        found = None
+        for across in range(1, PIECE_MOST + 1):
+            for down in range(1, PIECE_MOST + 1):
+                cell_x, cell_y = (x1 - x0) / across, (y1 - y0) / down
+                if abs(cell_x - cell_y) > PREVIEW_SQUARE * max(cell_x, cell_y) or cell_x < 2:
+                    continue
+                cells, unsure = set(), 0
+                for row in range(down):
+                    for col in range(across):
+                        # the middle half of the cell
+                        left, top = x0 + (col + 0.25) * cell_x, y0 + (row + 0.25) * cell_y
+                        taken = [lit[y * wide + x] for y in range(int(top), max(int(top) + 1, int(top + cell_y / 2)))
+                                 for x in range(int(left), max(int(left) + 1, int(left + cell_x / 2)))]
+                        share = sum(taken) / len(taken)
+                        unsure += 0.25 < share < 0.75
+                        if share >= 0.5:
+                            cells.add((row, col))
+                if not whole(Cells(cells)) or {r for r, _ in cells} != set(range(down)) \
+                        or {c for _, c in cells} != set(range(across)):
+                    continue
+                key = (len(cells) == (size or PIECE_CELLS), len(cells), -unsure,
+                       -abs(cell_x - cell_y) / max(cell_x, cell_y))
+                if found is None or key > found[0]:
+                    found = (key, Cells(cells))
+        return found[1] if found else None
 
 
 def _key(value: Any) -> str | None:
@@ -432,13 +437,51 @@ def understood(answer: Any, screen: list[int], kinds: frozenset[str]) -> dict[st
         # (a game played by touch alone has no keys of its own to try: only what the model gave)
         also = {"rotate": also["rotate"] or list(TURN_TRIED), "drop": also["drop"] or list(DROP_TRIED)}
     return {"box": [left, top, right, bottom], "rows": rows, "cols": cols, "keys": keys, "start": start,
-            "situation": situation, "also": also, "clears": clears}
+            "situation": situation, "also": also, "clears": clears,
+            "next": _next_box(answer.get("next"), screen, [left, top, right, bottom], cols),
+            # the screen does not show the game going yet (a menu over the well): where its next piece shows is to be
+            # asked once it goes
+            **({"next_later": True} if answer.get("next") == NEXT_LATER else {}),
+            "goal": _goal(answer.get("goal"))}
+
+
+def _next_box(value: Any, screen: list[int], well: list[int], cols: int) -> list[int] | None:
+    """The box the game shows its next piece in, as the model gave it: inside the screen, outside the well, big
+    enough for a piece's cells to be told (a cell no smaller than a quarter of the well's); else None."""
+    if isinstance(value, dict):
+        value = value.get("box")
+    if not (isinstance(value, list) and len(value) == 4 and all(type(part) in (int, float) for part in value)):
+        return None
+    left, top, right, bottom = (round(part) for part in value)
+    least = max(2 * CELL_LEAST, (well[2] - well[0]) / cols / 2)
+    inside = left < well[2] and well[0] < right and top < well[3] and well[1] < bottom
+    if not (0 <= left < right <= screen[0] and 0 <= top < bottom <= screen[1]) or inside \
+            or right - left < least or bottom - top < least:
+        return None
+    return [left, top, right, bottom]
+
+
+def same_well(box: list[int], other: list[int], cols: int) -> bool:
+    """Whether two answers put the well in one place: each edge within half a cell."""
+    return all(abs(a - b) <= (other[2] - other[0]) / cols / 2 for a, b in zip(box, other))
+
+
+def _goal(value: Any) -> dict[str, int | None] | None:
+    """A level's goal as the model read it: rows to clear and the pieces given for it, each a count or null; None
+    when it said neither."""
+    if not isinstance(value, dict):
+        return None
+    got = {name: value.get(name) if type(value.get(name)) is int and 1 <= value.get(name) <= GOAL_MOST else None
+           for name in ("lines", "pieces")}
+    return got if got["lines"] is not None else None
 
 
 def record(setup: dict[str, Any], well: "Well") -> dict[str, Any]:
     """What is kept of a game once pieces came to lie where the code put them: the model's answer as the loop
-    used it and the look of the well's empty cells on the screen it was given for."""
-    return {"setup": setup, "empty": list(well.empty) if well.empty else None, "near": well.near}
+    used it and the look of the well's empty cells on the screen it was given for. A level's goal is not kept: the
+    next game kept words are played in may be another level."""
+    return {"setup": {name: value for name, value in setup.items() if name not in ("goal", "goal_at")},
+            "empty": list(well.empty) if well.empty else None, "near": well.near}
 
 
 def learned(loop: "Loop") -> dict[str, Any]:
@@ -479,7 +522,7 @@ def again(kept: Any, png: bytes, screen: list[int], kinds: frozenset[str]) -> di
         return None
     said = understood({"board": setup.get("box"), "columns": setup.get("cols"), "rows": setup.get("rows"),
                        "keys": setup.get("keys"), "start": setup.get("start"), "situation": setup.get("situation"),
-                       "also": setup.get("also"), "clears": setup.get("clears")},
+                       "also": setup.get("also"), "clears": setup.get("clears"), "next": setup.get("next")},
                       screen, kinds)
     if said is None:
         return None
@@ -525,9 +568,20 @@ class Loop:
 
     def __init__(self, surface: Any, setup: dict[str, Any], *, send: Callable[[dict[str, Any]], Awaitable[None]],
                  check: Callable[[], None], seen: Callable[[bytes], Awaitable[None]] | None = None,
-                 placed: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 placed: Callable[[dict[str, Any]], None] | None = None, rules: Any = falling_rules,
+                 solver: Any = falling_solver, policy: str = "lookahead", counted: tuple[int, int] = (0, 0)) -> None:
         self.surface, self.setup, self.send, self.check, self.seen, self.placed = surface, setup, send, check, seen, placed
+        # what a well becomes when a piece comes to lie (`fall`, `settle`, `drops`, `turns`) and where a piece goes
+        # (`place`, by `policy`): the family's modules, or any that offer the same
+        self.rules, self.solver, self.policy = rules, solver, policy
         self.well = Well(setup["box"], setup["rows"], setup["cols"])
+        # where the game shows the next piece, read when a piece is planned for and held against the piece that
+        # then comes (`Preview`); and the level's goal as the model read it, with the rows and pieces counted
+        # towards it before this loop
+        self.preview = Preview(setup["next"]) if setup.get("next") else None
+        self.coming: Cells | None = None
+        self.foreseen = {"read": 0, "matched": 0, "missed": 0, "unread": 0}
+        self.goal, self.counted = setup.get("goal"), counted
         self.keys = setup["keys"]
         # learned as the game is played, and kept with what the model said (`record`): how long a key is held,
         # whether the game draws a piece's shadow, and what came of trying a key that drops a piece at once
@@ -574,11 +628,12 @@ class Loop:
         if early > 0:
             await asyncio.sleep(early)
         at = time.monotonic()
-        png = await self.surface.capture(self.well.box)
+        png = await self.surface.capture(self.region)
         took = time.monotonic()
         if self.seen is not None:
             await self.seen(png)
-        filled = self.well.read(png)
+        filled = self.well.read(png, self.region)
+        self.png = png
         self.capture_s.append(took - at)
         self.read_s.append(time.monotonic() - took)
         self.ticks += 1
@@ -665,7 +720,7 @@ class Loop:
                 odd_since = odd_last = None
                 if piece != still[0]:
                     still = (piece, now)
-                elif now - still[1] > STILL_S and sent and piece != fall(self.stack, piece, rows, cols):
+                elif now - still[1] > STILL_S and sent and piece != self.rules.fall(self.stack, piece, rows, cols):
                     self._note(event="piece_still")
                     self._dump("piece_still")
                     return "piece_still"
@@ -678,12 +733,14 @@ class Loop:
                         # part of it is still above the well: what is sent now would go to a piece not yet seen
                         self._note(event="coming")
                         continue
-                    found = best(self.stack, piece, rows, cols)
+                    self._foresaw(piece)
+                    found = self._place(piece)
                     if found is None:
                         return "stopped_falling"
-                    plan = {**found, "turns": turns(piece)}
+                    plan = {**found, "turns": self.rules.turns(piece)}
                     self._note(event="plan", piece=_listed(piece), column=found["column"],
-                               shape=_listed(found["shape"]))
+                               shape=_listed(found["shape"]),
+                               **({"next": _listed(self.coming)} if self.coming is not None else {}))
                     began, turned, shifted, sent, pushed, spun = now, 0, 0, 0, None, None
                     dropped = waiting = None
                     streak, moved = 0, False
@@ -744,7 +801,7 @@ class Loop:
                         waiting = {"at": time.monotonic(), "pose": (shape, column), "shift": None}
                 elif shape != plan["shape"]:
                     # the game does not turn it further (a wall, no such key): the shape it has is placed
-                    kept = best(self.stack, piece, rows, cols, only=shape)
+                    kept = self._place(piece, only=shape)
                     if kept is None:
                         return "stopped_falling"
                     plan = {**plan, **kept}
@@ -760,11 +817,11 @@ class Loop:
                 elif self.keys["drop"]:
                     # (a gesture is shown later than a key: it is given longer before it is sent again)
                     again = DROP_AGAIN_S if gesture(self.keys["drop"]) is None else max(DROP_AGAIN_S, 2 * self.wait)
-                    if dropped is None or piece != fall(self.stack, piece, rows, cols) and now - dropped > again:
+                    if dropped is None or piece != self.rules.fall(self.stack, piece, rows, cols) and now - dropped > again:
                         dropped = now
                         sent += await self._press(self.keys["drop"])
                 else:
-                    lies = fall(self.stack, piece, rows, cols)
+                    lies = self.rules.fall(self.stack, piece, rows, cols)
                     below = (min(r for r, _ in lies) - min(r for r, _ in piece)) if lies else 0
                     if self.dropping is None and self.drops and below >= DROP_ROWS and tried is None:
                         # no key was named for dropping a piece at once: one such games use is tried on this piece
@@ -782,11 +839,12 @@ class Loop:
             # where it may lie: as planned, straight down from where it was last seen, or dropped anywhere else
             # (the game moved it on while the code was not looking: its lines count all the same)
             for effect, cells in (("confirmed", plan["placed"] if plan else None),
-                                  ("inconsistent", fall(self.stack, last, rows, cols) if last else None),
-                                  *(("elsewhere", cells) for cells in (drops(self.stack, last, rows, cols) if last else []))):
+                                  ("inconsistent", self.rules.fall(self.stack, last, rows, cols) if last else None),
+                                  *(("elsewhere", cells)
+                                    for cells in (self.rules.drops(self.stack, last, rows, cols) if last else []))):
                 if cells is None:
                     continue
-                after, lines = settle(self.stack, cells, rows, cols)
+                after, lines = self.rules.settle(self.stack, cells, rows, cols)
                 rest = filled - after
                 if after <= filled and (not rest or piece_in(after, rest, rows, cols) is not None):
                     lain = (effect, cells, after, lines)
@@ -842,6 +900,54 @@ class Loop:
             self.stack, self.lines, odd_since, odd_last, streak, barren = after, self.lines + lines, None, None, 0, 0
             self._placed(effect, plan, lines, sent, now - began, last)
             plan = last = waiting = None
+
+    def foresee(self, box: list[int] | None, goal: dict[str, Any] | None) -> None:
+        """Where the game shows the next piece and what the level asks, said of the screen once the game went."""
+        self.setup = {**self.setup, "next": box or self.setup.get("next"), "goal": goal}
+        self.preview = Preview(self.setup["next"]) if self.setup["next"] else None
+        self.goal = goal
+
+    @property
+    def region(self) -> list[int]:
+        """What is captured each look: the well, and the box of the next piece with it where the game shows one."""
+        box = self.well.box
+        if self.preview is None:
+            return box
+        other = self.preview.box
+        return [min(box[0], other[0]), min(box[1], other[1]), max(box[2], other[2]), max(box[3], other[3])]
+
+    def _place(self, piece: Cells, only: Cells | None = None) -> dict[str, Any] | None:
+        """Where the solver puts the piece on the stack as it stands, with the next piece where it was read and what
+        is left of the level's goal."""
+        return self.solver.place(self.stack, piece, self.well.rows, self.well.cols, policy=self.policy,
+                                 queue=[self.coming] if self.coming is not None else [], goal=self._left(), only=only)
+
+    def _left(self) -> dict[str, Any] | None:
+        """The level's goal still to meet: rows to clear and pieces left for them (this one among them)."""
+        if not self.goal:
+            return None
+        lines, pieces = self.counted[0] + self.lines, self.counted[1] + self.pieces
+        need, most = self.goal.get("lines"), self.goal.get("pieces")
+        return {"lines": None if need is None else max(0, need - lines),
+                "pieces": None if most is None else max(1, most - pieces)}
+
+    def _foresaw(self, piece: Cells) -> None:
+        """The next piece as the game shows it now, read for the piece about to be planned; and the one read before
+        held against this one, which it was to be. A preview read wrong more often than right is not read again."""
+        if self.coming is not None:
+            hit = normal(piece) in self.rules.turns(self.coming)
+            self.foreseen["matched" if hit else "missed"] += 1
+            if self.foreseen["missed"] >= PREVIEW_MISSES and self.foreseen["missed"] > self.foreseen["matched"]:
+                self.preview = None
+        self.coming = None
+        if self.preview is None or getattr(self, "png", None) is None:
+            return
+        try:
+            self.coming = self.preview.read(self.png, self.region, self.sizes.most_common(1)[0][0]
+                                            if self.sizes else None)
+        except Exception:
+            self.coming = None
+        self.foreseen["read" if self.coming is not None else "unread"] += 1
 
     def _covered(self, filled: Cells) -> bool:
         """Whether the well's top quarter is more than half filled: no game leaves it so and goes on."""
@@ -949,6 +1055,9 @@ class Loop:
                 "reach": {"mode": self.side["mode"], "px": round(self.side["px"], 1), "ms": round(self.side["ms"])}
                 if self.side is not None else None,
                 "wait_ms": round(self.wait * 1000) if self.lags else None,
+                "policy": self.policy, "goal": self.goal,
+                "next": {**self.foreseen, "box": self.setup["next"], "given_up": self.preview is None}
+                if self.setup.get("next") else None,
                 "lines": self.lines, "pieces": self.pieces, "effects": dict(self.effects), "resyncs": self.resyncs,
                 "ticks": self.ticks, "ticks_per_s": round(self.ticks / lasted, 1) if lasted else None,
                 "capture_ms": mean_ms(self.capture_s), "read_ms": mean_ms(self.read_s),

@@ -135,6 +135,8 @@ RESUME_EVERY = 4
 # a falling game's loop is let go to the model (and taken up again) this often in a row with no piece placed as
 # planned between; the ways it ends that say the well was not read; the captures kept of one game for looking at
 FALLING_LET_GO_MOST, LET_GO_UNREAD, FALLING_SCREENS_KEPT = 3, ("no_piece", "well_unread", "covered", "piece_still"), 96
+# the falling family's policy the realtime loop plays by (PLAN §34, F3): the next piece too where the game shows it
+FALLING_POLICY = "lookahead"
 # the times play by a family was handed to the model kept for the record
 LET_GO_KEPT = 12
 # moves in a row the game did not take, with none taken between them, after which play by the family's rules is
@@ -2356,10 +2358,21 @@ class Agent:
         start, fruitless = True, 0
         while True:
             self.family_id, self.policy = None, "realtime"
-            loop = realtime.Loop(self.surface, setup, send=send, check=self._check_stops, seen=seen, placed=placed)
+            if setup.get("goal") and "goal_at" not in setup:
+                # a level's goal counts from the screen it was read on
+                setup = {**setup, "goal_at": [lines, pieces]}
+            at = setup.get("goal_at") or [lines, pieces]
+            loop = realtime.Loop(self.surface, setup, send=send, check=self._check_stops, seen=seen, placed=placed,
+                                 policy=FALLING_POLICY, counted=(lines - at[0], pieces - at[1]))
             why = None
             try:
                 await loop.begin(first, start)
+                if start and setup["start"] is not None and source == "model" and setup.get("next_later") \
+                        and not told.get("looked_again"):
+                    # (PLAN §34, F3) said of a screen before the game began (a menu over the well): what only shows
+                    # once it goes (the next piece, the level's goal) is asked of the screen as it is now, once
+                    told["looked_again"] = await self._falling_looked_again(loop)
+                    setup = {**loop.setup, "goal_at": at}
                 why = await loop.play(done)
             finally:
                 summary = loop.summary()
@@ -2399,7 +2412,7 @@ class Agent:
             log.info("the falling game was let go (%s): the model looks at the screen", why)
             # (what the loop learned of the game as it played goes with it: how its swipes are taken, its keys)
             self.falling = {"setup": {**setup, **realtime.learned(loop)}, "proven": bool(self.confirmed),
-                            "well": loop.well}
+                            "well": loop.well, "goal": setup.get("goal"), "cleared": lines - at[0]}
             if pieces:
                 # the model was not there: it is told a level was played and how it stopped, so that a map or a
                 # menu standing where the level was is read as that level's end, not as a level to be started
@@ -2410,13 +2423,35 @@ class Agent:
                     "or another again before saying so. Won only when the screen itself shows this level cleared (its "
                     "result, the level marked done, the one after it open now); a map or menu that shows no more "
                     "done than before it was played, or nothing of it, is a level lost. Only if something lies over "
-                    "a game still going (a notice, a pause), put it away")
+                    "a game still going (a notice, a pause), put it away"
+                    + (f". The level asked for {setup['goal']['lines']} rows; the program counted {lines - at[0]} "
+                       "cleared (a last row cleared under the level's result may not be counted)"
+                       if setup.get("goal") else ""))
             self.resumable = realtime.RT
             self.resumes = self.since_tried = 0
             self.unread_at = None
             await self._play_direct(setup["situation"])
             setup, first, start, source = self.falling["setup"], self.falling["first"], False, self.falling["source"]
+            if source == "model_again":
+                # asked anew of this screen: its goal (if it shows one) counts from here
+                setup = {key: value for key, value in setup.items() if key != "goal_at"}
             told["setup"], told["source"] = setup, source
+
+    async def _falling_looked_again(self, loop: realtime.Loop) -> dict[str, Any]:
+        """The game just started by the loop, asked once more of: where it shows the next piece and what the level
+        asks, taken when the well is said to be where it was."""
+        png = await self.surface.capture()
+        self.shots += 1
+        try:
+            again = await self._asking(realtime.ask(self.model, png, await self.surface.size(), self.surface.kinds,
+                                                    self.hint))
+        except Exception as error:
+            log.info("the started falling game could not be asked about: %s", error)
+            return {"asked": True, "next": None}
+        if again is None or not realtime.same_well(again["box"], loop.setup["box"], loop.setup["cols"]):
+            return {"asked": True, "next": None}
+        loop.foresee(again["next"], loop.setup.get("goal") or again["goal"])
+        return {"asked": True, "next": again["next"], "goal": loop.goal}
 
     def _keep_looks_of(self, loop: realtime.Loop) -> None:
         """What a falling game's loop set aside where the well read otherwise than expected: the captures as
@@ -2459,6 +2494,16 @@ class Agent:
         self.falling = {**kept, "setup": {**setup, "start": None}, "first": png, "source": source}
         return True
 
+    def _won_doubted(self, scene: str | None) -> dict[str, Any] | None:
+        """A falling level said won with less than its rows counted, on a screen that is no result (a map, a menu):
+        what the code counted against what the level asked, else None. Where a result screen shows, the model's word
+        stands (a result drawn over the well hides the last rows cleared from the code's count)."""
+        goal = (self.falling or {}).get("goal") or {}
+        need, cleared = goal.get("lines"), (self.falling or {}).get("cleared")
+        if need is None or cleared is None or cleared >= need or scene == scenes.RESULT:
+            return None
+        return {"lines_counted": cleared, "lines_asked": need, "screen": scene}
+
     async def _play_direct(self, situation: str) -> None:
         """The game is none the harness has rules for: a model plays it with inputs of its own (L0), told after
         each what the code saw change on the screen. Ends the game (`_End`) at the game's own end as the model
@@ -2484,7 +2529,7 @@ class Agent:
         # the screen an errand's work found: shown to the model beside each later one (`direct.Direct.ask`)
         found: bytes | None = None
         # whether an errand's end was already sent back once because nothing the game holds had changed
-        doubted = False
+        doubted = won_doubted = False
         while True:
             told.update(player.summary())
             if objective == "actions" and self.confirmed >= (self.goal.target_value or 1):
@@ -2595,8 +2640,22 @@ class Agent:
             if action["kind"] == direct.DONE and self._before_own():
                 # the end of a game played before the work, which was asked for from its start: not its own end
                 raise _End(Outcome.GAVE_UP, "new_game_not_found", player.situation)
+            if action["kind"] == direct.DONE and action["end"] == WON and (doubt := self._won_doubted(scene)):
+                if not won_doubted:
+                    # (PLAN §34, F3) the program counted fewer rows than the level asked and no result shows: the
+                    # model is told so and asked once more of the screen as it is
+                    won_doubted = True
+                    player.history.append({"action": {"kind": direct.DONE}, "sent_by": "program", "not_taken": (
+                        f"the program counted {doubt['lines_counted']} rows cleared in this level, which asked for "
+                        f"{doubt['lines_asked']}, and this screen is no result screen. Answer done with end won only "
+                        "if this screen itself shows the level cleared (marked done, the level after it open); else "
+                        "the level was lost: answer done with end lost")})
+                    continue
             if action["kind"] == direct.DONE:
                 self._ended(action["end"], scene)
+                if won_doubted:
+                    # said won again after being told: the model's word stands, with what made it doubtful
+                    self.found["end"]["doubted"] = self._won_doubted(scene) or True
                 won = action["end"] == WON
                 raise _End(Outcome.GOAL_REACHED if won and objective == "play_until_end" else Outcome.GAME_OVER,
                            WON if won else "end_screen", player.situation)

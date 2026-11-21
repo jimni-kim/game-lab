@@ -45,7 +45,8 @@ DEFAULT_MAX_MOVES = 3000
 # live runs used, the high end where a decision still takes well under a second in Python
 # (minesweeper's is the layouts its solver may count for one guess)
 DEFAULT_COMPUTE = {"slide_merge": (50, 500, 2000), "block_placement": (50, 200, 1000), "minesweeper": (20000,),
-                   "match3": (200,), "klondike": (200,)}
+                   "match3": (200,), "klondike": (200,),
+                   "falling": (2000,)}
 # 2048-style milestones whose reach rate is reported
 TILE_MILESTONES = (512, 1024, 2048, 4096)
 
@@ -96,6 +97,10 @@ def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int, h
         result["won"] = seen["goal"] == "reached"
     elif "grid" in state:
         result["max_tile"] = max(max(row) for row in state["grid"])
+    won = getattr(family.model, "won", None)
+    if callable(won) and (cleared := won(state, family.rules)) is not None:
+        # a game with a score and a level's goal besides (rows within so many pieces): met or not
+        result["won"] = cleared
     return result
 
 

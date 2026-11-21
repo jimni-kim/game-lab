@@ -1,0 +1,47 @@
+{
+  "id": "falling",
+  "revision": 1,
+  "summary": "A well that pieces of a few cells fall into on their own as time passes. Each move is one piece come to lie: turned and moved sideways while it falls, then dropped. Every row filled from side to side vanishes and what was above it moves down. The game ends when a piece has no room; a level may ask for so many rows within so many pieces. Played by the realtime loop, not by a kit: the loop reads the well and asks the rules and the solver where each piece goes.",
+  "state_schema": "falling.v1",
+  "board": {
+    "shape": "grid",
+    "cells": [
+      {"kind": "empty", "looks": "a cell in the well's background colour"},
+      {"kind": "filled", "looks": "a block of a piece come to lie; the colour carries no rule"},
+      {"kind": "unknown", "looks": "a cell hidden by a notice or an animation"}
+    ]
+  },
+  "state_fields": {
+    "board": "the well's rows from the top, each a list of cells from the left: 0 empty, 1 filled, null a cell nobody read; the falling piece is not on it",
+    "piece": "the piece to place now as its [row, column] cells shifted so its top-left is 0, 0; null when none is in play",
+    "next": "the coming pieces the game shows (its preview), first first, each as piece is; empty when it shows none",
+    "lines": "rows cleared so far",
+    "pieces": "pieces placed so far",
+    "score": "the rows cleared (the game's own score is not kept)",
+    "scene": "the id of the scene the screen shows"
+  },
+  "actions": [
+    {"kind": "place", "input": "keys", "description": "turn the falling piece to one of its shapes, move it to a column and drop it"}
+  ],
+  "scenes": [
+    {"id": "playing", "looks": "the well with a piece falling in it"},
+    {"id": "over", "looks": "a notice over the well that the game or the level is over"}
+  ],
+  "meta_actions": [
+    {"id": "new_game", "description": "start another game after the end"}
+  ],
+  "rule_parameters": {
+    "rows": {"description": "rows in the well", "values": {"type": "integer", "minimum": 4, "maximum": 40}},
+    "cols": {"description": "columns in the well", "values": {"type": "integer", "minimum": 4, "maximum": 40}},
+    "preview": {"description": "how many coming pieces the game shows", "values": {"type": "integer", "minimum": 0, "maximum": 6}},
+    "garbage": {"description": "rows the simulated game begins with at the well's floor, each full but for one cell", "values": {"type": "integer", "minimum": 0, "maximum": 30}},
+    "goal_lines": {"description": "rows a level asks to clear; null when it asks none or it is not known", "values": {"type": ["integer", "null"], "minimum": 1}},
+    "goal_pieces": {"description": "pieces a level gives to clear them in; null when it sets no limit or it is not known", "values": {"type": ["integer", "null"], "minimum": 1}}
+  },
+  "policies": ["greedy", "lookahead"],
+  "baseline_policy": "greedy",
+  "default_policy": "lookahead",
+  "default_compute": 2000,
+  "goal_value": "rows cleared",
+  "verify_every": 1
+}
