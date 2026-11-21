@@ -501,3 +501,189 @@ async def test_a_piece_dropped_is_not_dropped_again_while_the_next_is_not_yet_se
     assert told["effects"]["confirmed"] == told["pieces"] and told["resyncs"] == 0, told["effects"]
     # one to start the game and one a piece
     assert fake.keys.count("Space") <= told["pieces"] + 2
+
+
+# ---- PLAN §34 F2: what a gesture did is waited for, how sideways swipes are taken is learned, and a stack other
+# than expected is read again and played on
+
+class Followed(Touched):
+    """A game played by touch in which the piece goes as far as the finger does: a column every CELL pixels of a
+    level swipe past a little slack. `deaf`: a level swipe shorter than so many pixels or quicker than so many
+    milliseconds is taken for nothing (and then a swipe moves one column whatever its length). `late`: what a
+    gesture does is shown so many captures after it was made."""
+
+    def __init__(self, follows=True, deaf=(0, 0), late=0, **kwargs):
+        super().__init__(**kwargs)
+        self.follows, self.deaf, self.late, self.queue = follows, deaf, late, []
+
+    async def _do(self, made):
+        if made[0] == "tap":
+            await Falling.key(self, "Space" if not self.playing else self.turn)
+            return
+        _, x0, y0, x1, y1, ms = made
+        if abs(y1 - y0) > abs(x1 - x0):
+            await Falling.key(self, "Space")
+            return
+        if abs(x1 - x0) < self.deaf[0] or ms < self.deaf[1]:
+            return
+        for _ in range(int((abs(x1 - x0) - 4) // CELL) if self.follows else 1):
+            await Falling.key(self, "ArrowRight" if x1 > x0 else "ArrowLeft")
+
+    async def _made(self, made):
+        self.gestures.append(made)
+        if self.late and self.playing:
+            self.queue.append([self.late, made])
+        else:
+            await self._do(made)
+
+    async def tap(self, x, y, duration_ms):
+        await self._made(("tap", x, y))
+
+    async def drag(self, x0, y0, x1, y1, duration_ms):
+        await self._made(("drag", x0, y0, x1, y1, duration_ms))
+
+    async def capture(self, region=None):
+        for waiting in self.queue:
+            waiting[0] -= 1
+        due, self.queue = [made for left, made in self.queue if left <= 0], [w for w in self.queue if w[0] > 0]
+        for made in due:
+            await self._do(made)
+        return await super().capture(region)
+
+
+def _level_swipes(fake):
+    return [made for made in fake.gestures if made[0] == "drag" and abs(made[3] - made[1]) > abs(made[4] - made[2])]
+
+
+async def test_a_game_in_which_the_piece_follows_the_finger_is_swiped_once_for_all_the_cells_to_go(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    store = Store(tmp_path)
+    fake, guide = Followed(every=10), Guide(TOUCHED)
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60), store=store)
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    assert told["reach"]["mode"] == realtime.DRAG and 0.7 * CELL <= told["reach"]["px"] <= 1.5 * CELL, told["reach"]
+    assert told["effects"]["unknown"] == 0 and told["resyncs"] == 0
+    # swipes of more lengths than the model's one were sent, and they stay inside the screen
+    swipes = _level_swipes(fake)
+    assert len({abs(made[3] - made[1]) for made in swipes}) > 1
+    assert all(0 <= made[1] < SIZE[0] and 0 <= made[3] < SIZE[0] for made in swipes)
+    # what was learned is kept with the model's words, and the next game goes by it from its first piece
+    kept = store.falling("https://falling.example/")["setup"]["reach"]
+    assert kept["mode"] == realtime.DRAG
+    fake, again = Followed(every=10), Guide()
+    run, made = await play(fake, again, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached" and again.asked == []
+    assert made["realtime"]["reach"]["mode"] == realtime.DRAG
+    # about a swipe a piece and no more
+    assert len(_level_swipes(fake)) <= 2 * made["realtime"]["pieces"]
+
+
+async def test_a_game_that_takes_short_quick_swipes_for_nothing_is_swiped_longer_and_slower(monkeypatch):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    monkeypatch.setattr(realtime, "WAIT_S", 0.1)
+    fake, guide = Followed(follows=False, deaf=(30, 140), every=12), Guide(TOUCHED)
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60))
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    assert told["reach"]["px"] >= 30 and told["reach"]["ms"] >= 140, told["reach"]
+    # a long swipe was seen to move one cell: a cell a swipe from then on
+    assert told["reach"]["mode"] == realtime.STEP
+
+
+async def test_a_gesture_shown_late_is_waited_for_and_not_sent_again(monkeypatch):
+    # (2026-11-21, a game on a phone: a tap that turns the piece showed half a second later, two looks on; it was
+    # sent again at the look between, the piece turned twice, and the drop sent then went to the next piece)
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    fake, guide = Followed(follows=False, late=3, every=14), Guide(TOUCHED)
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60))
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    assert told["effects"]["confirmed"] == told["pieces"] and told["resyncs"] == 0, told["effects"]
+    assert told["wait_ms"] is not None
+
+
+class Odd(Falling):
+    """A game whose rules are a little other than the code's: each piece that comes to lie leaves one block more
+    on the lowest column."""
+
+    def _spawn(self):
+        if self.count:
+            high = {c: min((r for r, col in self.stack if col == c), default=ROWS) for c in range(COLS)}
+            c = max(high, key=high.get)
+            if high[c] > 4:
+                self.stack[(high[c] - 1, c)] = (120, 120, 120)
+        super()._spawn()
+
+
+async def test_a_game_whose_stack_is_never_what_was_expected_is_read_again_each_piece_and_played_on(monkeypatch):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    fake, guide = Odd(every=4), Guide()
+    run, made = await play(fake, guide, None, goal=GoalSpec("actions", 12), budget=Budget(3000, 1, 60))
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    # far more readings than the well was once let go after, and not one question besides the first
+    assert told["resyncs"] > realtime.RESYNCS_MOST and [s["why"] for s in told["stretches"]] == ["done"]
+    assert guide.asked == ["identify", "setup"]
+
+
+async def test_a_well_in_which_no_piece_can_be_told_is_let_go(monkeypatch):
+    class Noise(Falling):
+        """Nothing falls: blocks come and go all over the well."""
+        async def capture(self, region=None):
+            import random
+            self.captures += 1
+            self.playing, self.piece = False, None
+            dice = random.Random(self.captures // 2)
+            self.stack = {(dice.randrange(4, ROWS), dice.randrange(COLS)): COLOURS[0] for _ in range(14)}
+            return await super().capture(region)
+
+    monkeypatch.setattr(realtime, "SETTLE_S", 0.05)
+    fake, guide = Noise(started=True), Guide({**ANSWER, "start": None})
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 30))
+    assert made["realtime"]["stretches"][0]["why"] == "well_unread", made["realtime"]["stretches"]
+
+
+class Entering(Falling):
+    """Each piece comes in from above the well a row at a time: its bottom row is all that shows at first."""
+
+    def __init__(self, **kwargs):
+        self.early = 0
+        super().__init__(**kwargs)
+
+    def _spawn(self):
+        super()._spawn()
+        if self.piece:
+            high = max(r for r, _ in self.piece)
+            self.piece = [(r - high, c) for r, c in self.piece]
+
+    async def key(self, key, hold_ms=0):
+        if self.playing and self.piece and key != "Space" and self.count > 1 and min(r for r, _ in self.piece) < 0:
+            self.early += 1
+        await super().key(key, hold_ms)
+
+
+async def test_a_piece_still_coming_in_from_above_is_not_played_before_it_is_whole(monkeypatch):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    fake, guide = Entering(every=6), Guide()
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "goal_reached", (run.record, made["realtime"])
+    assert fake.early == 0 and made["realtime"]["effects"]["unknown"] == 0
+
+
+def test_what_swipes_did_is_held_against_what_was_sent():
+    setup = understood(TOUCHED, list(SIZE), TOUCH)
+    loop = realtime.Loop(None, setup, send=None, check=None)
+    # nothing moved: longer and slower
+    loop._reached({"way": 1, "times": 1, "px": 24, "cells": 1}, 0, False)
+    assert loop.side["px"] == 36 and loop.side["ms"] == 150 and loop.side["mode"] is None
+    # taken for a tap (the piece turned and stayed): the same
+    loop._reached({"way": 1, "times": 1, "px": 36, "cells": 1}, 0, True)
+    assert loop.side["px"] == 54
+    # one long swipe took the piece three cells: so many pixels a cell
+    loop._reached({"way": 1, "times": 1, "px": 60, "cells": 3}, 3, False)
+    assert loop.side["mode"] == realtime.DRAG and loop.side["px"] == 20
+    assert realtime.learned(loop)["reach"] == {"mode": "drag", "px": 20.0, "ms": 225}
+    # kept and read back; something else kept there is not taken
+    assert realtime._reach({"mode": "drag", "px": 20.0, "ms": 225}) == {"mode": "drag", "px": 20.0, "ms": 225}
+    assert realtime._reach({"mode": "fling", "px": 20.0, "ms": 225}) is None and realtime._reach("drag") is None

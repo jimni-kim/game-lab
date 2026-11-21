@@ -66,6 +66,26 @@ DOWN_BATCH = 4
 # cleared are drawn first) before it is taken from the screen as it is; so often in a row with no piece placed
 # between, the well is not being read
 SETTLE_S, RESYNCS_MOST = 1.2, 4
+# (2026-11-21, PLAN §34 F2) the stack is taken from the screen sooner than that once two looks in a row read the
+# same below the piece; and a stack other than expected does not end the game while a piece can still be told from
+# it: the well is let go only after RESYNCS_MOST such readings with no piece told between, or this many with no
+# piece seen to move
+BARREN_MOST = 3 * RESYNCS_MOST
+# a piece with fewer cells than the game's pieces have had, at the well's top row, is still coming in from above:
+# it is planned for once it is whole, or has stood so for this long
+COMING_S = 1.5
+# what a gesture did is judged once the piece shows it (and then stands the same two looks in a row), or after this
+# long with nothing shown: a game on a phone showed a tap half a second late, and one sent again meanwhile turned
+# the piece twice. The wait follows how late the game was seen to show its inputs (twice that, within these)
+WAIT_S, WAIT_LEAST, WAIT_MOST, LAGS_KEPT = 0.8, 0.4, 1.2, 8
+# how a sideways swipe is taken, learned from what the first ones did: one cell a swipe whatever its length
+# (STEP), or as many cells as the finger went (DRAG, so many pixels a cell). One that moved nothing (or was taken
+# for a tap) is made this much longer and slower, up to so many cells and milliseconds; a way once found is given
+# up after so many swipes in a row that moved nothing
+STEP, DRAG = "step", "drag"
+REACH_GROW, REACH_CELLS_MOST, REACH_MS_MOST, MISSES_MOST = 1.5, 3.0, 500, 3
+# a swipe ends this far inside the screen's edge
+EDGE = 12
 # no piece seen for this long: nothing falls any more
 IDLE_S = 4.0
 # after the game is started, its first piece is waited for this long
@@ -423,8 +443,29 @@ def record(setup: dict[str, Any], well: "Well") -> dict[str, Any]:
 
 def learned(loop: "Loop") -> dict[str, Any]:
     """What the loop found out of the game by playing it, kept with the model's words."""
+    side = loop.side
     return {"hold_ms": loop.hold, "shadow": loop.shadow, "turning": loop.turning,
-            "dropping": loop.dropping if loop.dropping in ("found", "none") else None}
+            "dropping": loop.dropping if loop.dropping in ("found", "none") else None,
+            "reach": {"mode": side["mode"], "px": round(side["px"], 1), "ms": round(side["ms"])}
+            if side is not None and side["mode"] else None}
+
+
+def _level(token: Any) -> tuple[int, int, int, int] | None:
+    """A level swipe as where it starts, how far it goes (to the right when more than 0) and how long it takes;
+    None for any other control."""
+    found = SWIPE_TOKEN.fullmatch(token) if isinstance(token, str) else None
+    if found is None:
+        return None
+    x0, y0, x1, y1, ms = map(int, found.groups())
+    return (x0, y0, x1 - x0, ms) if abs(x1 - x0) > abs(y1 - y0) else None
+
+
+def _reach(kept: Any) -> dict[str, Any] | None:
+    """What was learned of a game's sideways swipes, as it was kept, or None when it is not that."""
+    if not (isinstance(kept, dict) and kept.get("mode") in (STEP, DRAG) and type(kept.get("px")) in (int, float)
+            and type(kept.get("ms")) in (int, float) and kept["px"] >= 1 and SWIPE_MS[0] <= kept["ms"] <= SWIPE_MS[1]):
+        return None
+    return {"mode": kept["mode"], "px": float(kept["px"]), "ms": round(kept["ms"])}
 
 
 def again(kept: Any, png: bytes, screen: list[int], kinds: frozenset[str]) -> dict[str, Any] | None:
@@ -456,6 +497,7 @@ def again(kept: Any, png: bytes, screen: list[int], kinds: frozenset[str]) -> di
     if said["dropping"] == "found" and not said["keys"]["drop"]:
         said["dropping"] = None
     said["turning"] = setup.get("turning") if setup.get("turning") in ("found", "none") else None
+    said["reach"] = _reach(setup.get("reach"))
     return said
 
 
@@ -500,6 +542,18 @@ class Loop:
         self.turning: str | None = setup.get("turning")
         self.turners = [key for key in dict.fromkeys([self.keys["rotate"], *(also.get("rotate") or [])]) if key]
         self.turn_fails = 0
+        # the sideways swipes of a game played by touch, as they are sent: where each starts, how long one is (the
+        # model's first; in a game that takes a swipe by its length, the pixels a cell), how long it takes, and
+        # which of the two ways the game takes them (None until seen)
+        self.side: dict[str, Any] | None = None
+        left, right = _level(self.keys["left"]), _level(self.keys["right"])
+        if left and right and left[2] < 0 < right[2]:
+            kept = _reach(setup.get("reach")) or {"mode": None, "px": float(right[2]), "ms": right[3]}
+            self.side = {**kept, "from": {"left": left[:2], "right": right[:2]}, "misses": 0}
+        self.screen: list[int] | None = None
+        self.wait, self.lags = WAIT_S, collections.deque(maxlen=LAGS_KEPT)
+        # how many cells the pieces that came to lie had
+        self.sizes: collections.Counter = collections.Counter()
         self.sent_at = 0.0
         self.stack: Cells = Cells()
         self.lines = self.pieces = self.resyncs = self.ticks = 0
@@ -549,6 +603,8 @@ class Loop:
         false: the game is going already, whatever was said of starting it (it is taken up again)."""
         self.well.learn(first)
         self.stack = Cells()
+        if self.side is not None:
+            self.screen = list(await self.surface.size())
         if start and self.setup["start"] is not None:
             await self.send(self.setup["start"])
             # the screen the start was said of may be dimmed under a notice; and a game may begin with rows
@@ -569,7 +625,13 @@ class Loop:
         last: Cells | None = None
         began = idle_since = time.monotonic()
         odd_since: float | None = None
-        turned = shifted = sent = streak = covered = 0
+        # the stack as the look before read it, while it is not what was expected
+        odd_last: Cells | None = None
+        turned = shifted = sent = streak = barren = covered = 0
+        # a gesture whose effect is waited for: when it was sent, how the piece stood then, and for a sideways
+        # one what was sent; and whether the piece now planned for was seen to fall
+        waiting: dict[str, Any] | None = None
+        moved = False
         # what the last key was to change, as it stood then: a key after which it stands the same did nothing
         pushed: int | None = None
         spun: Cells | None = None
@@ -591,7 +653,7 @@ class Loop:
                 return "covered"
             extra, missing = filled - self.stack, self.stack - filled
             if not missing and not extra:
-                odd_since = None
+                odd_since = odd_last = None
                 if now - idle_since > (IDLE_S if self.pieces else FIRST_S):
                     self._dump("idle")
                     return "stopped_falling" if self.pieces else "no_piece"
@@ -600,7 +662,7 @@ class Loop:
             piece = None if missing else piece_in(self.stack, extra, rows, cols, plan["turns"] if plan else None)
             if piece is not None:
                 # a piece on its way over the stack as the code knows it (with its shadow, where a game draws one)
-                odd_since = None
+                odd_since = odd_last = None
                 if piece != still[0]:
                     still = (piece, now)
                 elif now - still[1] > STILL_S and sent and piece != fall(self.stack, piece, rows, cols):
@@ -610,6 +672,12 @@ class Loop:
                 self.shadow = self.shadow or piece != extra
                 shape = normal(piece)
                 if plan is None or shape not in plan["turns"]:
+                    usual = self.sizes.most_common(1)
+                    if usual and len(piece) < usual[0][0] and piece == extra and min(r for r, _ in piece) == 0 \
+                            and now - still[1] < COMING_S:
+                        # part of it is still above the well: what is sent now would go to a piece not yet seen
+                        self._note(event="coming")
+                        continue
                     found = best(self.stack, piece, rows, cols)
                     if found is None:
                         return "stopped_falling"
@@ -617,7 +685,12 @@ class Loop:
                     self._note(event="plan", piece=_listed(piece), column=found["column"],
                                shape=_listed(found["shape"]))
                     began, turned, shifted, sent, pushed, spun = now, 0, 0, 0, None, None
-                    dropped = None
+                    dropped = waiting = None
+                    streak, moved = 0, False
+                elif last is not None and normal(last) == shape and min(c for _, c in last) == min(c for _, c in piece) \
+                        and min(r for r, _ in last) < min(r for r, _ in piece):
+                    # it went down as it stood: something does fall here
+                    moved = True
                 column = min(c for _, c in piece)
                 if tried is not None:
                     if self.ticks - tried[2] <= DROP_LOOKS:
@@ -630,6 +703,22 @@ class Loop:
                         continue
                     if piece != tried[1]:
                         self.dropping, tried = (None if self.drops else "none"), None
+                if waiting is not None:
+                    if (shape, column) == waiting["pose"]:
+                        if now - waiting["at"] < self.wait:
+                            last = piece
+                            continue
+                    elif (shape, column) != waiting.get("seen"):
+                        # the gesture shows: looked at once more, in case more of it is still to show
+                        waiting["seen"], waiting["shown"] = (shape, column), now
+                        last = piece
+                        continue
+                    else:
+                        self._late(waiting["shown"] - waiting["at"])
+                    if waiting["shift"] is not None:
+                        self._reached(waiting["shift"], (column - waiting["pose"][1]) * waiting["shift"]["way"],
+                                      shape != waiting["pose"][0])
+                    waiting = None
                 stuck = ([self.keys["rotate"]] if spun == shape else []) + \
                     ([self.keys["left"], self.keys["right"]] if pushed == column else [])
                 if stuck and not self.hold and any(gesture(control) is None for control in stuck if control):
@@ -651,6 +740,8 @@ class Loop:
                     turned += 1
                     spun_now = shape
                     sent += await self._press(self.keys["rotate"])
+                    if gesture(self.keys["rotate"]) is not None:
+                        waiting = {"at": time.monotonic(), "pose": (shape, column), "shift": None}
                 elif shape != plan["shape"]:
                     # the game does not turn it further (a wall, no such key): the shape it has is placed
                     kept = best(self.stack, piece, rows, cols, only=shape)
@@ -661,10 +752,15 @@ class Loop:
                     # (a piece that did not move since it was last asked sideways is against something)
                     shifted = shifted + 1 if pushed == column else 0
                     pushed_now = column
-                    sent += await self._press(self.keys["left" if column > plan["column"] else "right"],
-                                              abs(column - plan["column"]))
+                    count, swiped = await self._shift("left" if column > plan["column"] else "right",
+                                                      abs(column - plan["column"]))
+                    sent += count
+                    if swiped is not None:
+                        waiting = {"at": time.monotonic(), "pose": (shape, column), "shift": swiped}
                 elif self.keys["drop"]:
-                    if dropped is None or piece != fall(self.stack, piece, rows, cols) and now - dropped > DROP_AGAIN_S:
+                    # (a gesture is shown later than a key: it is given longer before it is sent again)
+                    again = DROP_AGAIN_S if gesture(self.keys["drop"]) is None else max(DROP_AGAIN_S, 2 * self.wait)
+                    if dropped is None or piece != fall(self.stack, piece, rows, cols) and now - dropped > again:
                         dropped = now
                         sent += await self._press(self.keys["drop"])
                 else:
@@ -682,7 +778,7 @@ class Loop:
                 last = piece
                 continue
             # the stack is not what it was: the piece came to lie (and lines may have gone)
-            lain = None
+            lain, clearing = None, False
             # where it may lie: as planned, straight down from where it was last seen, or dropped anywhere else
             # (the game moved it on while the code was not looking: its lines count all the same)
             for effect, cells in (("confirmed", plan["placed"] if plan else None),
@@ -695,24 +791,41 @@ class Loop:
                 if after <= filled and (not rest or piece_in(after, rest, rows, cols) is not None):
                     lain = (effect, cells, after, lines)
                     break
+                if lines:
+                    # it lies there with its full rows still drawn (a game shows them going): waited for
+                    full = self.stack | cells
+                    rest = filled - full
+                    clearing = clearing or full <= filled and (not rest or piece_in(full, rest, rows, cols) is not None)
             if lain is None:
+                # neither. The game may be drawing something that passes (rows going, a piece's trail): the stack
+                # is taken from the screen, but for what hangs at its top, once two looks in a row read it the same
+                standing = self._standing(filled)
                 odd_since = odd_since or now
-                if now - odd_since < SETTLE_S:
+                if now - odd_since < SETTLE_S and (clearing or standing != odd_last):
+                    odd_last = None if clearing else standing
                     continue
-                # neither: the stack is taken from the screen as it stands, but for what hangs at its top
-                before, self.stack = self.stack, self._standing(filled)
+                before, self.stack = self.stack, standing
                 self.resyncs += 1
                 streak += 1
+                barren += 1
                 self._note(event="resync", stack=len(self.stack))
                 self._dump("resync")
-                if plan is not None or last is not None:
-                    # a piece that came to lie adds its cells, and each row gone takes a row's: what went is counted
-                    gone = len(before) + len(last or plan["shape"]) - len(self.stack)
-                    lines = gone // cols if gone > 0 and gone % cols == 0 and gone // cols <= PIECE_MOST else 0
-                    self.lines += lines
-                    self._placed("unknown", plan, lines, sent, now - began)
-                plan = last = odd_since = tried = None
-                if streak >= RESYNCS_MOST:
+                # the piece is on its way still when what hangs over the stack now is it, no higher than it was
+                hangs = top_piece(filled) if standing != filled else None
+                came = (plan is not None or last is not None) and not (
+                    last is not None and hangs is not None and normal(hangs) == normal(last)
+                    and min(c for _, c in hangs) == min(c for _, c in last)
+                    and min(r for r, _ in hangs) >= min(r for r, _ in last))
+                # a piece that came to lie adds its cells, and each row gone takes a row's: what went is counted
+                gone = len(before) + (len(last or plan["shape"]) if came else 0) - len(self.stack)
+                lines = gone // cols if gone > 0 and gone % cols == 0 and gone // cols <= PIECE_MOST else 0
+                self.lines += lines
+                if came:
+                    self._placed("unknown", plan, lines, sent, now - began, last)
+                    barren = 0 if moved else barren
+                plan = last = odd_since = odd_last = tried = waiting = None
+                if streak >= RESYNCS_MOST or barren >= BARREN_MOST:
+                    # no piece could be told from what the well shows, so often in a row: it is not being read
                     return "well_unread"
                 continue
             effect, _, after, lines = lain
@@ -726,9 +839,9 @@ class Loop:
             elif tried is not None and self.dropping == "tried":
                 self.dropping = None if self.drops else "none"
             tried = None
-            self.stack, self.lines, odd_since, streak = after, self.lines + lines, None, 0
-            self._placed(effect, plan, lines, sent, now - began)
-            plan = last = None
+            self.stack, self.lines, odd_since, odd_last, streak, barren = after, self.lines + lines, None, None, 0, 0
+            self._placed(effect, plan, lines, sent, now - began, last)
+            plan = last = waiting = None
 
     def _covered(self, filled: Cells) -> bool:
         """Whether the well's top quarter is more than half filled: no game leaves it so and goes on."""
@@ -749,7 +862,59 @@ class Loop:
                     return stack - copy
         return stack
 
-    def _placed(self, effect: str, plan: dict[str, Any] | None, lines: int, sent: int, seconds: float) -> None:
+    def _late(self, seconds: float) -> None:
+        """A gesture was shown so long after it was sent: the next are waited for accordingly."""
+        self.lags.append(seconds)
+        self.wait = min(WAIT_MOST, max(WAIT_LEAST, 2 * max(self.lags)))
+
+    async def _shift(self, way: str, cells: int) -> tuple[int, dict[str, Any] | None]:
+        """The piece asked `cells` columns to the left or right: how many inputs went out, and for swipes what
+        they were (to be held against what the piece then did, `_reached`). Keys and buttons go a cell each. A
+        swipe goes a cell each too in a game seen to take it so; else one swipe as long as the cells asked (the
+        way to find out how the game takes it, and the way to go on where the piece follows the finger)."""
+        side = self.side
+        if side is None or self.screen is None:
+            return await self._press(self.keys[way], cells), None
+        (x, y), sign = side["from"][way], (-1 if way == "left" else 1)
+        times = min(cells, GESTURES_MOST) if side["mode"] == STEP else 1
+        over = 1 if side["mode"] == STEP else cells
+        length = min(side["px"] * over, self.screen[0] - 2 * EDGE)
+        ms = min(SWIPE_MS[1], round(side["ms"] * (1 + (over - 1) / 2)))
+        # kept inside the screen: begun further back when it would end past the edge
+        x = min(max(x, EDGE + (length if sign < 0 else 0)), self.screen[0] - EDGE - (length if sign > 0 else 0))
+        count = await self._press(f"swipe:{round(x)},{y},{round(x + sign * length)},{y},{ms}", times)
+        return count, {"way": sign, "times": times, "px": length, "cells": cells}
+
+    def _reached(self, swiped: dict[str, Any], moved: int, turned: bool) -> None:
+        """What sideways swipes did, held against what was sent: `moved` cells the way asked (less than 1: none,
+        or the other way), `turned` when the piece then had another shape (a swipe taken for a tap)."""
+        side = self.side
+        cell = (self.well.box[2] - self.well.box[0]) / self.well.cols
+        if moved <= 0:
+            side["misses"] += 1
+            if side["mode"] is None or side["misses"] >= MISSES_MOST:
+                # too short or too quick for this game: longer and slower, and how it is taken is open again
+                side.update(mode=None, misses=0, px=min(side["px"] * REACH_GROW, REACH_CELLS_MOST * cell),
+                            ms=min(round(side["ms"] * REACH_GROW), REACH_MS_MOST))
+            return
+        if turned:
+            return
+        side["misses"] = 0
+        if moved > swiped["times"] or side["mode"] == DRAG:
+            # more cells than swipes: the piece goes as far as the finger does, so many pixels a cell
+            each = swiped["px"] * swiped["times"] / moved
+            if side["mode"] == DRAG:
+                each = (side["px"] + min(max(each, side["px"] / REACH_GROW), side["px"] * REACH_GROW)) / 2
+            if 0.3 * cell <= each <= REACH_CELLS_MOST * cell:
+                side.update(mode=DRAG, px=each)
+        elif swiped["times"] == 1 and swiped["cells"] >= 2 and side["mode"] is None:
+            # one long swipe, one cell: a cell a swipe whatever its length
+            side["mode"] = STEP
+
+    def _placed(self, effect: str, plan: dict[str, Any] | None, lines: int, sent: int, seconds: float,
+                piece: Cells | None = None) -> None:
+        if piece is not None:
+            self.sizes[len(piece)] += 1
         self.pieces += 1
         self.effects[effect] += 1
         self.piece_s.append(seconds)
@@ -771,6 +936,8 @@ class Loop:
             else:
                 await self.send({"kind": "key", "key": key})
         self.sent_at = time.monotonic()
+        if self.trace:
+            self.trace[-1].setdefault("sent", []).append(key if times == 1 else f"{key} x{times}")
         return times
 
     def summary(self) -> dict[str, Any]:
@@ -779,6 +946,9 @@ class Loop:
         lasted = time.monotonic() - self.started if self.started else 0.0
         return {"well": self.well.to_json(), "keys": self.keys, "start": self.setup["start"],
                 "hold_ms": self.hold, "shadow": self.shadow, "dropping": self.dropping, "turning": self.turning,
+                "reach": {"mode": self.side["mode"], "px": round(self.side["px"], 1), "ms": round(self.side["ms"])}
+                if self.side is not None else None,
+                "wait_ms": round(self.wait * 1000) if self.lags else None,
                 "lines": self.lines, "pieces": self.pieces, "effects": dict(self.effects), "resyncs": self.resyncs,
                 "ticks": self.ticks, "ticks_per_s": round(self.ticks / lasted, 1) if lasted else None,
                 "capture_ms": mean_ms(self.capture_s), "read_ms": mean_ms(self.read_s),

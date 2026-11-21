@@ -2397,7 +2397,9 @@ class Agent:
             # other game: it ends the game at a result, puts away what stands over the well, and once it names
             # the screen a board in play the loop takes the well again (`_resume`, `_falling_again`)
             log.info("the falling game was let go (%s): the model looks at the screen", why)
-            self.falling = {"setup": setup, "proven": bool(self.confirmed), "well": loop.well}
+            # (what the loop learned of the game as it played goes with it: how its swipes are taken, its keys)
+            self.falling = {"setup": {**setup, **realtime.learned(loop)}, "proven": bool(self.confirmed),
+                            "well": loop.well}
             if pieces:
                 # the model was not there: it is told a level was played and how it stopped, so that a map or a
                 # menu standing where the level was is read as that level's end, not as a level to be started
