@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import json
 import re
 import statistics
@@ -82,8 +83,23 @@ DROP_TRIED, TURN_TRIED, TRIED_MOST = ("Space",), ("ArrowUp", "x", "z"), 4
 # it is tried only on a piece with this many rows still to fall, the piece must lie as planned within this many
 # looks after, and one that has not moved at all this long after was stopped by the key
 DROP_ROWS, DROP_LOOKS, DROP_UNDO_S = 4, 2, 1.5
+# a piece is dropped once: one seen lying where it was dropped to is waited for (the game has taken it, and what is
+# sent now goes to the piece coming next, which may not be on the screen yet). One still in the air this long after
+# was not dropped by what was sent, and is dropped again
+DROP_AGAIN_S = 0.8
 # a look is taken no sooner than this after a key, so that it shows what the key did
 SHOWN_S = 0.04
+# a well whose top quarter is more than half filled, this many looks in a row, shows no game: something lies over
+# it (a notice, a result), or the game is over
+COVERED_LOOKS = 2
+# a piece that stands as it stood for this long, whatever was sent to it, is not being played: the game waits for
+# something else (a notice the well shows through, a tutorial that takes one input only, a pause)
+STILL_S = 3.0
+# what is kept for looking at afterwards: the last captures of the well and what was made of each look, written
+# out where the well was read otherwise than the code expected (at most so often a game)
+FRAMES_KEPT, TICKS_KEPT, DUMPS_MOST = 12, 240, 5
+# what makes rows vanish in the games the loop's rules are of
+ROWS_CLEAR = "rows"
 RT = "RT"
 
 Cells = frozenset
@@ -149,6 +165,17 @@ def best(stack: Cells, piece: Cells, rows: int, cols: int, only: Cells | None = 
             if found is None or score > found["score"]:
                 found = {"shape": shape, "column": column, "placed": placed, "after": after, "lines": lines, "score": score}
     return found
+
+
+def drops(stack: Cells, piece: Cells, rows: int, cols: int) -> list[Cells]:
+    """Every place the piece may come to lie when it is dropped straight down from the top, in any turn of it."""
+    out = []
+    for shape in turns(piece):
+        for column in range(cols - max(c for _, c in shape)):
+            placed = fall(stack, Cells((r, c + column) for r, c in shape), rows, cols)
+            if placed is not None and placed not in out:
+                out.append(placed)
+    return out
 
 
 def whole(cells: Cells) -> bool:
@@ -372,6 +399,10 @@ def understood(answer: Any, screen: list[int], kinds: frozenset[str]) -> dict[st
         else:
             start = None
     situation = answer["situation"][:300] if isinstance(answer.get("situation"), str) else ""
+    # what vanishes in this game: full rows (the rules the loop plays by), or what the model said instead
+    clears = answer.get("clears")
+    clears = ROWS_CLEAR if not isinstance(clears, str) or not clears.strip() or clears.strip().lower() == ROWS_CLEAR \
+        else clears.strip()[:300]
     more = answer.get("also") if isinstance(answer.get("also"), dict) else {}
     also = {name: [control for control in dict.fromkeys(_control(value, screen, kinds) for value in
                                                         (more.get(name) if isinstance(more.get(name), list) else []))
@@ -381,7 +412,7 @@ def understood(answer: Any, screen: list[int], kinds: frozenset[str]) -> dict[st
         # (a game played by touch alone has no keys of its own to try: only what the model gave)
         also = {"rotate": also["rotate"] or list(TURN_TRIED), "drop": also["drop"] or list(DROP_TRIED)}
     return {"box": [left, top, right, bottom], "rows": rows, "cols": cols, "keys": keys, "start": start,
-            "situation": situation, "also": also}
+            "situation": situation, "also": also, "clears": clears}
 
 
 def record(setup: dict[str, Any], well: "Well") -> dict[str, Any]:
@@ -407,7 +438,7 @@ def again(kept: Any, png: bytes, screen: list[int], kinds: frozenset[str]) -> di
         return None
     said = understood({"board": setup.get("box"), "columns": setup.get("cols"), "rows": setup.get("rows"),
                        "keys": setup.get("keys"), "start": setup.get("start"), "situation": setup.get("situation"),
-                       "also": setup.get("also")},
+                       "also": setup.get("also"), "clears": setup.get("clears")},
                       screen, kinds)
     if said is None:
         return None
@@ -473,11 +504,15 @@ class Loop:
         self.stack: Cells = Cells()
         self.lines = self.pieces = self.resyncs = self.ticks = 0
         # how the pieces came to lie: as planned, straight down from where they were last seen, or unknown
-        self.effects = {"confirmed": 0, "inconsistent": 0, "unknown": 0}
+        self.effects = {"confirmed": 0, "inconsistent": 0, "elsewhere": 0, "unknown": 0}
         self.capture_s: list[float] = []
         self.read_s: list[float] = []
         self.piece_s: list[float] = []
         self.started = 0.0
+        # kept for looking at afterwards (`_dump`): the last captures, a line a look, and what was written out
+        self.frames: collections.deque = collections.deque(maxlen=FRAMES_KEPT)
+        self.trace: collections.deque = collections.deque(maxlen=TICKS_KEPT)
+        self.dumps: list[dict[str, Any]] = []
 
     async def look(self) -> Cells:
         self.check()
@@ -493,13 +528,28 @@ class Loop:
         self.capture_s.append(took - at)
         self.read_s.append(time.monotonic() - took)
         self.ticks += 1
+        self.frames.append((self.ticks, png))
+        self.trace.append({"tick": self.ticks, "t": round(took - self.started, 3), "filled": _listed(filled),
+                           "stack": len(self.stack)})
         return filled
 
-    async def begin(self, first: bytes) -> None:
-        """The empty cell's look learned from the first screen, and the game started when it has not."""
+    def _note(self, **what: Any) -> None:
+        """Said of the look just taken: what was made of it."""
+        if self.trace:
+            self.trace[-1].update(what)
+
+    def _dump(self, why: str) -> None:
+        """The last captures and looks are set aside as they are, with why."""
+        if len(self.dumps) < DUMPS_MOST:
+            self.dumps.append({"why": why, "tick": self.ticks, "frames": list(self.frames),
+                               "looks": [dict(row) for row in self.trace][-4 * FRAMES_KEPT:]})
+
+    async def begin(self, first: bytes, start: bool = True) -> None:
+        """The empty cell's look learned from the first screen, and the game started when it has not. `start`
+        false: the game is going already, whatever was said of starting it (it is taken up again)."""
         self.well.learn(first)
         self.stack = Cells()
-        if self.setup["start"] is not None:
+        if start and self.setup["start"] is not None:
             await self.send(self.setup["start"])
             # the screen the start was said of may be dimmed under a notice; and a game may begin with rows
             # already stacked: both are taken from the screen once it shows the game
@@ -512,27 +562,38 @@ class Loop:
 
     async def play(self, done: Callable[["Loop"], bool]) -> str:
         """Pieces placed until `done` says so (returns "done"), nothing falls any more ("stopped_falling", or
-        "no_piece" when none ever did), or the well cannot be read ("well_unread"). A budget ends it by `check`."""
+        "no_piece" when none ever did), the well cannot be read ("well_unread"), or it shows no game any more
+        ("covered"), or its piece neither falls nor takes any input ("piece_still"). A budget ends it by `check`."""
         rows, cols = self.well.rows, self.well.cols
         plan: dict[str, Any] | None = None
         last: Cells | None = None
         began = idle_since = time.monotonic()
         odd_since: float | None = None
-        turned = shifted = sent = streak = 0
+        turned = shifted = sent = streak = covered = 0
         # what the last key was to change, as it stood then: a key after which it stands the same did nothing
         pushed: int | None = None
         spun: Cells | None = None
         # a key tried for dropping a piece at once: when, and where the piece stood then
         tried: tuple[float, Cells, int, str] | None = None
+        # the piece as it last stood otherwise than now, and since when it stands so
+        still: tuple[Cells | None, float] = (None, began)
+        # when the piece now planned for was dropped at once
+        dropped: float | None = None
         while True:
             if done(self):
                 return "done"
             filled = await self.look()
             now = time.monotonic()
+            covered = covered + 1 if self._covered(filled) else 0
+            if covered >= COVERED_LOOKS:
+                self._note(event="covered")
+                self._dump("covered")
+                return "covered"
             extra, missing = filled - self.stack, self.stack - filled
             if not missing and not extra:
                 odd_since = None
                 if now - idle_since > (IDLE_S if self.pieces else FIRST_S):
+                    self._dump("idle")
                     return "stopped_falling" if self.pieces else "no_piece"
                 continue
             idle_since = now
@@ -540,6 +601,12 @@ class Loop:
             if piece is not None:
                 # a piece on its way over the stack as the code knows it (with its shadow, where a game draws one)
                 odd_since = None
+                if piece != still[0]:
+                    still = (piece, now)
+                elif now - still[1] > STILL_S and sent and piece != fall(self.stack, piece, rows, cols):
+                    self._note(event="piece_still")
+                    self._dump("piece_still")
+                    return "piece_still"
                 self.shadow = self.shadow or piece != extra
                 shape = normal(piece)
                 if plan is None or shape not in plan["turns"]:
@@ -547,7 +614,10 @@ class Loop:
                     if found is None:
                         return "stopped_falling"
                     plan = {**found, "turns": turns(piece)}
+                    self._note(event="plan", piece=_listed(piece), column=found["column"],
+                               shape=_listed(found["shape"]))
                     began, turned, shifted, sent, pushed, spun = now, 0, 0, 0, None, None
+                    dropped = None
                 column = min(c for _, c in piece)
                 if tried is not None:
                     if self.ticks - tried[2] <= DROP_LOOKS:
@@ -594,7 +664,9 @@ class Loop:
                     sent += await self._press(self.keys["left" if column > plan["column"] else "right"],
                                               abs(column - plan["column"]))
                 elif self.keys["drop"]:
-                    sent += await self._press(self.keys["drop"])
+                    if dropped is None or piece != fall(self.stack, piece, rows, cols) and now - dropped > DROP_AGAIN_S:
+                        dropped = now
+                        sent += await self._press(self.keys["drop"])
                 else:
                     lies = fall(self.stack, piece, rows, cols)
                     below = (min(r for r, _ in lies) - min(r for r, _ in piece)) if lies else 0
@@ -611,8 +683,11 @@ class Loop:
                 continue
             # the stack is not what it was: the piece came to lie (and lines may have gone)
             lain = None
+            # where it may lie: as planned, straight down from where it was last seen, or dropped anywhere else
+            # (the game moved it on while the code was not looking: its lines count all the same)
             for effect, cells in (("confirmed", plan["placed"] if plan else None),
-                                  ("inconsistent", fall(self.stack, last, rows, cols) if last else None)):
+                                  ("inconsistent", fall(self.stack, last, rows, cols) if last else None),
+                                  *(("elsewhere", cells) for cells in (drops(self.stack, last, rows, cols) if last else []))):
                 if cells is None:
                     continue
                 after, lines = settle(self.stack, cells, rows, cols)
@@ -625,16 +700,25 @@ class Loop:
                 if now - odd_since < SETTLE_S:
                     continue
                 # neither: the stack is taken from the screen as it stands, but for what hangs at its top
-                self.stack = self._standing(filled)
+                before, self.stack = self.stack, self._standing(filled)
                 self.resyncs += 1
                 streak += 1
+                self._note(event="resync", stack=len(self.stack))
+                self._dump("resync")
                 if plan is not None or last is not None:
-                    self._placed("unknown", plan, 0, sent, now - began)
+                    # a piece that came to lie adds its cells, and each row gone takes a row's: what went is counted
+                    gone = len(before) + len(last or plan["shape"]) - len(self.stack)
+                    lines = gone // cols if gone > 0 and gone % cols == 0 and gone // cols <= PIECE_MOST else 0
+                    self.lines += lines
+                    self._placed("unknown", plan, lines, sent, now - began)
                 plan = last = odd_since = tried = None
                 if streak >= RESYNCS_MOST:
                     return "well_unread"
                 continue
             effect, _, after, lines = lain
+            self._note(event=effect, lines=lines)
+            if effect != "confirmed":
+                self._dump(effect)
             if tried is not None and self.dropping == "tried" and effect == "confirmed" \
                     and self.ticks - tried[2] <= DROP_LOOKS:
                 # the piece lay where it was planned right after the key: the game drops with it
@@ -645,6 +729,11 @@ class Loop:
             self.stack, self.lines, odd_since, streak = after, self.lines + lines, None, 0
             self._placed(effect, plan, lines, sent, now - began)
             plan = last = None
+
+    def _covered(self, filled: Cells) -> bool:
+        """Whether the well's top quarter is more than half filled: no game leaves it so and goes on."""
+        high = max(1, self.well.rows // 4)
+        return sum(r < high for r, _ in filled) * 2 > high * self.well.cols
 
     def _standing(self, filled: Cells) -> Cells:
         """The stack as the screen shows it, when the code's own is lost: all that is filled but the piece hanging
@@ -695,6 +784,10 @@ class Loop:
                 "capture_ms": mean_ms(self.capture_s), "read_ms": mean_ms(self.read_s),
                 "piece_s": round(statistics.fmean(self.piece_s), 2) if self.piece_s else None,
                 "stack_height": self.well.rows - min((r for r, _ in self.stack), default=self.well.rows)}
+
+
+def _listed(cells: Any) -> list[list[int]]:
+    return sorted([r, c] for r, c in cells)
 
 
 async def tap_or_key(surface: Any, sent: dict[str, Any]) -> None:

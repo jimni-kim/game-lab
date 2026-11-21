@@ -28,13 +28,18 @@ ANSWER = {"board": BOX, "columns": COLS, "rows": ROWS,
           "start": {"kind": "key", "key": "Space"}, "situation": "an empty well"}
 
 
+LOST, WON = ("result", {"kind": "done", "end": "lost"}), ("result", {"kind": "done", "end": "won"})
+AWAY, BOARD = ("popup", {"kind": "tap", "at": [200, 300]}), ("board", {"kind": "tap", "at": [200, 300]})
+
+
 class Falling:
     """The toy as a surface. A piece falls a row every `every` captures. It ends when a piece has no room."""
     name = "fake"
     reads_dom = False
     kinds = frozenset({"keys", "tap"})
 
-    def __init__(self, every=3, started=False, shadow=False, held=False, drops=False, turn="ArrowUp"):
+    def __init__(self, every=3, started=False, shadow=False, held=False, drops=False, turn="ArrowUp",
+                 notice_at=None, result_at=None, unseen=0):
         # shadow: the piece is drawn once more, pale, where it would come to lie. held: a key let go at once does
         # nothing. drops: the space bar puts the piece down at once
         self.every, self.playing, self.over = every, False, False
@@ -42,6 +47,12 @@ class Falling:
         self.stack, self.piece, self.colour = {}, None, None
         self.count = self.captures = self.cleared = 0
         self.keys, self.held = [], []
+        # notice_at: once so many pieces have come, a dim notice lies over the whole screen and the game waits
+        # until it is tapped away. result_at: once so many rows are gone, the level is over and its result is
+        # drawn over the well
+        self.notice_at, self.result_at, self.notice, self.taps = notice_at, result_at, False, []
+        # unseen: a piece is in play for so many captures before it is drawn (it comes in from above the well)
+        self.unseen, self.hidden = unseen, 0
         if started:
             self._start()
 
@@ -54,6 +65,12 @@ class Falling:
         self.colour = COLOURS[self.count % len(COLOURS)]
         self.count += 1
         self.piece = [(r, c + 1) for r, c in cells]
+        self.hidden = self.unseen
+        if self.count == self.notice_at:
+            self.notice, self.playing = True, False
+        if self.result_at is not None and self.cleared >= self.result_at:
+            self.piece, self.playing, self.over = None, False, True
+            return
         if not self._fits(self.piece):
             self.piece, self.playing, self.over = None, False, True
 
@@ -85,7 +102,9 @@ class Falling:
         pass
 
     async def capture(self, region=None):
-        if self.playing:
+        if self.playing and self.hidden:
+            self.hidden -= 1
+        elif self.playing:
             self.captures += 1
             if self.captures % self.every == 0:
                 self._down()
@@ -94,16 +113,20 @@ class Falling:
         draw.rectangle([BOX[0] - 2, BOX[1] - 2, BOX[2] + 1, BOX[3] + 1], fill=(0, 0, 0))
         draw.rectangle([BOX[0], BOX[1], BOX[2] - 1, BOX[3] - 1], fill=EMPTY)
         shown = dict(self.stack)
-        if self.piece and self.shadow:
+        if self.piece and self.shadow and not self.hidden:
             lies = list(self.piece)
             while self._fits([(r + 1, c) for r, c in lies]):
                 lies = [(r + 1, c) for r, c in lies]
             shown |= {cell: (150, 150, 150) for cell in lies}
-        shown |= {cell: self.colour for cell in self.piece} if self.piece else {}
+        shown |= {cell: self.colour for cell in self.piece} if self.piece and not self.hidden else {}
         for (r, c), colour in shown.items():
             if r >= 0:
                 draw.rectangle([LEFT + c * CELL + 1, TOP + r * CELL + 1, LEFT + (c + 1) * CELL - 2, TOP + (r + 1) * CELL - 2],
                                fill=colour)
+        if self.over and self.result_at is not None:
+            draw.rectangle([BOX[0] - 20, BOX[1], BOX[2] + 20, BOX[1] + 8 * CELL], fill=(250, 250, 250))
+        if self.notice:
+            image = Image.blend(image, Image.new("RGB", SIZE, (0, 0, 0)), 0.6)
         if region is not None:
             image = image.crop(tuple(region))
         out = BytesIO()
@@ -111,11 +134,15 @@ class Falling:
         return out.getvalue()
 
     async def tap(self, x, y, duration_ms):
-        pass
+        self.taps.append((x, y))
+        if self.notice:
+            self.notice, self.playing = False, True
 
     async def key(self, key, hold_ms=0):
         self.keys.append(key)
         self.held.append(hold_ms)
+        if self.notice:
+            return
         if key == "Space" and not self.playing and not self.over:
             self._start()
             return
@@ -141,8 +168,11 @@ class Falling:
 class Guide:
     """A model that says the screen is a falling game and answers the one question about it."""
 
-    def __init__(self, answer=ANSWER, falling=True):
-        self.answer, self.falling, self.asked = answer, falling, []
+    def __init__(self, answer=ANSWER, falling=True, plays=()):
+        # plays: what it answers when it is shown the screen to play it itself (the loop let the game go), in
+        # turn and the last again: `(scene, action)`
+        self.answer, self.falling, self.asked, self.plays = answer, falling, [], list(plays) or [LOST]
+        self.told = []
 
     async def complete(self, request):
         context = json.loads(request.messages[0].content[0]["text"])
@@ -150,6 +180,12 @@ class Guide:
         if "families" in context:
             return TurnResult(text=json.dumps({"screen": "other", "families": [], "falling": self.falling,
                                                "situation": "a well and a start notice"}))
+        if context.get("play"):
+            self.asked[-1] = "play"
+            self.told.append(context)
+            scene, action = self.plays.pop(0) if len(self.plays) > 1 else self.plays[0]
+            return TurnResult(text=json.dumps({"situation": "what stands over the well", "scene": scene, "guided": False,
+                                               "action": action, "expect": "the game goes on", "notes": ""}))
         return TurnResult(text=json.dumps(self.answer))
 
 
@@ -217,8 +253,10 @@ async def test_a_game_that_falls_too_fast_ends_as_over_not_as_an_error(monkeypat
     # nothing is pressed sideways: every piece lands where it came
     monkeypatch.setattr(realtime, "SHIFTS_MOST", 0)
     run, made = await play(fake, guide, None, goal=GoalSpec("play_until_end"), budget=Budget(3000, 1, 60))
-    assert run.record["outcome"] == "game_over" and run.record["reason"] == "stopped_falling", run.record
-    assert fake.over
+    # the loop does not say what the screen is once nothing falls: the model looks at it once and says the end
+    assert run.record["outcome"] == "game_over" and run.record["reason"] == "end_screen", run.record
+    assert fake.over and guide.asked.count("play") == 1
+    assert made["realtime"]["stretches"][-1]["why"] in ("stopped_falling", "covered")
 
 
 async def test_an_unusable_answer_leaves_the_game_to_the_usual_ways():
@@ -400,3 +438,66 @@ async def test_lines_are_cleared_in_a_game_played_by_touch(monkeypatch, tmp_path
     fake, again = Touched(every=8), Guide()
     run, made = await play(fake, again, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
     assert run.record["outcome"] == "goal_reached" and again.asked == [] and made["realtime"]["source"] == "kept"
+
+
+
+def test_a_piece_may_come_to_lie_anywhere_it_can_be_dropped():
+    square = Cells({(0, 0), (0, 1), (1, 0), (1, 1)})
+    assert len(realtime.drops(Cells(), square, 6, 4)) == 3
+    bar = Cells({(0, 0), (0, 1), (0, 2), (0, 3)})
+    assert Cells({(r, 2) for r in range(2, 6)}) in realtime.drops(Cells(), bar, 6, 4)
+
+
+async def test_a_notice_over_the_well_is_put_away_by_the_model_and_the_loop_takes_the_game_again(monkeypatch):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    monkeypatch.setattr(realtime, "STILL_S", 0.5)
+    fake, guide = Falling(notice_at=3), Guide(plays=[AWAY, BOARD])
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "goal_reached", run.record
+    told = made["realtime"]
+    # (the well shows through this notice: the piece under it stands still whatever is sent)
+    assert [stretch["why"] for stretch in told["stretches"]] == ["piece_still", "done"] and told["lines"] >= 2
+    assert fake.cleared >= 2 and fake.taps and guide.asked.count("setup") == 1
+    # what the loop saw when it let go is kept to be looked at: the captures, and what was made of each look
+    assert told["looks"][-1]["why"] == "piece_still" and told["looks"][-1]["looks"][-1]["event"] == "piece_still"
+    assert any(kept["why"].startswith("rt-t") for kept in run.screens)
+
+
+async def test_a_level_ends_as_the_model_reads_its_result(monkeypatch):
+    fake, guide = Falling(result_at=1), Guide(plays=[WON])
+    run, made = await play(fake, guide, None, goal=GoalSpec("play_until_end"), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "goal_reached" and run.record["reason"] == "won", run.record
+    assert fake.cleared >= 1 and guide.asked.count("play") == 1
+    # the model is told a level was played while it was not asked: what stands there now is that level's end
+    assert "played_by_program" in json.dumps(guide.told[0])
+
+
+async def test_what_was_said_of_a_well_under_a_notice_is_asked_again_once_the_game_shows(monkeypatch):
+    monkeypatch.setattr(realtime, "FIRST_S", 0.3)
+    monkeypatch.setattr(realtime, "STILL_S", 0.5)
+    fake = Falling(started=True)
+    fake.notice, fake.playing = True, False
+    guide = Guide({**ANSWER, "start": None}, plays=[AWAY, BOARD])
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "goal_reached", run.record
+    assert guide.asked.count("setup") == 2 and made["realtime"]["source"] == "model_again"
+
+
+async def test_a_falling_game_of_other_rules_is_said_to_be_one_at_once():
+    fake, guide = Falling(), Guide({**ANSWER, "clears": "four of one colour touching vanish"})
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "unsupported" and run.record["reason"] == "falling_other_rules", run.record
+    assert fake.keys == []
+
+
+async def test_a_piece_dropped_is_not_dropped_again_while_the_next_is_not_yet_seen(monkeypatch, tmp_path):
+    # (2026-11-21, a game on a phone: the piece lay where it was dropped to at the next look, the drop was sent
+    # once more and took the piece just come in, unseen, straight down from where it came)
+    fake = Falling(drops=True, unseen=2)
+    guide = Guide({**ANSWER, "keys": {**ANSWER["keys"], "drop": "Space"}})
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "goal_reached", (run.record, made["realtime"])
+    told = made["realtime"]
+    assert told["effects"]["confirmed"] == told["pieces"] and told["resyncs"] == 0, told["effects"]
+    # one to start the game and one a piece
+    assert fake.keys.count("Space") <= told["pieces"] + 2

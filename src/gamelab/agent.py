@@ -132,6 +132,9 @@ RESUME_SHARE, RESUMES_MOST = 0.3, 3
 # and when this many of its moves were confirmed since it was last tried: a scene that changes a little at a time
 # (a tutorial's last step giving way to the game's board) shows no such change
 RESUME_EVERY = 4
+# a falling game's loop is let go to the model (and taken up again) this often in a row with no piece placed as
+# planned between; the ways it ends that say the well was not read; the captures kept of one game for looking at
+FALLING_LET_GO_MOST, LET_GO_UNREAD, FALLING_SCREENS_KEPT = 3, ("no_piece", "well_unread", "covered", "piece_still"), 96
 # the times play by a family was handed to the model kept for the record
 LET_GO_KEPT = 12
 # moves in a row the game did not take, with none taken between them, after which play by the family's rules is
@@ -455,6 +458,8 @@ class Agent:
         # the registered family whose board the screen was read as, to go back to from the model's own play
         # (`_resume`), the times that was tried, and whether play is by a family gone back to
         self.resumable: str | None = None
+        # a falling game the loop let go to the model: what it was played by, to be taken up again (`_falling_again`)
+        self.falling: dict[str, Any] = {}
         self.resumes = 0
         # whether the game was described a second time, on a board the family named for it did not read (`_resume`)
         self.described_again = False
@@ -2310,7 +2315,11 @@ class Agent:
         if setup is None:
             self.found["realtime"] = {"setup": None}
             return False
-        self.family_id, self.policy = None, "realtime"
+        if setup["clears"] != realtime.ROWS_CLEAR:
+            # pieces fall, but what vanishes is not full rows: the loop's rules are not this game's, and a model
+            # asked move by move is too slow for a game that does not wait. Said at once, not found out by losing
+            self.found["realtime"] = {"setup": setup, "source": source}
+            raise _End(Outcome.UNSUPPORTED, "falling_other_rules", setup["clears"])
         self.levels.setdefault(realtime.RT, 0)
 
         async def send(sent: dict[str, Any]) -> None:
@@ -2335,40 +2344,118 @@ class Agent:
                                "at_s": round(time.monotonic() - self.started, 2)})
 
         objective, target = str(self.goal.objective), self.goal.target_value
+        # what the stretches before this one cleared and placed (the loop is taken up again after each letting go)
+        lines = pieces = 0
 
         def done(loop: realtime.Loop) -> bool:
-            return target is not None and (objective == "reach_value" and loop.lines >= target
-                                           or objective == "actions" and loop.pieces >= target)
+            return target is not None and (objective == "reach_value" and lines + loop.lines >= target
+                                           or objective == "actions" and pieces + loop.pieces >= target)
 
-        loop = realtime.Loop(self.surface, setup, send=send, check=self._check_stops, seen=seen, placed=placed)
-        self.found["realtime"] = told = {"setup": setup, "source": source}
-        why = None
-        try:
-            await loop.begin(first)
-            why = await loop.play(done)
-        finally:
-            told.update(loop.summary())
-            if self.store is not None and self.site:
-                if loop.effects["confirmed"]:
-                    # the evidence it is kept on: pieces came to lie where the code planned them by it
-                    self.store.save_falling(self.site, realtime.record({**setup, **realtime.learned(loop)}, loop.well))
-                elif source == "kept" and why in ("no_piece", "well_unread") and not loop.effects["confirmed"]:
-                    self.store.save_falling(self.site, None)
+        self.found["realtime"] = told = {"setup": setup, "source": source, "stretches": []}
+        # whether the game is to be started by the loop, and how often in a row it was let go with nothing placed
+        start, fruitless = True, 0
+        while True:
+            self.family_id, self.policy = None, "realtime"
+            loop = realtime.Loop(self.surface, setup, send=send, check=self._check_stops, seen=seen, placed=placed)
+            why = None
             try:
-                self.last_png = await self.surface.capture()
-            except ValueError:
-                pass
-        if source == "kept" and why in ("no_piece", "well_unread") and not loop.effects["confirmed"]:
-            # nothing was placed by the kept words: the model is asked of the screen as it stands now
-            log.info("the falling game was not played by what was kept of it (%s): asked anew", why)
-            self.found["falling_kept"] = "dropped"
-            return await self._play_realtime()
-        if why == "done":
-            raise _End(Outcome.GOAL_REACHED, objective)
-        if why == "stopped_falling":
-            # nothing falls any more: in a game that does not wait, that is its end
-            raise _End(Outcome.GAME_OVER, why, setup["situation"])
-        raise _End(Outcome.GAVE_UP, why, setup["situation"])
+                await loop.begin(first, start)
+                why = await loop.play(done)
+            finally:
+                summary = loop.summary()
+                told.update({**summary, "setup": setup, "lines": lines + loop.lines, "pieces": pieces + loop.pieces})
+                told["stretches"].append({"why": why, "lines": loop.lines, "pieces": loop.pieces,
+                                          "effects": summary["effects"], "resyncs": summary["resyncs"],
+                                          "ticks": summary["ticks"]})
+                self._keep_looks_of(loop)
+                if self.store is not None and self.site:
+                    if loop.effects["confirmed"]:
+                        # the evidence it is kept on: pieces came to lie where the code planned them by it
+                        self.store.save_falling(self.site, realtime.record({**setup, **realtime.learned(loop)}, loop.well))
+                    elif source == "kept" and why in LET_GO_UNREAD and not self.confirmed:
+                        self.store.save_falling(self.site, None)
+                try:
+                    self.last_png = await self.surface.capture()
+                except ValueError:
+                    pass
+            lines, pieces = lines + loop.lines, pieces + loop.pieces
+            if why == "done":
+                raise _End(Outcome.GOAL_REACHED, objective)
+            if source == "kept" and why in LET_GO_UNREAD and not self.confirmed:
+                # nothing was placed by the kept words: the model is asked of the screen as it stands now
+                log.info("the falling game was not played by what was kept of it (%s): asked anew", why)
+                self.found["falling_kept"] = "dropped"
+                return await self._play_realtime()
+            fruitless = 0 if loop.effects["confirmed"] else fruitless + 1
+            if not self.direct or fruitless >= FALLING_LET_GO_MOST:
+                if why == "stopped_falling":
+                    # nothing falls any more: in a game that does not wait, that is its end
+                    raise _End(Outcome.GAME_OVER, why, setup["situation"])
+                raise _End(Outcome.GAVE_UP, why, setup["situation"])
+            # the loop let the game go: the well shows no game (a notice over it, a tutorial's pointer, a level's
+            # result), or nothing falls. What the screen is, is a model's to say, as between two levels of any
+            # other game: it ends the game at a result, puts away what stands over the well, and once it names
+            # the screen a board in play the loop takes the well again (`_resume`, `_falling_again`)
+            log.info("the falling game was let go (%s): the model looks at the screen", why)
+            self.falling = {"setup": setup, "proven": bool(self.confirmed), "well": loop.well}
+            if pieces:
+                # the model was not there: it is told a level was played and how it stopped, so that a map or a
+                # menu standing where the level was is read as that level's end, not as a level to be started
+                self.falling["note"] = (
+                    f"the program itself has just played this falling game here: {pieces} pieces placed, {lines} rows "
+                    f"cleared, until the well no longer showed a game going ({why}). If the screen shows that game or "
+                    "level over, or the game's map or menu where it was, it has ended: answer done; do not start it "
+                    "or another again before saying so. Won only when the screen itself shows this level cleared (its "
+                    "result, the level marked done, the one after it open now); a map or menu that shows no more "
+                    "done than before it was played, or nothing of it, is a level lost. Only if something lies over "
+                    "a game still going (a notice, a pause), put it away")
+            self.resumable = realtime.RT
+            self.resumes = self.since_tried = 0
+            self.unread_at = None
+            await self._play_direct(setup["situation"])
+            setup, first, start, source = self.falling["setup"], self.falling["first"], False, self.falling["source"]
+            told["setup"], told["source"] = setup, source
+
+    def _keep_looks_of(self, loop: realtime.Loop) -> None:
+        """What a falling game's loop set aside where the well read otherwise than expected: the captures as
+        screens kept (written beside the game's result) and what was made of each look, in the result."""
+        for dump in loop.dumps:
+            for tick, png in dump["frames"]:
+                if all(kept["why"] != f"rt-t{tick:05d}" for kept in self.screens) and len(self.screens) < FALLING_SCREENS_KEPT:
+                    self.screens.append({"at_action": self.used, "why": f"rt-t{tick:05d}", "png": png})
+            self.found["realtime"].setdefault("looks", []).append(
+                {"why": dump["why"], "tick": dump["tick"], "looks": dump["looks"]})
+
+    async def _falling_again(self) -> bool:
+        """The falling game the loop let go is on the screen again, as a model sees it: taken up by the loop when
+        the well reads and one piece hangs in it. What was said of the well before any piece was placed by it may
+        have been said of another screen (a notice over the well): then the model is asked of this one."""
+        kept = self.falling
+        png = await self.surface.capture()
+        self.shots += 1
+        setup, source = kept["setup"], "again"
+        if not kept["proven"]:
+            try:
+                setup = await self._asking(realtime.ask(self.model, png, await self.surface.size(),
+                                                        self.surface.kinds, self.hint))
+            except Exception as error:
+                log.info("the falling game could not be asked about again: %s", error)
+                setup = None
+            source = "model_again"
+        if setup is None or setup["clears"] != realtime.ROWS_CLEAR:
+            return False
+        well = realtime.Well(setup["box"], setup["rows"], setup["cols"])
+        try:
+            well.learn(png)
+            filled = well.read(png)
+        except Exception:
+            return False
+        if not realtime.whole(realtime.top_piece(filled)) or realtime.top_piece(filled) == filled and \
+                max(r for r, _ in filled) == well.rows - 1:
+            # no piece hangs in the well (or what is filled all lies on its floor): not a game the loop can take
+            return False
+        self.falling = {**kept, "setup": {**setup, "start": None}, "first": png, "source": source}
+        return True
 
     async def _play_direct(self, situation: str) -> None:
         """The game is none the harness has rules for: a model plays it with inputs of its own (L0), told after
@@ -2386,6 +2473,9 @@ class Agent:
             self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent,
                                         refused=self.account["refused"], notes=self.notes)
         player = self.player
+        if self.falling.get("note"):
+            player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program",
+                                   "played_by_program": self.falling.pop("note")})
         self.found["direct"] = told = player.summary()
         self.levels.setdefault(L0, 0)
         objective, idle, silent = str(self.goal.objective), 0, 0
@@ -2743,6 +2833,12 @@ class Agent:
         family_id, self.resumes, self.since_tried = self.resumable, self.resumes + 1, 0
         tried = {"family": family_id, "at_action": self.used, "taken": False, **({"on_board": True} if board else {})}
         self.found.setdefault("resumes", []).append(tried)
+        if family_id == realtime.RT:
+            # a game in which time moves has no family: its loop takes the well again (`_play_realtime`)
+            tried["taken"] = await self._falling_again()
+            if tried["taken"]:
+                self.trail.clear()
+            return tried["taken"]
         reading = None
         try:
             taken = await self._take(family_id, probe=True)
