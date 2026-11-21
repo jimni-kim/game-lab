@@ -112,7 +112,7 @@ class Falling:
         draw = ImageDraw.Draw(image)
         draw.rectangle([BOX[0] - 2, BOX[1] - 2, BOX[2] + 1, BOX[3] + 1], fill=(0, 0, 0))
         draw.rectangle([BOX[0], BOX[1], BOX[2] - 1, BOX[3] - 1], fill=EMPTY)
-        shown = dict(self.stack)
+        shown = {**self.stack, **self._overlay()}
         if self.piece and self.shadow and not self.hidden:
             lies = list(self.piece)
             while self._fits([(r + 1, c) for r, c in lies]):
@@ -132,6 +132,10 @@ class Falling:
         out = BytesIO()
         image.save(out, "PNG")
         return out.getvalue()
+
+    def _overlay(self):
+        """What the game draws over the well besides its blocks: nothing here."""
+        return {}
 
     async def tap(self, x, y, duration_ms):
         self.taps.append((x, y))
@@ -717,3 +721,70 @@ async def test_a_falling_game_first_asked_about_where_none_showed_is_taken_by_th
     assert run.record["outcome"] == "goal_reached", run.record
     assert made["identified"].get("falling") is True and guide.asked.count("identify") >= 2
     assert made["realtime"]["lines"] >= 1 and fake.cleared >= 1
+
+
+class Flashing(Falling):
+    """A game that shows rows going (F5, as a phone game drew them): the full rows turn white for some looks, the
+    row above them glows faintly where it is empty, and only then do they go and the next piece come."""
+
+    def __init__(self, *args, flash=6, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.flash, self.going, self.left = flash, [], 0
+
+    def _down(self):
+        if self.piece is None:
+            return
+        moved = [(r + 1, c) for r, c in self.piece]
+        if self._fits(moved):
+            self.piece = moved
+            return
+        for cell in self.piece:
+            self.stack[cell] = self.colour
+        full = [r for r in range(ROWS) if all((r, c) in self.stack for c in range(COLS))]
+        if not full:
+            self._spawn()
+            return
+        self.piece, self.going, self.left = None, full, self.flash
+
+    def _gone(self):
+        full = self.going
+        self.cleared += len(full)
+        self.stack = {(r + sum(row > r for row in full), c): colour for (r, c), colour in self.stack.items() if r not in full}
+        self.going = []
+        self._spawn()
+
+    async def capture(self, region=None):
+        if self.going:
+            self.left -= 1
+            if self.left <= 0:
+                self._gone()
+        return await super().capture(region)
+
+    def _overlay(self):
+        if not self.going:
+            return {}
+        above = min(self.going) - 1
+        return {**{(r, c): (250, 250, 250) for r in self.going for c in range(COLS)},
+                **{(above, c): (60, 90, 150) for c in range(COLS) if (above, c) not in self.stack}}
+
+
+async def test_rows_shown_going_are_waited_out_and_the_piece_taken_as_planned(monkeypatch):
+    # (PLAN §34, F5) a white band and a glow over the row above were read as cells: the piece was taken as come to
+    # lie elsewhere with no row cleared, and the stack read again from the screen
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    fake, guide = Flashing(every=3, flash=8), Guide()
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 3), budget=Budget(3000, 1, 60))
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told["effects"])
+    assert told["effects"]["confirmed"] == told["pieces"] and told["resyncs"] == 0, (told["effects"], told["resyncs"])
+    assert told["lines"] == fake.cleared
+
+
+def test_a_piece_of_the_same_colour_lying_below_is_no_shadow():
+    # (F5) a piece of the same shape that came to lie straight below was taken for the shadow of the one falling
+    stack = Cells({(5, c) for c in range(3)})
+    piece = Cells({(0, 0), (0, 1), (1, 1), (1, 2)})
+    lying = Cells({(3, 0), (3, 1), (4, 1), (4, 2)})
+    assert piece_in(stack, piece | lying, 6, 4) == piece
+    assert piece_in(stack, piece | lying, 6, 4, unlike=lambda a, b: False) is None
+    assert piece_in(stack, piece | lying, 6, 4, unlike=lambda a, b: True) == piece

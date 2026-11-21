@@ -2456,12 +2456,16 @@ class Agent:
     def _keep_looks_of(self, loop: realtime.Loop) -> None:
         """What a falling game's loop set aside where the well read otherwise than expected: the captures as
         screens kept (written beside the game's result) and what was made of each look, in the result."""
+        # (F5) a loop taken up again counts its ticks from one again: the stretch is in the name, else the captures
+        # of the second were taken for the first's and not kept
+        stretch = len(self.found["realtime"].get("stretches") or [])
         for dump in loop.dumps:
             for tick, png in dump["frames"]:
-                if all(kept["why"] != f"rt-t{tick:05d}" for kept in self.screens) and len(self.screens) < FALLING_SCREENS_KEPT:
-                    self.screens.append({"at_action": self.used, "why": f"rt-t{tick:05d}", "png": png})
+                why = f"rt-t{tick:05d}-s{stretch}"
+                if all(kept["why"] != why for kept in self.screens) and len(self.screens) < FALLING_SCREENS_KEPT:
+                    self.screens.append({"at_action": self.used, "why": why, "png": png})
             self.found["realtime"].setdefault("looks", []).append(
-                {"why": dump["why"], "tick": dump["tick"], "looks": dump["looks"]})
+                {"why": dump["why"], "tick": dump["tick"], "stretch": stretch, "looks": dump["looks"]})
 
     async def _falling_again(self) -> bool:
         """The falling game the loop let go is on the screen again, as a model sees it: taken up by the loop when

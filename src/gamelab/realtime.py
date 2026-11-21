@@ -122,9 +122,17 @@ COVERED_LOOKS = 2
 # a piece that stands as it stood for this long, whatever was sent to it, is not being played: the game waits for
 # something else (a notice the well shows through, a tutorial that takes one input only, a pause)
 STILL_S = 3.0
+# (PLAN §34, F5) a game whose pieces fall slowly stands a piece still that long between two rows: the time it was
+# seen to take for a row (the middle of the last so many) counts this many times over before a piece is still
+STILL_ROWS, FALLS_KEPT = 2, 8
+# (F5) a piece planned to clear rows is shown clearing them (a white band, a glow over the row above, words over the
+# well): the well is taken as other than planned only after this long at most (`_clear_wait_s`)
+CLEAR_WAIT_S = 2.0
 # what is kept for looking at afterwards: the last captures of the well and what was made of each look, written
 # out where the well was read otherwise than the code expected (at most so often a game)
 FRAMES_KEPT, TICKS_KEPT, DUMPS_MOST = 12, 240, 5
+# what the loop lets the game go for is set aside whatever was set aside before (F5: a let-go was left unseen)
+LET_GO = ("piece_still", "covered", "idle")
 # (PLAN §34, F3) the box where a game shows the next piece is read at most this many pixels a side, a pixel lit when
 # a channel lies this far from the box's edge; fewer lit than so many is no piece. A split into cells is square
 # within this share. A preview read wrong this often, and more often than right, is not read any more
@@ -183,12 +191,14 @@ def settled(filled: Cells, rows: int, cols: int, unlike: Callable[[Cells, Cells]
     return rest
 
 
-def piece_in(stack: Cells, extra: Cells, rows: int, cols: int, known: list[Cells] | None = None) -> Cells | None:
+def piece_in(stack: Cells, extra: Cells, rows: int, cols: int, known: list[Cells] | None = None,
+             unlike: Callable[[Cells, Cells], bool] | None = None) -> Cells | None:
     """The falling piece among the cells filled beyond the stack: those cells themselves when they are one piece,
     or the piece without the shadow a game draws of it where it would come to lie (the same shape straight below
     it, resting on the stack). A piece part of which is still above the well is given whole when its shadow shows
-    its shape (rows above the well are negative). `known`: the shapes the piece now falling turns to. None when
-    the cells are neither."""
+    its shape (rows above the well are negative). `known`: the shapes the piece now falling turns to. `unlike`: a
+    shadow is drawn otherwise than its piece, so cells the same as it are no shadow (a piece of the same shape that
+    came to lie straight below, F5). None when the cells are neither."""
     if not extra:
         return None
     if known and normal(extra) in known:
@@ -196,7 +206,7 @@ def piece_in(stack: Cells, extra: Cells, rows: int, cols: int, known: list[Cells
     top = top_piece(extra)
     rest = extra - top
     if rest:
-        if not whole(rest) or fall(stack, rest, rows, cols) != rest:
+        if not whole(rest) or fall(stack, rest, rows, cols) != rest or unlike is not None and not unlike(rest, top):
             return None
         up = max(r for r, _ in rest) - max(r for r, _ in top)
         piece = Cells((r - up, c) for r, c in rest)
@@ -230,6 +240,8 @@ class Well:
         self.box, self.rows, self.cols = box, rows, cols
         self.empty: tuple[float, float, float] | None = None
         self.near = FILLED_LEAST
+        # each cell's colour in the capture read last
+        self.colours: list[tuple[float, float, float]] = []
 
     def _colours(self, png: bytes, region: list[int] | None = None) -> list[tuple[float, float, float]]:
         """Each cell's colour, row by row, from a capture of the well alone, of `region`, or of the whole screen."""
@@ -264,9 +276,10 @@ class Well:
     def _far(self, colour: tuple[int, int, int]) -> float:
         return max(abs(colour[band] - self.empty[band]) for band in range(3))
 
-    def unlike(self, png: bytes) -> Callable[[Cells, Cells], bool]:
-        """Whether two sets of cells of this capture are drawn in colours farther apart than empty cells are."""
-        colours = self._colours(png)
+    def unlike(self, png: bytes | None = None) -> Callable[[Cells, Cells], bool]:
+        """Whether two sets of cells of this capture (none: the one read last) are drawn in colours farther apart
+        than empty cells are."""
+        colours = self._colours(png) if png is not None else self.colours
 
         def mean(cells: Cells) -> tuple[float, ...]:
             return tuple(statistics.fmean(colours[r * self.cols + c][band] for r, c in cells) for band in range(3))
@@ -277,7 +290,7 @@ class Well:
         return apart
 
     def read(self, png: bytes, region: list[int] | None = None) -> Cells:
-        colours = self._colours(png, region)
+        colours = self.colours = self._colours(png, region)
         return Cells((index // self.cols, index % self.cols) for index, colour in enumerate(colours)
                      if self._far(colour) > self.near)
 
@@ -608,6 +621,8 @@ class Loop:
         self.wait, self.lags = WAIT_S, collections.deque(maxlen=LAGS_KEPT)
         # how many cells the pieces that came to lie had
         self.sizes: collections.Counter = collections.Counter()
+        # how long a piece was seen to take to fall a row, the last few
+        self.falls: collections.deque = collections.deque(maxlen=FALLS_KEPT)
         self.sent_at = 0.0
         self.stack: Cells = Cells()
         self.lines = self.pieces = self.resyncs = self.ticks = 0
@@ -649,7 +664,7 @@ class Loop:
 
     def _dump(self, why: str) -> None:
         """The last captures and looks are set aside as they are, with why."""
-        if len(self.dumps) < DUMPS_MOST:
+        if len(self.dumps) < DUMPS_MOST or why in LET_GO:
             self.dumps.append({"why": why, "tick": self.ticks, "frames": list(self.frames),
                                "looks": [dict(row) for row in self.trace][-4 * FRAMES_KEPT:]})
 
@@ -696,6 +711,13 @@ class Loop:
         still: tuple[Cells | None, float] = (None, began)
         # when the piece now planned for was dropped at once
         dropped: float | None = None
+        # (F5) when the piece now planned for was last seen a row lower; since when what hangs over the stack has
+        # more cells than the game's pieces (or a planned row being cleared shows otherwise); the look before, while
+        # a stack other than planned is waited on to read the same twice
+        fell_at: float | None = None
+        doubt_since: float | None = None
+        clear_since: float | None = None
+        twice: Cells | None = None
         while True:
             if done(self):
                 return "done"
@@ -714,20 +736,31 @@ class Loop:
                     return "stopped_falling" if self.pieces else "no_piece"
                 continue
             idle_since = now
-            piece = None if missing else piece_in(self.stack, extra, rows, cols, plan["turns"] if plan else None)
+            piece = None if missing else piece_in(self.stack, extra, rows, cols, plan["turns"] if plan else None,
+                                                  self.well.unlike())
+            usual = self.sizes.most_common(1)
+            if piece is not None and usual and len(piece) > usual[0][0]:
+                # more cells than the game's pieces have had (F5: a placed piece with a row-clear's words and a drop's
+                # trail drawn on it read as one piece of five, planned for, and the drop sent for it took the next
+                # piece unplanned): looked at again until it passes, or has stood so long
+                doubt_since = doubt_since or now
+                if now - doubt_since < COMING_S:
+                    self._note(event="odd_piece")
+                    continue
+            else:
+                doubt_since = None
             if piece is not None:
                 # a piece on its way over the stack as the code knows it (with its shadow, where a game draws one)
                 odd_since = odd_last = None
                 if piece != still[0]:
                     still = (piece, now)
-                elif now - still[1] > STILL_S and sent and piece != self.rules.fall(self.stack, piece, rows, cols):
+                elif now - still[1] > self._still_s() and sent and piece != self.rules.fall(self.stack, piece, rows, cols):
                     self._note(event="piece_still")
                     self._dump("piece_still")
                     return "piece_still"
                 self.shadow = self.shadow or piece != extra
                 shape = normal(piece)
                 if plan is None or shape not in plan["turns"]:
-                    usual = self.sizes.most_common(1)
                     if usual and len(piece) < usual[0][0] and piece == extra and min(r for r, _ in piece) == 0 \
                             and now - still[1] < COMING_S:
                         # part of it is still above the well: what is sent now would go to a piece not yet seen
@@ -742,12 +775,15 @@ class Loop:
                                shape=_listed(found["shape"]),
                                **({"next": _listed(self.coming)} if self.coming is not None else {}))
                     began, turned, shifted, sent, pushed, spun = now, 0, 0, 0, None, None
-                    dropped = waiting = None
+                    dropped = waiting = fell_at = clear_since = twice = None
                     streak, moved = 0, False
                 elif last is not None and normal(last) == shape and min(c for _, c in last) == min(c for _, c in piece) \
                         and min(r for r, _ in last) < min(r for r, _ in piece):
-                    # it went down as it stood: something does fall here
+                    # it went down as it stood: something does fall here, so long a row
                     moved = True
+                    if fell_at is not None:
+                        self.falls.append((now - fell_at) / (min(r for r, _ in piece) - min(r for r, _ in last)))
+                    fell_at = now
                 column = min(c for _, c in piece)
                 if tried is not None:
                     if self.ticks - tried[2] <= DROP_LOOKS:
@@ -854,6 +890,19 @@ class Loop:
                     full = self.stack | cells
                     rest = filled - full
                     clearing = clearing or full <= filled and (not rest or piece_in(full, rest, rows, cols) is not None)
+            if plan is not None and plan["lines"] and (lain is None or lain[0] != "confirmed"):
+                # (F5) the piece was planned to clear rows and the well is not yet as planned: what a game draws as
+                # rows go (a band, a glow over the row above, words, a dropped piece's trail) is waited out first
+                clear_since = clear_since or now
+                if now - clear_since < self._clear_wait_s():
+                    self._note(event="clearing")
+                    continue
+            if lain is not None and lain[0] != "confirmed":
+                # come to lie otherwise than planned: taken once the well reads the same twice in a row (F5)
+                odd_since = odd_since or now
+                if filled != twice and now - odd_since < SETTLE_S:
+                    twice = filled
+                    continue
             if lain is None:
                 # neither. The game may be drawing something that passes (rows going, a piece's trail): the stack
                 # is taken from the screen, but for what hangs at its top, once two looks in a row read it the same
@@ -881,7 +930,7 @@ class Loop:
                 if came:
                     self._placed("unknown", plan, lines, sent, now - began, last)
                     barren = 0 if moved else barren
-                plan = last = odd_since = odd_last = tried = waiting = None
+                plan = last = odd_since = odd_last = tried = waiting = fell_at = clear_since = twice = None
                 if streak >= RESYNCS_MOST or barren >= BARREN_MOST:
                     # no piece could be told from what the well shows, so often in a row: it is not being read
                     return "well_unread"
@@ -899,7 +948,7 @@ class Loop:
             tried = None
             self.stack, self.lines, odd_since, odd_last, streak, barren = after, self.lines + lines, None, None, 0, 0
             self._placed(effect, plan, lines, sent, now - began, last)
-            plan = last = waiting = None
+            plan = last = waiting = fell_at = clear_since = twice = None
 
     def foresee(self, box: list[int] | None, goal: dict[str, Any] | None) -> None:
         """Where the game shows the next piece and what the level asks, said of the screen once the game went."""
@@ -948,6 +997,18 @@ class Loop:
         except Exception:
             self.coming = None
         self.foreseen["read" if self.coming is not None else "unread"] += 1
+
+    def _still_s(self) -> float:
+        """How long a piece stands as it stood before it is not being played: longer in a game seen to let its
+        pieces fall slowly (F5)."""
+        if not self.falls:
+            return STILL_S
+        return max(STILL_S, STILL_ROWS * statistics.median(self.falls))
+
+    def _clear_wait_s(self) -> float:
+        """How long rows planned to go are waited for: no longer than the game was seen to let a piece fall a row
+        (the next piece, come meanwhile, is then barely on its way), and at most CLEAR_WAIT_S."""
+        return min(CLEAR_WAIT_S, max(self.falls)) if self.falls else CLEAR_WAIT_S
 
     def _covered(self, filled: Cells) -> bool:
         """Whether the well's top quarter is more than half filled: no game leaves it so and goes on."""

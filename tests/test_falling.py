@@ -257,3 +257,16 @@ async def test_what_only_shows_once_the_game_goes_is_asked_of_it_once_it_is_star
     assert told["next"]["matched"] >= 2 and told["goal"] == {"lines": 3, "pieces": None}
     # an answer that gives no next piece, nor says one shows later, is not asked again (the toy without a preview)
     assert realtime.understood(ANSWER, list(SIZE), frozenset({"keys"})).get("next_later") is None
+
+
+def test_near_a_levels_end_the_piece_after_the_next_is_weighed_too():
+    # (PLAN §34, F5) with a piece limit and few pieces left, the unseen piece after the preview is averaged over
+    # the seven; with many left, or no limit, the look ahead is the two pieces as before
+    stack = Cells({(r, c) for r in (18, 19) for c in range(10) if c not in (4, 5)})
+    piece, coming = Cells({(0, 0), (0, 1), (1, 0), (1, 1)}), Cells({(0, 0), (0, 1), (0, 2), (0, 3)})
+    near = solver.place(stack, piece, 20, 10, policy="lookahead", queue=[coming], goal={"lines": 3, "pieces": 5})
+    far = solver.place(stack, piece, 20, 10, policy="lookahead", queue=[coming], goal={"lines": 3, "pieces": 30})
+    free = solver.place(stack, piece, 20, 10, policy="lookahead", queue=[coming])
+    assert near["nodes"] > far["nodes"] == free["nodes"]
+    # the square still goes in the gap it fills: two rows cleared now
+    assert near["lines"] == 2 and near["column"] == 4

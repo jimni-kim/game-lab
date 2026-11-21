@@ -23,10 +23,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..rules.falling import Cells, fall, level_spent, listed, normal, settle, stack_of, turns
+from ..rules.falling import STANDARD_PIECES, Cells, fall, level_spent, listed, normal, settle, stack_of, turns
 
 POLICIES = ("greedy", "lookahead")
-# the weights such games are played by (the height of all columns, lines cleared, holes, unevenness)
+# the weights such games are played by (the height of all columns, lines cleared, holes, unevenness): Yiyuan Lee's,
+# found by a genetic search over games of 500 pieces with one piece previewed, as ours ("Tetris AI - The (Near)
+# Perfect Bot", 2013, github.com/LeeYiyuan/tetrisai, MIT). Other published weighings (Dellacherie, El-Tetris,
+# BCTS's DT-10/DT-20) did no better on a level's goal, two to nine points worse on short ones (PLAN §34 F5,
+# docs/reports/2026-11-21-falling-solvers-survey.md)
 W_HEIGHT, W_LINES, W_HOLES, W_BUMPS = -0.510066, 0.760666, -0.35663, -0.184483
 # wells weighed for one decision when none is said: a look ahead over every placement of two pieces of four cells
 # in a well 10 wide is about 34 x 34
@@ -37,6 +41,13 @@ GOAL_MET, DEAD = 1000.0, -10000.0
 # with a goal and pieces this few or fewer left, each row cleared counts this much more, and each filled cell of the
 # rows nearest to full (as many as rows are still to clear) this much
 GOAL_SOON, W_GOAL, W_NEAR = 12, 2.0, 0.15
+# (F5) on a level with a piece limit and GOAL_SOON pieces or fewer left, `lookahead` also weighs the piece after the
+# one previewed, unseen: the average over the seven pieces of the best each makes of the well, on the best FIRSTS
+# placements of this piece and the best SECONDS of the next on each. The goal's bonus averaged so is about the
+# chance of meeting it within three pieces (as solution-finder's `percent` reckons a perfect clear's). Simulated, it
+# met a level's goal 2 to 5 points more often than the two pieces alone (90.8 -> 96.0% of 500 levels of 2 rows in
+# 9 pieces), at about 25 ms a piece; the third pieces are drawn evenly from the seven, as the simulated game does
+EXPECT_FIRSTS, EXPECT_SECONDS = 3, 2
 
 
 def weigh(stack: Cells, rows: int, cols: int, lines: int) -> float:
@@ -165,20 +176,47 @@ def place(stack: Cells, piece: Cells, rows: int, cols: int, *, policy: str = "gr
         # wells that look best now are looked ahead from first
         each = max(1, len(turns(coming)) * cols)
         ahead = sorted(range(len(first)), key=lambda i: (-first[i][4], i))[:max(1, budget // each)]
-        scores = {}
+        scores, seconds = {}, {}
+        met = goal and goal.get("lines") is not None
         for i in ahead:
             _, _, after, lines, alone = first[i]
-            found = None
+            found, kept = None, []
             for _, column, rows_of, top in _options(after, coming, rows, cols):
                 then, more = _settle(after, rows_of, column, top, full)
                 value = _value(then, cols, lines + more, goal, 2)
                 found = value if found is None or value > found else found
+                kept.append((value, then, lines + more))
                 nodes += 1
-            if goal and goal.get("lines") is not None and lines >= goal["lines"]:
+            if met and lines >= goal["lines"]:
                 # the goal is met by this piece: nothing after it matters
-                found = alone if found is None else max(found, alone)
-            scores[i] = DEAD + alone if found is None else found
-        chosen = max(scores, key=lambda i: (scores[i], -i))
+                found, kept = (alone if found is None else max(found, alone)), []
+            scores[i], seconds[i] = (DEAD + alone if found is None else found), kept
+        if goal and goal.get("pieces") is not None and met and goal["pieces"] <= GOAL_SOON and nodes < budget:
+            # near a level's end: the piece after the next weighed too, unseen (`EXPECT_FIRSTS`)
+            deep = sorted(scores, key=lambda i: (-scores[i], i))[:EXPECT_FIRSTS]
+            for i in deep:
+                best_here = None
+                for value, then, lines in sorted(seconds[i], key=lambda kept: -kept[0])[:EXPECT_SECONDS]:
+                    if lines >= goal["lines"]:
+                        worth = value
+                    else:
+                        total = 0.0
+                        for third in STANDARD_PIECES:
+                            most = None
+                            for _, column, rows_of, top in _options(then, Cells(map(tuple, third)), rows, cols):
+                                after3, more = _settle(then, rows_of, column, top, full)
+                                value3 = _value(after3, cols, lines + more, goal, 3)
+                                most = value3 if most is None or value3 > most else most
+                                nodes += 1
+                            total += DEAD + value if most is None else most
+                        worth = total / len(STANDARD_PIECES)
+                    best_here = worth if best_here is None or worth > best_here else best_here
+                if best_here is not None:
+                    scores[i] = best_here
+            # the placements not looked so far ahead are left out: they were the worse on two pieces
+            chosen = max(deep, key=lambda i: (scores[i], -i))
+        else:
+            chosen = max(scores, key=lambda i: (scores[i], -i))
         score = scores[chosen]
     shape, column = first[chosen][0], first[chosen][1]
     placed = fall(stack, Cells((r, c + column) for r, c in shape), rows, cols)
