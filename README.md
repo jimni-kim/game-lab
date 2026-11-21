@@ -1,14 +1,14 @@
 # game-lab
 
 웹과 Android 게임을 화면만 보고 두는 범용 게임 에이전트 하네스다. 사용자가 말로 맡긴 범위(한 판, 레벨 N개, 이어받기, 이름 붙인 작업)를 끝내고 결과를 돌려준다.
-규칙을 아는 계열(2048, 지뢰찾기, 블록 놓기, 3매치, 클론다이크)은 모델이 첫 화면을 보정해 주면 코드가 판을 읽고 풀이기가 수를 고른다.
+규칙을 아는 계열(2048, 지뢰찾기, 블록 놓기, 3매치, 클론다이크, 떨어지는 블록)은 모델이 첫 화면을 보정해 주면 코드가 판을 읽고 풀이기가 수를 고른다.
 처음 보는 게임은 모델이 규칙 코드를 쓰거나(만든 계열) 입력을 직접 고르고(직접 두기), 판 밖 화면은 한 번 지난 길을 코드가 다시 누른다(루틴).
-떨어지는 블록류(실시간), 요청 사이에 이어지는 게임(세계 기억), 스토리형(대사는 코드, 선택지는 모델)도 뼈대가 있다.
+떨어지는 블록류(실시간: 모델은 우물과 조작을 한 번 말하고, 코드가 초당 몇 번 읽고 계열의 풀이기로 놓을 곳을 고름. 웹과 Android 몸짓 조작), 요청 사이에 이어지는 게임(세계 기억), 스토리형(대사는 코드, 선택지는 모델)도 뼈대가 있다.
 
 ARMY 게임 플러그인(`codex/game-adaptive-perception` `92ccefe5f`)에서 분리했다.
 
-- **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z, 2026-11-21)
-- [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§33)
+- **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z, 실시간은 Z2에서 고침, 2026-11-21)
+- [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§34)
 - [docs/PLAN-archive.md](docs/PLAN-archive.md): 분리 계획과 그 전의 기록(§1~§23)
 - [docs/origin/](docs/origin/2026-11-13-game-adaptive-perception.md): 처음 실험 계획과 조사, [docs/reports/](docs/reports/): 단계별 리포트
 
@@ -34,12 +34,12 @@ agent.py                    한 판의 루프: 경로를 고르고, 판을 읽�
 ├─ direct.py                모델 직접 두기: 수 묶음, 웹 요소 글, 스토리형 줄 넘기기와 선택지
 ├─ recovery.py              판을 못 읽는 화면에서 모델이 고른 입력 하나
 ├─ routine.py               판 밖 화면의 "이 화면이면 이 입력" 보관과 재생
-├─ realtime.py              떨어지는 블록류의 실시간 코드 루프
+├─ realtime.py              떨어지는 블록류의 실시간 코드 루프 (우물·다음 조각 읽기, 키와 몸짓, 놓았다가 돌아오기)
 ├─ world.py                 요청 사이에 이어지는 게임의 세계 기억 (world.json)
 ├─ scenes.py                화면 종류와 맴돌기
 ├─ samples.py, carry.py     칸의 견본, 끌어 옮기기
 ├─ frames.py, motion.py     프레임, 움직이는 것을 걸러 본 화면
-└─ 계열 (catalog, families)  규칙 모델(rules/) + 풀이기(solvers/) + 기술자(blueprint/families/)
+└─ 계열 (catalog, families)  규칙 모델(rules/) + 풀이기(solvers/) + 기술자(blueprint/families/). 떨어지는 블록(falling)은 키트 없이 실시간 루프가 씀
 화면 (surface.py)
 ├─ environments/web.py      Playwright Chromium (페이지 요소 outline 포함)
 └─ environments/android.py  adb (screencap, input tap/swipe/keyevent)
@@ -58,6 +58,7 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 ```sh
 # 풀이기 실력 (화면 없음, 비용 없음)
 .venv/bin/python -m gamelab.eval policies --games 100 --out out/policies.json
+.venv/bin/python -m gamelab.eval policies --family falling --games 1000 --rule goal_lines=2 --rule goal_pieces=9 --hide goal_lines --hide goal_pieces   # 층의 목표, 목표를 모를 때와 견줌
 
 # 모델 설정은 .env에 둔다 (.env.example 참고). 쓸 수 있는 모델 이름 보기:
 .venv/bin/python -m gamelab.eval models
@@ -78,7 +79,7 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 
 # 처음 보는 게임에서 방법끼리 견주기: 직접 두기(direct) 또는 만든 계열(made)만으로
 .venv/bin/python -m gamelab.eval web --site tatham_singles_seeded --way direct --games 3 --compute 200 --out out/web/singles-direct
-# 실시간(떨어지는 블록): 줄 5개
+# 실시간(떨어지는 블록): 줄 5개. 다음 조각 미리보기와 층의 목표는 준비 답에서 받음(보관 폴더가 새로우면 한 번 물음)
 .venv/bin/python -m gamelab.eval web --site tetrjs_falling --identify --objective reach_value --target 5 --compute 200 --max-actions 6000 --out out/web/falling
 # 스토리형: 되돌릴 수 없는 선택은 --choices 방침이 있을 때만 누르고, 없으면 그 자리에서 돌려줌
 .venv/bin/python -m gamelab.eval web --site monogatari_story --identify --compute 200 --choices "착한 쪽으로" --out out/web/story
@@ -92,7 +93,7 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 
 게임에 대해 보관하는 것은 `--adapter-store`(기본 `out/adapters`) 아래 사이트(앱)별 폴더에 둔다: 계열별 판독기와 값,
 판 사이 화면의 루틴(`routines/`, 모델이 한 번 넘긴 화면을 다음부터 코드가 다시 누름), 모델의 기억(`memory.json`),
-모델이 만든 계열(`made.json`), 실시간 게임의 준비 답(`falling.json`), 세계 기억(`world.json`). 한 앱에 게임이 여럿이면 요청이 고른 게임 이름(`--ask`가 스스로 읽고, 아니면
+모델이 만든 계열(`made.json`), 실시간 게임의 준비 답과 판에서 배운 것(`falling.json`: 우물, 조작, 미리보기 상자, 쓸기 감도. 층의 목표는 남기지 않음), 세계 기억(`world.json`). 한 앱에 게임이 여럿이면 요청이 고른 게임 이름(`--ask`가 스스로 읽고, 아니면
 `--game NAME`)으로 폴더를 나눈다(`…+mines`). 다시 배우게 하려면 그 폴더를 지우거나 다른 `--adapter-store`를 준다.
 
 옛 명령의 `--generate`는 받기만 한다(이제 늘 어댑터를 쓴다). `--profile`, `--unregistered`, `--loop`는 없앴다.
@@ -130,6 +131,6 @@ cloudflared tunnel run --url http://127.0.0.1:8765 game-lab-demo
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 668개, 약 15~19분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 703개, 약 18분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```
