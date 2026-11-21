@@ -137,6 +137,8 @@ LET_GO = ("piece_still", "covered", "idle")
 # a channel lies this far from the box's edge; fewer lit than so many is no piece. A split into cells is square
 # within this share. A preview read wrong this often, and more often than right, is not read any more
 PREVIEW_PX, PREVIEW_FAR, PREVIEW_LIT, PREVIEW_SQUARE, PREVIEW_MISSES = 96, 40, 6, 0.25, 3
+# colours are taken as one for the preview's background when each channel falls in the same step of this many
+PREVIEW_SHADE = 24
 # the cells of a piece in the games the loop's rules are of
 PIECE_CELLS = 4
 # what a model says of the next piece's box when the screen does not show the game going yet
@@ -301,7 +303,7 @@ class Well:
 
 class Preview:
     """Where the game shows the piece that comes next: a box around it alone. Its cells are told from the box's
-    background (the colour of its edge) without knowing their size: the piece's extent, split into as many columns
+    background (the colour most of its edge has) without knowing their size: the piece's extent, split into as many columns
     and rows as make square cells that each are filled or empty, is the piece (a split into more cells than a piece
     has is none)."""
 
@@ -320,9 +322,35 @@ class Preview:
         wide, high = image.size
         raw = image.tobytes()
         colour = [tuple(raw[3 * i:3 * i + 3]) for i in range(wide * high)]
+        # the box's background is the colour its edge mostly has (F5: not the middle of its edge's colours, which a
+        # box said a little wide takes partly from the frame drawn round the preview, and then the background
+        # itself is read as lit)
         edge = [colour[i] for i in range(wide * high) if i < wide or i >= wide * (high - 1) or i % wide in (0, wide - 1)]
-        ground = tuple(statistics.median(c[band] for c in edge) for band in range(3))
+        common = collections.Counter(tuple(band // PREVIEW_SHADE for band in c) for c in edge).most_common(1)[0][0]
+        alike = [c for c in edge if tuple(band // PREVIEW_SHADE for band in c) == common]
+        ground = tuple(statistics.median(c[band] for c in alike) for band in range(3))
         lit = [max(abs(c[band] - ground[band]) for band in range(3)) > PREVIEW_FAR for c in colour]
+        # what is lit and touches the box's edge is the frame round it or words beside it, not the piece (F5); a box
+        # said tight about the piece has the piece itself at its edge, and is read with all that is lit
+        inner = list(lit)
+        edge = [i for i in range(wide * high) if inner[i] and (i < wide or i >= wide * (high - 1) or i % wide in (0, wide - 1))]
+        while edge:
+            i = edge.pop()
+            if not inner[i]:
+                continue
+            inner[i] = False
+            x, y = i % wide, i // wide
+            edge.extend(j for j, ok in ((i - 1, x > 0), (i + 1, x < wide - 1), (i - wide, y > 0), (i + wide, y < high - 1))
+                        if ok and inner[j])
+        for shown in ((inner, lit) if inner != lit else (lit,)):
+            found = self._split(shown, wide, size)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _split(lit: list[bool], wide: int, size: int | None) -> Cells | None:
+        """The piece the lit pixels make: their extent split into square cells each filled or empty."""
         xs = [i % wide for i, on in enumerate(lit) if on]
         ys = [i // wide for i, on in enumerate(lit) if on]
         if len(xs) < PREVIEW_LIT:

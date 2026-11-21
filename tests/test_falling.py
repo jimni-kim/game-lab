@@ -270,3 +270,17 @@ def test_near_a_levels_end_the_piece_after_the_next_is_weighed_too():
     assert near["nodes"] > far["nodes"] == free["nodes"]
     # the square still goes in the gap it fills: two rows cleared now
     assert near["lines"] == 2 and near["column"] == 4
+
+
+def test_a_preview_box_said_wider_than_the_frame_round_it_is_read():
+    # (PLAN §34, F5) the box took in what is drawn round the preview at its edge (a frame, the word NEXT): read as
+    # lit, it stretched the piece's extent over the whole box, and no next piece was read in a whole level
+    image = Image.new("RGB", (100, 70), (30, 40, 130))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([0, 0, 3, 40], fill=(200, 200, 230))
+    draw.rectangle([30, 0, 75, 6], fill=(240, 240, 240))
+    for r, c in ((0, 2), (1, 0), (1, 1), (1, 2)):
+        draw.rectangle([22 + c * 18, 18 + r * 18, 22 + c * 18 + 16, 18 + r * 18 + 16], fill=(230, 140, 20))
+    out = BytesIO()
+    image.save(out, "PNG")
+    assert realtime.Preview([0, 0, 100, 70]).read(out.getvalue(), None, 4) == rules.Cells({(0, 2), (1, 0), (1, 1), (1, 2)})
