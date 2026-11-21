@@ -4,7 +4,8 @@ Every other way the harness plays is "look, one move, look again": the game wait
 is another one, and no model is in it:
 
     setup     a model is shown the first screen once (`watch_falling.md`) and says where the well is, how many
-              cells it has, which keys turn, move and drop a piece, and what starts the game
+              cells it has, which keys (or, in a game played by touch, which taps and swipes) turn, move and
+              drop a piece, and what starts the game
     learn     what an empty cell looks like, from that screen (`Well.learn`)
     tick      the well is captured and read as filled and empty cells; what is filled beyond the settled stack the
               code keeps is the falling piece
@@ -31,13 +32,20 @@ from typing import Any, Awaitable, Callable
 from . import pixels, resources
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
-from .surface import KEYS, TAP
+from .surface import DRAG, KEYS, TAP
 
 SETUP_TOKENS, SETUP_TIMEOUT_S = 1500, 90.0
 # a well has this many cells a side at least and at most, and a cell is this many pixels at least
 CELLS_FEWEST, CELLS_MOST, CELL_LEAST = 4, 40, 6
 # a key as a model may name it: one of a keyboard's names, nothing a page could be told to run
 KEY = re.compile(r"[A-Za-z0-9]{1,12}")
+# a control of a game played by touch, kept as a string as a key is (so that it is compared, kept and read back
+# the same way): a tap at a point, or a swipe from one point to another over a few milliseconds
+TAP_TOKEN = re.compile(r"tap:(\d{1,5}),(\d{1,5})")
+SWIPE_TOKEN = re.compile(r"swipe:(\d{1,5}),(\d{1,5}),(\d{1,5}),(\d{1,5}),(\d{1,4})")
+SWIPE_MS = (10, 1000)
+# gestures sent in one tick at most: each takes a device a tenth of a second or more, in which nothing is looked at
+GESTURES_MOST = 3
 # a cell is read by its inner half: the well made SUB pixels a cell, the middle ones of each taken
 SUB = 4
 # a cell is filled when its colour is this far (the largest difference of a channel, of 255) from an empty one's,
@@ -61,6 +69,8 @@ SETTLE_S, RESYNCS_MOST = 1.2, 4
 IDLE_S = 4.0
 # after the game is started, its first piece is waited for this long
 FIRST_S = 8.0
+# after the input that starts the game, the screen is looked at again this much later
+STARTED_S = 1.5
 # a key that changed nothing where it should have is held down this long from then on, and let go as long before
 # the next (a game that looks each frame at which keys are down misses one pressed and let go between two frames)
 HOLD_MS = 40
@@ -169,6 +179,22 @@ def top_piece(filled: Cells) -> Cells:
     return Cells(reached)
 
 
+def settled(filled: Cells, rows: int, cols: int, unlike: Callable[[Cells, Cells], bool] = lambda a, b: False
+            ) -> Cells:
+    """What of a well read as `filled` has come to lie: all but the piece at its top, and that piece's shadow
+    where it would land (the same shape straight below it, resting on the rest, and drawn `unlike` the piece:
+    by shape alone a shadow is not told from blocks that lie there)."""
+    piece = top_piece(filled)
+    if not whole(piece):
+        return filled
+    rest = filled - piece
+    for down in range(1, rows):
+        below = Cells((r + down, c) for r, c in piece)
+        if below <= rest and fall(rest - below, piece, rows, cols) == below:
+            return rest - below if unlike(below, piece) else rest
+    return rest
+
+
 def piece_in(stack: Cells, extra: Cells, rows: int, cols: int, known: list[Cells] | None = None) -> Cells | None:
     """The falling piece among the cells filled beyond the stack: those cells themselves when they are one piece,
     or the piece without the shadow a game draws of it where it would come to lie (the same shape straight below
@@ -229,12 +255,30 @@ class Well:
         """What an empty cell looks like, from a screen most of whose cells are empty: the colour in the middle of
         them all, and how far they lie from it."""
         colours = self._colours(png)
-        self.empty = tuple(statistics.median(colour[band] for colour in colours) for band in range(3))
-        apart = sorted(self._far(colour) for colour in colours)
+        # the top of a well is empty but for the piece coming in, whatever is stacked below: an empty cell is
+        # what most cells of its top quarter look like
+        top = colours[:max(1, self.rows // 4) * self.cols]
+        self.empty = tuple(statistics.median(colour[band] for colour in top) for band in range(3))
+        # how far empty cells lie from one another is taken of those that look empty alone: a first screen may
+        # have half its cells filled (a game already going, a tutorial's stack), and those would raise it past
+        # what any filled cell reaches
+        apart = sorted(far for far in map(self._far, colours) if far <= FILLED_LEAST) or [0.0]
         self.near = max(FILLED_LEAST, CLEAR * apart[int(0.8 * (len(apart) - 1))])
 
     def _far(self, colour: tuple[int, int, int]) -> float:
         return max(abs(colour[band] - self.empty[band]) for band in range(3))
+
+    def unlike(self, png: bytes) -> Callable[[Cells, Cells], bool]:
+        """Whether two sets of cells of this capture are drawn in colours farther apart than empty cells are."""
+        colours = self._colours(png)
+
+        def mean(cells: Cells) -> tuple[float, ...]:
+            return tuple(statistics.fmean(colours[r * self.cols + c][band] for r, c in cells) for band in range(3))
+
+        def apart(one: Cells, other: Cells) -> bool:
+            a, b = mean(one), mean(other)
+            return max(abs(a[band] - b[band]) for band in range(3)) > self.near
+        return apart
 
     def read(self, png: bytes) -> Cells:
         colours = self._colours(png)
@@ -250,11 +294,60 @@ def _key(value: Any) -> str | None:
     return value if isinstance(value, str) and KEY.fullmatch(value) else None
 
 
+def _point(x: Any, y: Any, screen: list[int]) -> tuple[int, int] | None:
+    if not (type(x) in (int, float) and type(y) in (int, float) and 0 <= x < screen[0] and 0 <= y < screen[1]):
+        return None
+    return round(x), round(y)
+
+
+def _control(value: Any, screen: list[int], kinds: frozenset[str]) -> str | None:
+    """A control as the loop sends it, or None when the surface cannot send it or it lies off the screen: a key
+    name; `tap:X,Y`; `swipe:X0,Y0,X1,Y1,MS`. A model may give a gesture as such a string or as an object
+    (`{"kind": "tap", "x", "y"}`, `{"kind": "swipe", "from": [x, y], "to": [x, y], "ms"}`)."""
+    if isinstance(value, str):
+        if KEY.fullmatch(value):
+            return value if KEYS in kinds else None
+        if found := TAP_TOKEN.fullmatch(value):
+            value = {"kind": "tap", "x": int(found[1]), "y": int(found[2])}
+        elif found := SWIPE_TOKEN.fullmatch(value):
+            value = {"kind": "swipe", "from": [int(found[1]), int(found[2])], "to": [int(found[3]), int(found[4])],
+                     "ms": int(found[5])}
+        else:
+            return None
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") == "tap" and TAP in kinds:
+        point = _point(value.get("x"), value.get("y"), screen)
+        return f"tap:{point[0]},{point[1]}" if point else None
+    if value.get("kind") in ("swipe", "drag") and DRAG in kinds:
+        ends = [value.get("from"), value.get("to")]
+        if not all(isinstance(end, list) and len(end) == 2 for end in ends):
+            return None
+        points = [_point(*end, screen) for end in ends]
+        ms = value.get("ms")
+        if None in points or type(ms) is not int or not SWIPE_MS[0] <= ms <= SWIPE_MS[1]:
+            return None
+        (x0, y0), (x1, y1) = points
+        return f"swipe:{x0},{y0},{x1},{y1},{ms}" if (x0, y0) != (x1, y1) else None
+    return None
+
+
+def gesture(token: str) -> dict[str, Any] | None:
+    """What a control sends when it is not a key: a tap or a drag; None for a key."""
+    if found := TAP_TOKEN.fullmatch(token):
+        return {"kind": "tap", "x": int(found[1]), "y": int(found[2])}
+    if found := SWIPE_TOKEN.fullmatch(token):
+        x0, y0, x1, y1, ms = map(int, found.groups())
+        return {"kind": "drag", "x0": x0, "y0": y0, "x1": x1, "y1": y1, "ms": ms}
+    return None
+
+
 def understood(answer: Any, screen: list[int], kinds: frozenset[str]) -> dict[str, Any] | None:
     """A model's answer about the first screen as the loop can use it, or None when it cannot: the well inside
-    the screen with cells of a size to read, the keys that move a piece sideways and at least one that takes it
-    down, and an input that starts the game of a kind the surface sends."""
-    if not isinstance(answer, dict) or KEYS not in kinds:
+    the screen with cells of a size to read, the controls (keys or gestures, `_control`) that move a piece
+    sideways and at least one that takes it down, and an input that starts the game of a kind the surface sends.
+    Where keys can be sent, those such games use are tried when none other was given (`also`)."""
+    if not isinstance(answer, dict) or not (KEYS in kinds or TAP in kinds):
         return None
     box, cols, rows = answer.get("board"), answer.get("columns"), answer.get("rows")
     if not (isinstance(box, list) and len(box) == 4 and all(type(part) in (int, float) for part in box)
@@ -266,12 +359,12 @@ def understood(answer: Any, screen: list[int], kinds: frozenset[str]) -> dict[st
             and (right - left) / cols >= CELL_LEAST and (bottom - top) / rows >= CELL_LEAST):
         return None
     said = answer.get("keys") if isinstance(answer.get("keys"), dict) else {}
-    keys = {name: _key(said.get(name)) for name in ("left", "right", "rotate", "down", "drop")}
+    keys = {name: _control(said.get(name), screen, kinds) for name in ("left", "right", "rotate", "down", "drop")}
     if not (keys["left"] and keys["right"] and (keys["down"] or keys["drop"])):
         return None
     start = answer.get("start") if isinstance(answer.get("start"), dict) else None
     if start is not None:
-        if start.get("kind") == "key" and _key(start.get("key")):
+        if start.get("kind") == "key" and KEYS in kinds and _key(start.get("key")):
             start = {"kind": "key", "key": start["key"]}
         elif start.get("kind") == "tap" and TAP in kinds and all(type(start.get(axis)) in (int, float) for axis in "xy") \
                 and 0 <= start["x"] < screen[0] and 0 <= start["y"] < screen[1]:
@@ -280,8 +373,13 @@ def understood(answer: Any, screen: list[int], kinds: frozenset[str]) -> dict[st
             start = None
     situation = answer["situation"][:300] if isinstance(answer.get("situation"), str) else ""
     more = answer.get("also") if isinstance(answer.get("also"), dict) else {}
-    also = {name: [key for key in (more.get(name) if isinstance(more.get(name), list) else []) if _key(key)][:TRIED_MOST]
+    also = {name: [control for control in dict.fromkeys(_control(value, screen, kinds) for value in
+                                                        (more.get(name) if isinstance(more.get(name), list) else []))
+                   if control][:TRIED_MOST]
             for name in ("rotate", "drop")}
+    if KEYS in kinds:
+        # (a game played by touch alone has no keys of its own to try: only what the model gave)
+        also = {"rotate": also["rotate"] or list(TURN_TRIED), "drop": also["drop"] or list(DROP_TRIED)}
     return {"box": [left, top, right, bottom], "rows": rows, "cols": cols, "keys": keys, "start": start,
             "situation": situation, "also": also}
 
@@ -365,11 +463,11 @@ class Loop:
         self.shadow = bool(setup.get("shadow"))
         self.dropping: str | None = "named" if self.keys["drop"] else setup.get("dropping")
         also = setup.get("also") or {}
-        self.drops = [key for key in (also.get("drop") or DROP_TRIED) if key != self.keys["drop"]]
+        self.drops = [key for key in (also.get("drop") or []) if key != self.keys["drop"]]
         # the keys a piece may be turned with, the one in use first; "found" once one was seen to turn a piece,
         # "none" when none did
         self.turning: str | None = setup.get("turning")
-        self.turners = [key for key in dict.fromkeys([self.keys["rotate"], *(also.get("rotate") or TURN_TRIED)]) if key]
+        self.turners = [key for key in dict.fromkeys([self.keys["rotate"], *(also.get("rotate") or [])]) if key]
         self.turn_fails = 0
         self.sent_at = 0.0
         self.stack: Cells = Cells()
@@ -403,11 +501,13 @@ class Loop:
         self.stack = Cells()
         if self.setup["start"] is not None:
             await self.send(self.setup["start"])
-        else:
-            # a game already going: what is filled now, but for the piece on its way, is the stack
-            filled = self.well.read(first)
-            piece = top_piece(filled)
-            self.stack = filled - piece if whole(piece) else filled
+            # the screen the start was said of may be dimmed under a notice; and a game may begin with rows
+            # already stacked: both are taken from the screen once it shows the game
+            await asyncio.sleep(STARTED_S)
+            first = await self.surface.capture(self.well.box)
+            self.well.learn(first)
+        # what is filled now, but for the piece on its way (and its shadow, where the game draws one), is the stack
+        self.stack = settled(self.well.read(first), self.well.rows, self.well.cols, self.well.unlike(first))
         self.started = time.monotonic()
 
     async def play(self, done: Callable[["Loop"], bool]) -> str:
@@ -460,8 +560,11 @@ class Loop:
                         continue
                     if piece != tried[1]:
                         self.dropping, tried = (None if self.drops else "none"), None
-                if (spun == shape or pushed == column) and not self.hold:
-                    # a key changed nothing: keys are held down from now on (and the piece is asked again)
+                stuck = ([self.keys["rotate"]] if spun == shape else []) + \
+                    ([self.keys["left"], self.keys["right"]] if pushed == column else [])
+                if stuck and not self.hold and any(gesture(control) is None for control in stuck if control):
+                    # a key changed nothing: keys are held down from now on (and the piece is asked again). A
+                    # gesture is not held: one that changed nothing is given up as a key held down would be
                     self.hold, turned, shifted = HOLD_MS, 0, 0
                 elif spun == shape and self.turning is None:
                     # held down, the key still did not turn the piece: after a few times the next is tried
@@ -567,8 +670,13 @@ class Loop:
                          if plan else {"kind": "place"}})
 
     async def _press(self, key: str, times: int = 1) -> int:
+        made = gesture(key)
+        if made is not None:
+            times = min(times, GESTURES_MOST)
         for _ in range(times):
-            if self.hold:
+            if made is not None:
+                await self.send(dict(made))
+            elif self.hold:
                 await self.send({"kind": "key", "key": key, "hold_ms": self.hold})
                 await asyncio.sleep(self.hold / 1000)
             else:
@@ -594,5 +702,7 @@ async def tap_or_key(surface: Any, sent: dict[str, Any]) -> None:
         await surface.key(sent["key"], sent["hold_ms"])
     elif sent["kind"] == "key":
         await surface.key(sent["key"])
+    elif sent["kind"] == "drag":
+        await surface.drag(sent["x0"], sent["y0"], sent["x1"], sent["y1"], sent["ms"])
     else:
         await surface.tap(sent["x"], sent["y"], TAP_MS)

@@ -8,7 +8,7 @@ Set screen to "game" when a board in play is plainly visible, otherwise "other" 
 
 Set families to the ids of the listed families whose rules this game follows, the most likely first, at most three; an empty list when none fits or when no board is visible. A game that looks like a family but plainly has rules of its own (other pieces, other moves) is still listed, after any closer one.
 
-Set falling to true when this is a game in which pieces fall on their own into a well as time passes, to be turned, moved sideways and dropped with keys before they land, and full rows vanish: the game does not wait for a move. Say so whether it has started or still shows its start screen, as long as the well is plainly on the screen; such a game is none of the listed families, so leave families empty. Otherwise false.
+Set falling to true when this is a game in which pieces fall on their own into a well as time passes, to be turned, moved sideways and dropped (with keys, or by taps and swipes) before they land, and full rows vanish: the game does not wait for a move. Say so whether it has started or still shows its start screen, as long as the well is plainly on the screen; such a game is none of the listed families, so leave families empty. Otherwise false.
 
 Set situation to one sentence saying what the screen shows.
 

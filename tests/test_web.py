@@ -30,6 +30,20 @@ async def test_inputs_reach_the_page_in_its_pixels_and_a_look_may_be_cut_to_a_re
         assert image.format == "PNG" and image.size == (100, 50)
 
 
+async def test_a_key_the_game_does_not_take_leaves_the_page_where_it_stood(page):
+    # (2026-11-21: a key tried for dropping a piece scrolled the page 57 px and the well was read beside itself)
+    await page.set_content("<body style='margin:0'><div style='height:3000px'></div></body>")
+    surface = WebSurface(page)
+    await page.evaluate("scrollTo(0, 40)")
+    for key in ("Space", "ArrowDown", "PageDown"):
+        await surface.key(key)
+        await page.wait_for_timeout(300)
+        assert await page.evaluate("scrollY") == 40
+    await surface.scroll(100, 100, 2)
+    await page.wait_for_timeout(300)
+    assert await page.evaluate("scrollY") > 40
+
+
 async def test_elements_are_read_by_selector_with_their_own_text_and_never_a_field(page):
     await page.set_content("<div class='score a b'>12<span>+4</span></div><input class='score' value='secret'>"
                            "<p class='tile'>x</p><p class='tile'>y</p>")

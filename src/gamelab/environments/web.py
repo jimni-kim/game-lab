@@ -16,6 +16,18 @@ from ..surface import DRAG, HOLD, KEYS, RELAUNCH, SCROLL, SECONDARY, TAP, TEXT, 
 INTERPOLATION_INTERVAL_MS = 16
 # one notch of the wheel, in CSS pixels
 WHEEL_STEP_PX = 100
+# put into a page before a key is sent (once a page): the keys a browser scrolls a page by do not scroll it, unless
+# they are typed into a field. Nothing else of the key is changed: the page's own listeners get it as before
+KEYS_DO_NOT_SCROLL = """() => {
+  if (window.__gamelabKeys) return;
+  window.__gamelabKeys = true;
+  const scrolling = [' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End'];
+  addEventListener('keydown', event => {
+    const on = event.target;
+    const typed = on && (on.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(on.tagName || ''));
+    if (scrolling.includes(event.key) && !typed) event.preventDefault();
+  }, true);
+}"""
 # what an element read gives back of one element at most (the rest is `cut`): a board's tiles, a score, a
 # banner, never a scrape
 MAX_CLASSES, MAX_CLASS, MAX_TEXT = 16, 64, 64
@@ -172,7 +184,11 @@ class WebSurface:
 
     async def key(self, key: str, hold_ms: int = 0) -> None:
         """`hold_ms`: how long the key is down before it is let go (a game that looks each frame at which keys
-        are down misses one let go at once)."""
+        are down misses one let go at once). A key the page's game does not take is the browser's (Space and the
+        arrows scroll the page, a while after the key), and everything the harness knows of the screen is where
+        it was before: such a key is kept from scrolling the page. The game still gets it, and a field typed
+        into is left alone."""
+        await self.page.evaluate(KEYS_DO_NOT_SCROLL)
         await self.page.keyboard.press(key, delay=hold_ms or None)
 
     async def tap(self, x: float, y: float, duration_ms: int) -> None:

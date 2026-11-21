@@ -300,3 +300,103 @@ async def test_a_game_that_draws_shadows_takes_held_keys_and_drops_is_learned_as
     run, made = await play(fake, again, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60), store=store)
     assert run.record["outcome"] == "goal_reached" and again.asked == []
     assert all(fake.held[1:]) and "ArrowDown" not in fake.keys and "ArrowUp" not in fake.keys
+
+
+# a game played by touch alone (as on a phone): a tap turns the piece, a level swipe moves it one column, a swipe
+# down drops it at once
+TOUCH = frozenset({"tap", "drag", "hold"})
+SWIPES = {"left": {"kind": "swipe", "from": [160, 200], "to": [136, 200], "ms": 100},
+          "right": {"kind": "swipe", "from": [160, 200], "to": [184, 200], "ms": 100},
+          "rotate": {"kind": "tap", "x": 200, "y": 150}, "down": None,
+          "drop": {"kind": "swipe", "from": [160, 100], "to": [160, 180], "ms": 80}}
+TOUCHED = {**ANSWER, "keys": SWIPES, "start": {"kind": "tap", "x": 160, "y": 150}}
+
+
+class Touched(Falling):
+    kinds = TOUCH
+
+    def __init__(self, **kwargs):
+        super().__init__(drops=True, **kwargs)
+        self.gestures = []
+
+    async def tap(self, x, y, duration_ms):
+        self.gestures.append(("tap", x, y))
+        await Falling.key(self, "Space" if not self.playing else self.turn)
+
+    async def drag(self, x0, y0, x1, y1, duration_ms):
+        self.gestures.append(("drag", x0, y0, x1, y1, duration_ms))
+        if abs(y1 - y0) > abs(x1 - x0):
+            await Falling.key(self, "Space")
+        else:
+            await Falling.key(self, "ArrowRight" if x1 > x0 else "ArrowLeft")
+
+    async def key(self, key, hold_ms=0):
+        raise AssertionError("a touch surface sends no keys")
+
+
+def test_a_game_played_by_touch_is_given_gestures_as_controls():
+    said = understood(TOUCHED, list(SIZE), TOUCH)
+    assert said["keys"] == {"left": "swipe:160,200,136,200,100", "right": "swipe:160,200,184,200,100",
+                            "rotate": "tap:200,150", "down": None, "drop": "swipe:160,100,160,180,80"}
+    assert said["start"] == {"kind": "tap", "x": 160, "y": 150}
+    # no keys of such games are tried where no key can be sent; gestures the model gave besides are
+    assert said["also"] == {"rotate": [], "drop": []}
+    assert understood({**TOUCHED, "also": {"rotate": [{"kind": "tap", "x": 120, "y": 150}, "x"]}},
+                      list(SIZE), TOUCH)["also"]["rotate"] == ["tap:120,150"]
+    # gestures already as the loop keeps them read back the same
+    assert understood({**TOUCHED, "keys": said["keys"]}, list(SIZE), TOUCH)["keys"] == said["keys"]
+    # key names, where no key can be sent, are no controls
+    assert understood(ANSWER, list(SIZE), TOUCH) is None
+    assert understood({**TOUCHED, "start": {"kind": "key", "key": "Space"}}, list(SIZE), TOUCH)["start"] is None
+    # a point off the screen, a swipe of no length or too long, a swipe where none can be sent
+    off = {**SWIPES, "left": {"kind": "swipe", "from": [160, 200], "to": [-5, 200], "ms": 100}}
+    assert understood({**TOUCHED, "keys": off}, list(SIZE), TOUCH) is None
+    assert understood({**TOUCHED, "keys": {**SWIPES, "rotate": {"kind": "tap", "x": 400, "y": 10}}},
+                      list(SIZE), TOUCH)["keys"]["rotate"] is None
+    still = {**SWIPES, "left": {"kind": "swipe", "from": [160, 200], "to": [160, 200], "ms": 100}}
+    assert understood({**TOUCHED, "keys": still}, list(SIZE), TOUCH) is None
+    slow = {**SWIPES, "left": {"kind": "swipe", "from": [160, 200], "to": [136, 200], "ms": 5000}}
+    assert understood({**TOUCHED, "keys": slow}, list(SIZE), TOUCH) is None
+    assert understood(TOUCHED, list(SIZE), frozenset({"tap"})) is None
+    assert understood({**TOUCHED, "keys": {**SWIPES, "left": "swipe:160,200,900,200,100"}}, list(SIZE), TOUCH) is None
+    # where keys can be sent, those such games use are tried when the model gave none
+    assert understood(ANSWER, list(SIZE), Falling.kinds)["also"] == {"rotate": list(realtime.TURN_TRIED),
+                                                                    "drop": list(realtime.DROP_TRIED)}
+
+
+async def test_a_sent_control_is_carried_out_as_what_it_is():
+    class Hand:
+        def __init__(self):
+            self.done = []
+
+        async def key(self, key, hold_ms=0):
+            self.done.append(("key", key, hold_ms))
+
+        async def tap(self, x, y, duration_ms):
+            self.done.append(("tap", x, y))
+
+        async def drag(self, x0, y0, x1, y1, duration_ms):
+            self.done.append(("drag", x0, y0, x1, y1, duration_ms))
+
+    hand = Hand()
+    for token in ("ArrowLeft", "tap:10,20", "swipe:1,2,3,4,90"):
+        sent = realtime.gesture(token) or {"kind": "key", "key": token}
+        await realtime.tap_or_key(hand, sent)
+    await realtime.tap_or_key(hand, {"kind": "key", "key": "x", "hold_ms": 40})
+    assert hand.done == [("key", "ArrowLeft", 0), ("tap", 10, 20), ("drag", 1, 2, 3, 4, 90), ("key", "x", 40)]
+
+
+async def test_lines_are_cleared_in_a_game_played_by_touch(monkeypatch, tmp_path):
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    store = Store(tmp_path)
+    fake, guide = Touched(every=8), Guide(TOUCHED)
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 2), budget=Budget(3000, 1, 60), store=store)
+    told = made["realtime"]
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    assert told["lines"] >= 2 and told["effects"]["unknown"] == 0 and told["resyncs"] == 0
+    kinds = {gesture[0] for gesture in fake.gestures}
+    assert kinds == {"tap", "drag"} and told["hold_ms"] == 0
+    # the next game is played from the gestures kept, with no question
+    fake, again = Touched(every=8), Guide()
+    run, made = await play(fake, again, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60), store=store)
+    assert run.record["outcome"] == "goal_reached" and again.asked == [] and made["realtime"]["source"] == "kept"
