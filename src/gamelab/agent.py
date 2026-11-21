@@ -2831,6 +2831,14 @@ class Agent:
                     if await self._resume():
                         return
                     continue
+                if asked.get("falling"):
+                    # a game in which time moves, first asked about on a screen that showed none (a level's reward):
+                    # the loop takes it now, not the model piece by piece (PLAN §34, F4: 2026-11-21, a level was
+                    # lost by the model's own taps while two askings in its play said it was a falling game)
+                    self.found.setdefault("identified", {}).update(falling=True, reasked=self.reasked)
+                    if await self._play_realtime():
+                        return
+                    continue
             # a model that names no kind of screen: the family is tried again when the scene changed, or some
             # moves on
             if scene is None and changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():

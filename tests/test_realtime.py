@@ -687,3 +687,33 @@ def test_what_swipes_did_is_held_against_what_was_sent():
     # kept and read back; something else kept there is not taken
     assert realtime._reach({"mode": "drag", "px": 20.0, "ms": 225}) == {"mode": "drag", "px": 20.0, "ms": 225}
     assert realtime._reach({"mode": "fling", "px": 20.0, "ms": 225}) is None and realtime._reach("drag") is None
+
+
+class Late(Guide):
+    """A model that first sees a game but no falling one (a level's reward over the well, as it was read) and,
+    asked again in its own play, a falling one."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.first = True
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if "families" in context and self.first:
+            self.first = False
+            self.asked.append("identify")
+            return TurnResult(text=json.dumps({"screen": "game", "families": [], "falling": False,
+                                               "situation": "a reward over the well"}))
+        return await super().complete(request)
+
+
+async def test_a_falling_game_first_asked_about_where_none_showed_is_taken_by_the_loop_once_it_is_seen(monkeypatch):
+    # (PLAN §34, F4) the first asking was on a reward screen; the model played the level by its own taps while the
+    # askings in its play said it was a falling game, and lost it
+    fake = Falling(started=True)
+    fake.notice, fake.playing = True, False
+    guide = Late({**ANSWER, "start": None}, plays=[AWAY, BOARD])
+    run, made = await play(fake, guide, None, goal=GoalSpec("reach_value", 1), budget=Budget(3000, 1, 60))
+    assert run.record["outcome"] == "goal_reached", run.record
+    assert made["identified"].get("falling") is True and guide.asked.count("identify") >= 2
+    assert made["realtime"]["lines"] >= 1 and fake.cleared >= 1
