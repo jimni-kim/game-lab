@@ -116,7 +116,8 @@
   ],
   "baseline_policy": "baseline",
   "default_policy": "expectimax",
-  "default_compute": 500,
+  "default_compute": 8000,
+  "least_compute": 8000,
   "goal_value": "the largest tile on the board",
   "verify_every": 1,
   "discovery": {

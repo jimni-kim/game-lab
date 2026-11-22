@@ -943,7 +943,7 @@ class Agent:
         # what the family's solver keeps from screen to screen (the cards a stock has shown, PLAN §33 P3); a
         # screen that does not follow from the last one starts it again, so it is never reset here
         self.recalled = self.family.recall(self.recalled, before.state)
-        action = self.family.choose(before.state, self.policy, self.budget.compute, tuple(excluded),
+        action = self.family.choose(before.state, self.policy, self.family.compute(self.budget.compute), tuple(excluded),
                                     **({"memory": self.recalled} if self.recalled is not None else {}))
         if action is None and not excluded and self.family.spent(self.recalled):
             # the solver's own memory shows the game going nowhere (a stock turned all the way round with nothing
@@ -1177,7 +1177,7 @@ class Agent:
         if board is None or not self._affordable():
             return None
         try:
-            ranked = self.family.rank(before.state, self.budget.compute, excluded)
+            ranked = self.family.rank(before.state, self.family.compute(self.budget.compute), excluded)
         except (ValueError, KeyError, IndexError, TypeError):
             return None
         if len(ranked) < 2:
