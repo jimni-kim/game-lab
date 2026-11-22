@@ -70,6 +70,7 @@ def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int, h
     moves, took_ms = 0, []
     # what a policy keeps of the screens it saw in this game (a solver that keeps nothing has none)
     memory = None
+    shows = getattr(family.model, "rules_now", None)
     ended = "capped"
     while moves < max_moves:
         started = time.perf_counter()
@@ -79,7 +80,9 @@ def play(family_id: str, policy: str, compute: int, seed: int, max_moves: int, h
                                                     {"objective": "play_until_end"})["terminal"]
         seen = family.shown(copy.deepcopy(state))
         memory = told.recall(memory, seen)
-        action = None if over else told.choose(seen, policy, compute, memory=memory)
+        # what a screen shows of the rules as the game goes (a level's goals still to go), where the game says
+        now = told.bind({"rules": shows(state, told.rules)}) if shows is not None else told
+        action = None if over else now.choose(seen, policy, compute, memory=memory)
         took_ms.append((time.perf_counter() - started) * 1000)
         if action is None:
             ended = "no_move"

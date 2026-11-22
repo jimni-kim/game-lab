@@ -16,6 +16,16 @@ POLICIES = ("baseline", "solver")
 # (one cell in six: between the usual small and large games' one in eight and one in five). A guess: on the
 # replay game it wins as often as knowing the count (PLAN §10)
 UNKNOWN_ODDS = (1, 5)
+# a guess is weighed by what may follow it (`_survive`): how many cells at most, and of those beside no number
+# (all alike) how many
+GUESS_WEIGHED = 12
+INNER_WEIGHED = 3
+# with this few layouts left that agree with the screen, a guess is weighed by playing every one to the end
+# (`_endgame`); and how many layouts of the numbered cells alone may be listed on the way
+ENDGAME_LAYOUTS = 120
+ENDGAME_LISTED = 4096
+# the endgame's steps, as a share of a guess's budget
+ENDGAME_STEPS = 10
 
 
 class _OverBudget(Exception):
@@ -104,9 +114,11 @@ def _components(found: list[tuple[frozenset, int]]) -> list[list[tuple[frozenset
     return [sorted(members, key=lambda item: sorted(item[0])) for _, members in groups]
 
 
-def _layouts(members: list[tuple[frozenset, int]], nodes: list[int], budget: int) -> tuple[list, dict]:
+def _layouts(members: list[tuple[frozenset, int]], nodes: list[int], budget: int,
+             kept: list | None = None) -> tuple[list, dict]:
     """Every way to lay mines on one group's cells that agrees with its numbers: by mine count, how many
-    ways and how many of them put a mine on each cell."""
+    ways and how many of them put a mine on each cell. `kept`, when given, gets each way itself too (a tuple
+    of 0 and 1, one per cell in the order returned)."""
     cells = sorted(set().union(*(cells for cells, _ in members)))
     index = {cell: i for i, cell in enumerate(cells)}
     checks = [([index[cell] for cell in group], left) for group, left in members]
@@ -128,6 +140,8 @@ def _layouts(members: list[tuple[frozenset, int]], nodes: list[int], budget: int
             tally[0] += 1
             for position, mine in enumerate(chosen):
                 tally[1][position] += mine
+            if kept is not None:
+                kept.append(tuple(chosen))
             return
         for mine in (0, 1):
             fits = True
@@ -269,5 +283,142 @@ def _choose(state: dict, rules: dict, policy: str, budget: int, legal: list[dict
         if total == 0:
             return {"action": None, "certain": False}
         pick = min(free, key=lambda cell: odds[cell])        # `free` is in preference order: a tie keeps the first
+        if odds[pick] and rules["mines"] is not None and any(is_open(cell) for row in grid for cell in row):
+            pick = (total <= ENDGAME_LAYOUTS and _endgame(grid, rules, mines, free, ENDGAME_STEPS * budget)) \
+                or _survive(grid, rules, mines, free, odds, total, budget) or pick
         return {"action": {"kind": "open", "cell": list(pick)}, "certain": odds[pick] == 0}
     return {"action": {"kind": "open", "cell": list(free[0])}, "certain": False}
+
+
+def _survive(grid, rules: dict, mines: set, free: list, odds: dict, total: int, budget: int):
+    """The guess most likely to be followed by a second move that survives too (PLAN §33 P4: what a cell would
+    show is what it is worth): for a cell, over every number it may show, how many layouts show that number,
+    times how safe the best move after it is (1 when the number proves a cell safe). A cell is never better than
+    its own safety, so cells are weighed safest first and the weighing stops once none left can win; cells beside
+    no number are all alike, and only the first INNER_WEIGHED of them are weighed. At most GUESS_WEIGHED cells,
+    each count within `budget` steps; None when no cell was weighed (the safest one is opened)."""
+    rows, cols = rules["rows"], rules["cols"]
+    beside = {cell for r, row in enumerate(grid) for c, value in enumerate(row) if is_open(value)
+              for cell in neighbours(r, c, rows, cols)}
+    inner = [cell for cell in free if cell not in beside][:INNER_WEIGHED]
+    order = sorted((cell for cell in free if cell in beside or cell in inner), key=lambda cell: odds[cell])
+    best, chosen = Fraction(-1), None
+    for cell in order[:GUESS_WEIGHED]:
+        if Fraction(total - odds[cell], total) <= best:
+            break
+        worth = _second(grid, rules, mines, cell, total, budget)
+        if worth is None:
+            return chosen
+        if worth > best:
+            best, chosen = worth, cell
+    return chosen
+
+
+def _endgame(grid, rules: dict, mines: set, free: list, budget: int):
+    """With few layouts left (ENDGAME_LAYOUTS), the cell that wins most often played to the end (PLAN §33 P4):
+    every layout that agrees with the screen, equally likely; a cell opened safely shows its number, which keeps
+    only the layouts that show it, and the game is won once one layout is left. A 0 is taken to open nothing
+    more (what it would open only tells more). None past `budget` steps, or when the layouts are too many to list."""
+    rows, cols = rules["rows"], rules["cols"]
+    found = _constraints(grid, rows, cols, set(), mines) or []
+    unsure = [cell for cell in free]
+    edge = set().union(*(cells for cells, _ in found)) if found else set()
+    inner = [cell for cell in unsure if cell not in edge]
+    left = rules["mines"] - sum(cell in MARKED for row in grid for cell in row) - len(mines)
+    nodes = [0]
+    groups = []
+    try:
+        for members in _components(found):
+            kept: list = []
+            cells, _ = _layouts(members, nodes, budget, kept)
+            groups.append([frozenset(cell for cell, mine in zip(cells, way) if mine) for way in kept])
+    except _OverBudget:
+        return None
+    every = [frozenset()]
+    for ways in groups:
+        every = [laid | way for laid in every for way in ways if len(laid | way) <= left]
+        if len(every) > ENDGAME_LISTED:
+            return None
+    layouts = []
+    for laid in every:
+        rest = left - len(laid)
+        if not 0 <= rest <= len(inner) or comb(len(inner), rest) > ENDGAME_LAYOUTS:
+            if 0 <= rest <= len(inner):
+                return None
+            continue
+        layouts += [laid | frozenset(more) for more in _choices(inner, rest)]
+        if len(layouts) > ENDGAME_LAYOUTS:
+            return None
+    if len(layouts) < 2:
+        return None
+    near = {cell: frozenset(neighbours(*cell, rows, cols)) for cell in unsure}
+    known: dict = {}
+
+    def best(alive: frozenset) -> tuple[Fraction, tuple[int, int] | None]:
+        """How often the game is won from these layouts, and the cell that wins it that often."""
+        nodes[0] += len(unsure) * len(alive)
+        if nodes[0] > budget:
+            raise _OverBudget
+        most, chosen = Fraction(-1), None
+        for cell in unsure:
+            shown: dict = {}
+            for index in alive:
+                if cell not in layouts[index]:
+                    shown.setdefault(len(near[cell] & layouts[index]), []).append(index)
+            # a cell that is a mine in every layout, or that is safe and shows the same in all, tells nothing
+            if not shown or (len(shown) == 1 and len(next(iter(shown.values()))) == len(alive)):
+                continue
+            worth = sum(len(kept) * win(frozenset(kept)) for kept in shown.values()) / len(alive)
+            if worth > most:
+                most, chosen = worth, cell
+                if most == 1:
+                    break
+        return most, chosen
+
+    def win(alive: frozenset) -> Fraction:
+        if len(alive) == 1:
+            return Fraction(1)
+        if alive not in known:
+            known[alive] = best(alive)[0]
+        return known[alive]
+
+    try:
+        return best(frozenset(range(len(layouts))))[1]
+    except _OverBudget:
+        return None
+
+
+def _choices(cells: list, count: int):
+    """Every way to pick `count` of `cells`, in order."""
+    if count == 0:
+        yield ()
+        return
+    for at in range(len(cells) - count + 1):
+        for rest in _choices(cells[at + 1:], count - 1):
+            yield (cells[at], *rest)
+
+
+def _second(grid, rules: dict, mines: set, cell: tuple[int, int], total: int, budget: int) -> Fraction | None:
+    """How likely opening `cell` and then the safest move after it both survive; None past the budget."""
+    rows, cols = rules["rows"], rules["cols"]
+    r, c = cell
+    near = neighbours(r, c, rows, cols)
+    least = sum(grid[y][x] in MARKED or (y, x) in mines for y, x in near)
+    unsure = sum(grid[y][x] == COVERED and (y, x) not in mines for y, x in near)
+    survived = 0
+    for shown in range(least, least + unsure + 1):
+        seen = [list(row) for row in grid]
+        seen[r][c] = shown
+        decided = _deduce(seen, rules, True)
+        if decided is None:
+            continue
+        safe, known = decided
+        counted = _odds(seen, rules, safe, known, budget)
+        if counted is None:
+            return None
+        after, ways = counted
+        if not ways:
+            continue
+        left = [ways - after[other] for other in after if other not in known and seen[other[0]][other[1]] == COVERED]
+        survived += max(left, default=ways)
+    return Fraction(survived, total)

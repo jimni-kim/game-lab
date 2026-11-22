@@ -23,6 +23,11 @@ def state_id(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def least(descriptor: dict[str, Any], asked: int) -> int:
+    """`asked` raised to the family's floor of boards per move (`least_compute`), where it names one."""
+    return max(asked, descriptor.get("least_compute", 1))
+
+
 class GridFamily:
     def __init__(self, descriptor: dict[str, Any], model: ModuleType, solver: ModuleType,
                  profile: dict[str, Any] | None = None) -> None:
@@ -37,6 +42,12 @@ class GridFamily:
         self.profile = profile or {}
         self.rules = self._rules(self.profile)
         self.meta_actions = frozenset(m["id"] for m in descriptor["meta_actions"])
+
+    def compute(self, asked: int) -> int:
+        """What a live game's policy spends per move when the run gives every family `asked` (`--compute`): no less
+        than the family's own floor (`least_compute`), so a budget meant for a costly solver does not hold back a
+        cheap one (PLAN §33 session P2). A simulated game (`eval policies`) spends what it is given."""
+        return least(self.descriptor, asked)
 
     def policies(self) -> list[str]:
         """Every policy a run may name: the family's own, then the general solvers its rule model fits."""

@@ -688,12 +688,15 @@ def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
     numbers = _stream(draw)
     result = apply(state, rules, action)
     grid, cleared, under = result["state"]["grid"], result["cleared"], result["state"].get("under")
+    taken = dict(result["taken"])
     while True:
         grid = [[1 + next(numbers) % rules["colours"] if cell is None else cell for cell in row] for row in grid]
         removed = _runs(grid)
         if not removed:
             break
         cleared += len(removed)
+        for r, c in removed:
+            taken[colour_of(grid[r][c])] = taken.get(colour_of(grid[r][c]), 0) + 1
         if under is not None and rules.get("spread") is True:
             for part in _parts(removed):
                 if any(under[r][c] > 0 for r, c in part):
@@ -704,7 +707,23 @@ def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
         grid = _fall(grid, removed)
     if not legal_actions({"grid": grid}, rules):
         grid = _deal(rules, numbers)
-    return {**state, "grid": grid, "score": (state.get("score") or 0) + cleared, **({"under": under} if under is not None else {})}
+    after = {**state, "grid": grid, "score": (state.get("score") or 0) + cleared, **({"under": under} if under is not None else {})}
+    if rules.get("goals"):
+        # a level with goals: what is still to go, as its screen would show it, and the level won once nothing is
+        after["goals_left"] = advance(state.get("goals_left", rules["goals"]), taken)
+        if all(goal["count"] == 0 for goal in after["goals_left"] if goal.get("kind") in COUNTED):
+            after["scene"] = WON
+    return after
+
+
+def won(state: dict, rules: dict) -> bool | None:
+    """Whether the replay game's level met its goals; None for a game with none."""
+    return None if not rules.get("goals") else state.get("scene") == WON
+
+
+def rules_now(state: dict, rules: dict) -> dict:
+    """The rules as the replay game's screen shows them now: a level's goals with what is still to go."""
+    return {**rules, "goals": state["goals_left"]} if state.get("goals_left") is not None else rules
 
 
 def shown(state: dict) -> dict:

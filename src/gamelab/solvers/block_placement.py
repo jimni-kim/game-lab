@@ -6,11 +6,16 @@ randomness) and ported with it. Placements are tried in the rule model's order a
 """
 from __future__ import annotations
 
-from ..rules.block_placement import apply, board_value as evaluate, legal_actions
+from ..rules.block_placement import EMPTY, STANDARD_PIECES, apply, board_value as evaluate, legal_actions, orientations
 
 # the search looks this many of the best-looking moves deeper at each level
 SEARCH_WIDTH = 3
 POLICIES = ("greedy", "search")
+# where a line of the search ends, its board is also worth this much for each piece of the replay game's set that
+# still fits somewhere on it (PLAN §33 P5): the next tray is not known, and a board that takes most pieces is
+# the one a tray dealt at random least often ends
+ROOM_WEIGHT = 30
+_MASKS: dict = {}
 
 
 def _children(state: dict, rules: dict) -> list[tuple[int, dict, dict]]:
@@ -47,11 +52,26 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
 
 
 def _line(state: dict, rules: dict, placed: int, value: int, nodes: list[int], budget: int) -> tuple[int, int]:
-    """(pieces placed, final board value) of the best line from here, within the node budget."""
+    """(pieces placed, final board value) of the best line from here, within the node budget; the board a line
+    ends on is worth the room it leaves too (`_room`)."""
     if all(piece is None for piece in state["tray"]) or nodes[0] >= budget:
-        return placed, value
+        return placed, value + ROOM_WEIGHT * _room(state["board"], rules)
     children = _children(state, rules)
     nodes[0] += len(children)
     if not children:
-        return placed, value
+        return placed, value + ROOM_WEIGHT * _room(state["board"], rules)
     return max(_line(after, rules, placed + 1, v, nodes, budget) for v, _, after in children[:SEARCH_WIDTH])
+
+
+def _room(board, rules: dict) -> int:
+    """How many pieces of the replay game's set (`STANDARD_PIECES`) fit somewhere on the board."""
+    rows, cols = len(board), len(board[0])
+    masks = _MASKS.get((rows, cols, rules["rotation"]))
+    if masks is None:
+        masks = _MASKS[(rows, cols, rules["rotation"])] = [
+            [sum(1 << ((r + dr) * cols + c + dc) for dr, dc in cells)
+             for cells in orientations(piece, rules["rotation"])
+             for r in range(rows - max(dr for dr, _ in cells)) for c in range(cols - max(dc for _, dc in cells))]
+            for piece in STANDARD_PIECES]
+    filled = sum(1 << (r * cols + c) for r in range(rows) for c in range(cols) if board[r][c] != EMPTY)
+    return sum(any(not mask & filled for mask in piece) for piece in masks)

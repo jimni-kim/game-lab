@@ -9,6 +9,7 @@ import pytest
 from gamelab import adaptation, agent, recovery
 from gamelab.adaptation import Adaptation, Made, Store
 from gamelab.contracts import Budget, GoalSpec
+from gamelab.families import GridFamily
 from gamelab.model import TurnResult, Usage
 from gamelab.rules.minesweeper import EXPLODED
 from fake_screen import Screen
@@ -381,3 +382,24 @@ async def test_a_writer_model_is_asked_only_to_write_the_adapter_and_its_questio
     assert {kind for kind, _, _ in reader.asked} == {"label"} and [kind for kind, _, _ in writer.asked] == ["write"]
     assert made["generations"] == 1 and played.record["levels"]["L3"] > 0
     assert made["questions"] == len(reader.asked) + 1 and made["tokens"]["input"] == 100 * len(reader.asked) + 1000
+
+
+async def test_a_live_2048_spends_its_familys_floor_of_boards_whatever_smaller_budget_the_run_gives(monkeypatch):
+    """`--compute` is one number for every family; 2048's solver is cheap per board, so a live game of it spends
+    no less than the family's `least_compute` (PLAN §33 session P2), while a simulated one spends what it is given."""
+    spent = []
+    choose = GridFamily.choose
+
+    def counted(self, payload, policy, compute, *rest, **named):
+        spent.append((self.id, compute))
+        return choose(self, payload, policy, compute, *rest, **named)
+
+    monkeypatch.setattr(GridFamily, "choose", counted)
+    fake = Screen()
+    played, _ = await agent.play(fake, Author(fake, [source(fake)]), "slide_merge", goal=GoalSpec("actions", 5),
+                                 budget=Budget(40, 200, 120))
+    least = agent.catalog.descriptor("slide_merge")["least_compute"]
+    assert least >= 2000 and spent and set(spent) == {("slide_merge", least)}, (played.record, spent)
+    # a family that names no floor spends the run's budget as it is
+    assert agent.catalog.family("minesweeper").compute(200) == 200
+    assert agent.catalog.family("slide_merge").compute(20000) == 20000

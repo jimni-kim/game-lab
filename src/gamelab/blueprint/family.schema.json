@@ -207,6 +207,11 @@
       "minimum": 1,
       "description": "boards the default policy evaluates per move when a task asks in words and names no budget: what played its registered sites within the per-move time measured in plan \u00a713"
     },
+    "least_compute": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "the fewest boards the family's policy evaluates per move in a live game, whatever smaller budget the run gives every family alike (`--compute`): a solver whose boards cost little takes this many still (PLAN \u00a733 session P2)"
+    },
     "verify_every": {
       "type": "integer",
       "minimum": 1,

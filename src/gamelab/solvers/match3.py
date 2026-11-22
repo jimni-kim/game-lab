@@ -11,10 +11,10 @@ board only parts moves otherwise alike.
 """
 from __future__ import annotations
 
-from ..rules.match3 import (AREA, BLOCK, COLOUR, COUNTED, HELD, LINE, POWERED, SEEKER, _line, _piece, _square_through,
-                            _swapped, apply, colour_of, legal_actions, progress, way)
+from ..rules.match3 import (AREA, BLOCK, COLOUR, COUNTED, HELD, LINE, POWERED, SEEKER, _fall, _line, _piece, _runs,
+                            _square_through, _swapped, advance, apply, colour_of, legal_actions, progress, way)
 
-POLICIES = ("first", "greedy")
+POLICIES = ("first", "greedy", "sampled")
 # what a piece with a power is counted as when a move earns one: about the pieces it clears when used
 WORTH = {LINE: 6, SEEKER: 3, AREA: 7, COLOUR: 10}
 # a move that meets every goal; one goal's thing taken; a piece with a power, by what it is worth (WORTH: 6 a line);
@@ -29,6 +29,15 @@ RANKED = 6
 AHEAD, AHEAD_MOST = 0.5, 12
 # lower on the board parts moves worth the same, by at most this much
 LOW = 0.01
+# sampled (PLAN §33 P6): the greedy policy's best this many moves, each played on as many fills of what comes in
+# at the top, the same fills for every move (a move is never weighed by pieces it alone was shown), and of the
+# best moves each filled board offers, this many weighed by the move they leave too
+SAMPLED_MOST, SAMPLES, SAMPLED_NEXT = 5, 6, 3
+# and the share of the best move a filled board leaves that a move is worth
+NEXT_SHARE = 0.5
+# the fills' streams: fixed, mixed with the board so that one board's fills are not every board's
+SAMPLE_SEEDS = (0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB, 0xD6E8FEB86659FD93,
+                0xA0761D6478BD642F, 0xE7037ED1A0B428DB, 0x8EBC6AF09C88C6E3, 0x589965CC75374CC3)
 
 
 def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[dict] = ()) -> dict:
@@ -46,7 +55,77 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
     if policy == "first":
         return {"action": moves[0], "nodes": 1}
     ranked, nodes = _ranked(state, rules, moves, budget)
+    if policy == "sampled" and len(ranked) > 1:
+        return _sampled(state, rules, ranked[:SAMPLED_MOST], nodes)
     return {"action": ranked[0]["action"], "nodes": nodes}
+
+
+def _sampled(state: dict, rules: dict, ranked: list[dict], nodes: int) -> dict:
+    """Of the greedy policy's best moves, the one worth most over SAMPLES fills of what comes in: what the move
+    takes with the lines its fill sets off, then the best move the filled board leaves, weighed by what is still
+    to go once this one is played and by the move that one leaves among the pieces known."""
+    goals = rules.get("goals") or []
+    rows = len(state["grid"])
+    colours = rules.get("colours") or max(1, len({colour_of(cell) for row in state["grid"] for cell in row
+                                                  if _piece(cell) and colour_of(cell)}))
+    mixed = sum((index + 1) * (cell or 0) for index, cell in enumerate(cell for row in state["grid"] for cell in row))
+    best, chosen = None, ranked[0]["action"]
+    for entry in ranked:
+        action = entry["action"]
+        result = apply(state, rules, action)
+        pair = PAIR if way(state, rules, action) == "pair" else 0.0
+        total = 0.0
+        for seed in SAMPLE_SEEDS[:SAMPLES]:
+            grid, taken, cleared = _filled(result, colours, (seed ^ mixed) & ((1 << 64) - 1))
+            worth = _worth(taken, cleared, result["made"], goals, rules, result["lowered"]) + pair
+            left = advance(goals, taken) if goals else goals
+            done = goals and all(goal.get("count") == 0 for goal in left if goal.get("kind") in COUNTED)
+            nodes += 1
+            total += worth + (0.0 if done else NEXT_SHARE * _next({**result["state"], "grid": grid}, rules, left))
+        low = (action["cell"][0] + action.get("to", action["cell"])[0]) / (2 * rows)
+        key = total / SAMPLES + LOW * low
+        if best is None or key > best:
+            best, chosen = key, action
+    return {"action": chosen, "nodes": nodes}
+
+
+def _filled(result: dict, colours: int, seed: int) -> tuple[list, dict, int]:
+    """The board a move leaves once the cells it left unread are filled from `seed` and every line the new pieces
+    make is removed in turn, with what the move took and cleared in all."""
+    grid, taken, cleared = result["state"]["grid"], dict(result["taken"]), result["cleared"]
+    value = seed
+    while True:
+        filled = []
+        for row in grid:
+            out = []
+            for cell in row:
+                if cell is None:
+                    value = (value * 6364136223846793005 + 1442695040888963407) % (1 << 64)
+                    cell = 1 + (value >> 33) % colours
+                out.append(cell)
+            filled.append(out)
+        grid = filled
+        removed = _runs(grid)
+        if not removed:
+            return grid, taken, cleared
+        cleared += len(removed)
+        for r, c in removed:
+            taken[colour_of(grid[r][c])] = taken.get(colour_of(grid[r][c]), 0) + 1
+        grid = _fall(grid, removed)
+
+
+def _next(state: dict, rules: dict, goals: list) -> float:
+    """The worth of the best move a filled board leaves under what is still to go, its SAMPLED_NEXT best each also
+    worth AHEAD of the move it leaves among the pieces known; 0 when it leaves none. The layer under the pieces is
+    taken as the move left it, before its fill's lines."""
+    scored = []
+    for action in legal_actions(state, rules):
+        result = apply(state, rules, action)
+        worth = _worth(result["taken"], result["cleared"], result["made"], goals, rules, result["lowered"])
+        scored.append((worth + (PAIR if way(state, rules, action) == "pair" else 0.0), result))
+    scored.sort(key=lambda entry: -entry[0])
+    return max((worth + AHEAD * _ahead(result["state"]["grid"], rules, goals) for worth, result in scored[:SAMPLED_NEXT]),
+               default=0.0)
 
 
 def rank(state: dict, rules: dict, budget: int, excluded: list[dict] = (), most: int = RANKED) -> list[dict]:

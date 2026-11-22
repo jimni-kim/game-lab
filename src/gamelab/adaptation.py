@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import logging
-from . import catalog, frames, resources, samples
+from . import catalog, families, frames, resources, samples
 from .adapters.generated import CELLS_UNREAD, FUNCTIONS, GeneratedAdapter, check_layout
 from .contracts import NeedObservation, Observation
 from .surface import Surface
@@ -311,7 +311,8 @@ class Adaptation:
         self.survey: Any = None
         self.descriptor = catalog.descriptor(family_id)
         self.policy = policy or self.descriptor["default_policy"]
-        self.compute = compute
+        # a live game's first moves spend what its later ones do (`GridFamily.compute`)
+        self.compute = families.least(self.descriptor, compute)
         self.questions = 0
         # what the game is played with while exploring: the family's starting controls
         self.controls = self.descriptor.get("discovery", {}).get("controls")
