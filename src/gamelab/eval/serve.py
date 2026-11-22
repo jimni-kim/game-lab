@@ -4,15 +4,23 @@
   .venv/bin/python -m gamelab.eval serve --compute 200
       serves http://127.0.0.1:8765 and prints the address to open it with, its access token included
 
-The page has a box for a request ("https://… 에서 이 퍼즐을 끝까지 풀어줘", "퍼즐 앱에서 Fifteen 끝까지"), a
-stop button, the game's screen as it is played and a log of what happens. A request is read by one model
+The page has the game's screen as it is played on one side and a chat with the agent on the other (PLAN §35):
+one box takes what a person types, which is sorted (`talk.sort`) into a game asked for ("https://… 에서 이 퍼즐을
+끝까지 풀어줘", "퍼즐 앱에서 Fifteen 끝까지"), a question ("어디까지 했어?") or a stop. A game asked for is answered
+with what will be done, made by code from the goal the host checked (`talk.promise`), and its end with what was
+handed back (`talk.handed_back`); a question, while a game is played or after, is answered by a model of its own
+(`--vision-model`, asked apart from the game's questions and budget) from the last screen shown, the goal, the
+time, the inputs, the game's progress as the loop tells it (`agent.progress`) and its handback, never stopping
+the loop or capturing the screen for it. The chat is kept across games (`CHAT_KEPT` lines) and sent to whoever
+comes in; what the loop did (the inputs, the looks) is a log under it. A request is read by one model
 question (`request.understand`): one that gives a page is played in Chromium, one that means an installed
 app on the Android device, which is started first when none is attached (`emulator`). The game is the one
 `eval web` and `eval android` play (`play_one`), with its files written under `--out` as theirs are.
 
 One game at a time: a request while one is played is refused, never queued, and so is one past the day's
-`--games-a-day`. Each game has a budget of inputs, seconds and model tokens. Stopping ends the game at its
-next input. Seeing the page and asking both need the token printed at the start: opened once with `?k=`,
+`--games-a-day`; what is typed past the day's `--chats-a-day` is not answered. Each game has a budget of inputs, seconds and model tokens. Stopping ends the game at its
+next input. Seeing the page and asking both need the token printed at the start (made anew each start, or fixed by
+`--token` or `GAMELAB_DEMO_TOKEN` so a fixed address keeps its link): opened once with `?k=`,
 it is kept in a cookie and the address is shown without it. Requests and the live connection are taken only
 from the server's own address (their Origin). A page a request named is opened only at a public address,
 and everything it loads is held to public addresses (`guard`).
@@ -30,16 +38,18 @@ import hmac
 from importlib.resources import files
 from io import BytesIO
 import json
+import os
 from pathlib import Path
+import re
 import secrets
 import time
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .. import request
+from .. import model as models, request
 from ..environments.android import AndroidSurface
 from ..environments.web import browser
-from . import android, guard, measure, web
+from . import android, guard, measure, talk, web
 from .emulator import AVD, Emulator
 
 PAGE = files(__package__) / "serve.html"
@@ -55,6 +65,17 @@ IDLE_S, IDLE_EVERY_S = 2.0, 1.0
 STOP_GRACE_S = 30.0
 # what of an input is shown in the log
 WHERE = ("key", "x", "y", "x0", "y0", "x1", "y1", "at", "to", "points", "direction", "text")
+# the chat's lines kept (across games, while the server runs), and how many of them a question's answer is given
+CHAT_KEPT, CHAT_TOLD = 200, 8
+# the game's progress events kept, and given to a question's answer; the last inputs given to it
+PROGRESS_KEPT, PROGRESS_TOLD, RECENT_TOLD = 60, 30, 5
+# a fixed access token: from --token or this variable (`.env`), long enough and fit for an address
+TOKEN_VARIABLE, TOKEN_SHORTEST = "GAMELAB_DEMO_TOKEN", 24
+TOKEN_LETTERS = re.compile(r"[A-Za-z0-9_-]+")
+# the events said in the chat; every other event is the game's own, kept from its request to the next
+CHAT = ("said", "reply")
+# a progress event's words at most
+SITUATION_MOST = 300
 
 
 def rounded(value: Any) -> Any:
@@ -135,10 +156,16 @@ class Shown:
 
 
 class Watched:
-    """The game's recorder, with each look and input also told as an event (`agent.Watch`)."""
+    """The game's recorder, with each look and input also told as an event (`agent.Watch`), and the loop's
+    progress (`agent.progress`) to `progressed`."""
 
-    def __init__(self, recorder: measure.Recorder, tell: Callable[[dict[str, Any]], None]) -> None:
-        self.recorder, self.tell = recorder, tell
+    def __init__(self, recorder: measure.Recorder, tell: Callable[[dict[str, Any]], None],
+                 progressed: Callable[[dict[str, Any]], None] | None = None) -> None:
+        self.recorder, self.tell, self.progressed = recorder, tell, progressed
+
+    def progress(self, event: dict[str, Any]) -> None:
+        if self.progressed is not None:
+            self.progressed(event)
 
     async def seen(self, png: bytes) -> None:
         await self.recorder.seen(png)
@@ -201,15 +228,45 @@ def played_on(out: Path, day: str) -> int:
     return len(list(out.glob(f"*-{day}-??????-01.json"))) if out.is_dir() else 0
 
 
+def chat_file(out: Path, day: str) -> Path:
+    return out / f"chat-{day}.jsonl"
+
+
+def chatted_on(out: Path, day: str) -> int:
+    """What people typed into the chat on a day, by the lines the demo kept of it."""
+    path = chat_file(out, day)
+    if not path.is_file():
+        return 0
+    return sum('"kind": "said"' in line for line in path.read_text(encoding="utf-8").splitlines())
+
+
+def token_for(args: argparse.Namespace) -> str | None:
+    """The access token fixed by `--token` or `GAMELAB_DEMO_TOKEN`; None when neither gives one (a new one is
+    made). One too short or with letters an address does not carry plainly is refused."""
+    token = getattr(args, "token", None) or os.environ.get(TOKEN_VARIABLE, "").strip() or None
+    if token is not None and (len(token) < TOKEN_SHORTEST or not TOKEN_LETTERS.fullmatch(token)):
+        raise SystemExit(f"a fixed token is {TOKEN_SHORTEST} letters at least, of A-Z a-z 0-9 _ - alone "
+                         f"(python -c 'import secrets; print(secrets.token_urlsafe(32))')")
+    return token
+
+
+def _brief(event: dict[str, Any]) -> dict[str, Any]:
+    """A progress event as it is shown and kept: its words cut short."""
+    return {key: value[:SITUATION_MOST] if isinstance(value, str) else value for key, value in event.items()}
+
+
 class Demo:
     """The server's state: the game being played, the people watching it, and what may be asked."""
 
     def __init__(self, args: argparse.Namespace, model: Any, writer: Any = None, *, token: str | None = None,
                  emulator: Any = None, device: Callable[[str], Any] | None = None,
                  apps: Callable[[Any], Any] | None = None, look: guard.Resolve = guard.resolve,
-                 connect: guard.Connect | None = None) -> None:
+                 connect: guard.Connect | None = None, chat: Any = None, sorter: Any = None) -> None:
+        # chat: the model that answers questions, apart from the game's (its tokens are not the game's); sorter: the
+        # one that sorts what is typed (a light one), the chat's own when none is given
         self.args, self.model, self.writer = args, model, writer
-        self.token = token or secrets.token_urlsafe(24)
+        self.chat, self.sorter = chat, sorter or chat
+        self.token = token or token_for(args) or secrets.token_urlsafe(24)
         self.emulator = emulator or Emulator(args.avd, prefer=getattr(args, "serial", None))
         self.device = device or (lambda serial: AndroidSurface(serial=serial))
         self.apps = apps or (lambda surface: android.installed(surface.run))
@@ -223,16 +280,33 @@ class Demo:
         self.cancel: asyncio.Event | None = None
         self.day = time.strftime("%Y%m%d")
         self.today = played_on(args.out, self.day)
+        self.chats = chatted_on(args.out, self.day)
+        # the chat, kept across games; and of the game being played (or the last one): its request, how it was
+        # read, when it started and ended, its progress, its last inputs and what it handed back
+        self.chat_log: deque[dict[str, Any]] = deque(maxlen=CHAT_KEPT)
+        self.current: dict[str, Any] | None = None
+        self.progress: list[dict[str, Any]] = []
+        self.recent: deque[dict[str, Any]] = deque(maxlen=RECENT_TOLD)
+        self.inputs = 0
+        self.answering = asyncio.Lock()
 
     # ── what everyone watching is sent ─────────────────────────────────
 
     def tell(self, event: dict[str, Any]) -> None:
         event = {**event, "at": round(time.time(), 2)}
-        # the looks are counted, not listed: a run of them is one event
-        if event["kind"] == "seen" and self.events and self.events[-1]["kind"] == "seen":
+        if event["kind"] in CHAT:
+            self.chat_log.append(event)
+            self._keep(event)
+        # the looks are counted, not listed: a run of them is one event (and so is a run of a falling game's pieces)
+        elif self.events and self.events[-1]["kind"] == event["kind"] and (
+                event["kind"] == "seen" or event["kind"] == "progress" and event.get("what") == "falling"
+                and self.events[-1].get("what") == "falling"):
             self.events[-1] = event
         else:
             self.events.append(event)
+        if event["kind"] == "sending":
+            self.recent.append({key: event[key] for key in ("number", "input", "where", "at")})
+            self.inputs = max(self.inputs, event["number"])
         for viewer in self.viewers:
             viewer.events.append(event)
             viewer.wake.set()
@@ -243,9 +317,23 @@ class Demo:
             viewer.frame = frame
             viewer.wake.set()
 
+    def _keep(self, event: dict[str, Any]) -> None:
+        """A line of the chat kept in the day's file under `--out` (what the day's chats are counted by)."""
+        try:
+            self.args.out.mkdir(parents=True, exist_ok=True)
+            with chat_file(self.args.out, time.strftime("%Y%m%d")).open("a", encoding="utf-8") as kept:
+                kept.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def say_back(self, text: str, about: str, **more: Any) -> None:
+        """A line the agent says in the chat."""
+        self.tell({"kind": "reply", "about": about, "text": text, **more})
+
     def status(self) -> dict[str, Any]:
         return {"kind": "status", "state": "playing" if self.playing else "idle",
-                "left_today": max(0, self.args.games_a_day - self._played_today())}
+                "left_today": max(0, self.args.games_a_day - self._played_today()),
+                "left_chats": max(0, self.args.chats_a_day - self._chatted_today())}
 
     @property
     def playing(self) -> bool:
@@ -254,19 +342,159 @@ class Demo:
     def _played_today(self) -> int:
         day = time.strftime("%Y%m%d")
         if day != self.day:
-            self.day, self.today = day, 0
+            self.day, self.today, self.chats = day, 0, 0
         return self.today
+
+    def _chatted_today(self) -> int:
+        self._played_today()
+        return self.chats
+
+    # ── the chat ──────────────────────────────────────────────────────
+
+    def say(self, words: str) -> str | None:
+        """What a person typed into the chat, answered in it; why not, when it is not taken."""
+        if self._chatted_today() >= self.args.chats_a_day:
+            return "chat_limit"
+        self.chats += 1
+        self.tell({"kind": "said", "words": words})
+        asyncio.get_running_loop().create_task(self.talk(words))
+        return None
+
+    async def talk(self, words: str) -> None:
+        """The words sorted and acted on: a game started (only when none is played), stopped, or a question
+        answered."""
+        ko = talk.korean(words)
+        try:
+            await self._talk(words, ko)
+        except Exception as error:
+            self.say_back(talk.said("no_answer", ko), "question", detail=f"{type(error).__name__}"[:200])
+
+    async def _talk(self, words: str, ko: bool) -> None:
+        kind = await talk.sort(self.sorter, words, self.playing) if self.sorter is not None else \
+            talk.QUESTION if self.playing else talk.GAME
+        self.tell({"kind": "sorted", "as": kind})
+        if kind == talk.STOP:
+            self.say_back(talk.said("stopping" if self.stop() else "idle", ko), "stop")
+        elif kind == talk.GAME:
+            # a game is never started while one is played: the person is told to ask again after it
+            if self.playing:
+                self.say_back(talk.said("busy", ko), "refused", reason="busy")
+            else:
+                self.ask(words, said=False)
+        else:
+            await self.answer(words, ko)
+
+    async def answer(self, words: str, ko: bool) -> None:
+        """A question answered by the chat's model from the game as it stands, while it is played too: nothing of
+        the game waits on it."""
+        if self.chat is None:
+            self.say_back(talk.said("no_answer", ko), "question")
+            return
+        async with self.answering:
+            context = self.context(words)
+            try:
+                text, usage = await talk.reply(self.chat, context, self.frame)
+            except Exception as error:
+                self.say_back(talk.said("no_answer", ko), "question", detail=f"{type(error).__name__}"[:200])
+                return
+            self.say_back(text or talk.said("no_answer", ko), "question",
+                          tokens={"input": usage.input_tokens, "output": usage.output_tokens})
+
+    def context(self, words: str) -> dict[str, Any]:
+        """What a question is answered from: the game being played or the last one, what the code counted of it,
+        its progress, its last inputs, its handback and the chat before the words."""
+        current = self.current
+        game = None
+        if current is not None:
+            asked = current.get("asked") or {}
+            goal = asked.get("goal")
+            game = {"request": current["words"], "where": asked.get("url") or asked.get("app"),
+                    "goal": goal.to_json() if hasattr(goal, "to_json") else None,
+                    "seconds": round((current.get("ended") or time.monotonic()) - current["started"], 1),
+                    "inputs": self.inputs}
+        before = [line for line in self.chat_log][:-1][-CHAT_TOLD:]
+        summary = (current or {}).get("summary")
+        return {"words": words, "playing": self.playing, "game": game, "known": self.counted(),
+                "progress": [{key: value for key, value in event.items() if key not in ("kind", "at")}
+                             for event in self.progress[-PROGRESS_TOLD:]],
+                "recent": list(self.recent),
+                "handback": None if summary is None else {
+                    "told": summary.get("told"), "outcome": summary.get("outcome"), "reason": summary.get("reason"),
+                    **{key: (summary.get("work") or {}).get(key) for key in ("levels", "stopped_at", "out_of_lives", "not_yet")
+                       if (summary.get("work") or {}).get(key)},
+                    **({"choice": summary["adaptation"]["choice"]} if (summary.get("adaptation") or {}).get("choice") else {})},
+                "chat": [{"who": "person" if line["kind"] == "said" else "agent", "text": line.get("words") or line.get("text")}
+                         for line in before]}
+
+    def counted(self) -> dict[str, Any]:
+        """What the code counted of the game: the levels, the family it was taken as, a falling game's lines and
+        pieces, how it ended."""
+        known: dict[str, Any] = {}
+        for event in self.progress:
+            what = event.get("what")
+            if what == "part" and "won" in event:
+                known["levels"] = {"won": event["won"], "lost": event["lost"], "wanted": event["wanted"]}
+            elif what == "taken":
+                known["family"] = event.get("family")
+            elif what == "let_go":
+                known["family_let_go"] = {"family": event.get("family"), "why": event.get("why")}
+            elif what == "falling":
+                known["falling"] = {"lines": event.get("lines"), "pieces": event.get("pieces")}
+            elif what == "identified" and event.get("falling"):
+                known["falling_game"] = True
+        summary = (self.current or {}).get("summary")
+        if summary is not None:
+            known["ended"] = {"outcome": summary.get("outcome"), "reason": summary.get("reason"),
+                              "inputs": summary.get("actions_used"), "moves": summary.get("confirmed_actions")}
+            levels = (summary.get("work") or {}).get("levels")
+            if levels:
+                known["levels"] = levels
+        return known
+
+    def progressed(self, event: dict[str, Any]) -> None:
+        """The loop's progress (`agent.progress`): kept for questions, shown in the log, and said in the chat for a
+        game identified and a level's end."""
+        what = event.get("what")
+        if what == "handback":
+            # the summary that follows holds it too; the end is said from that
+            return
+        kept = _brief(event)
+        if what == "falling" and self.progress and self.progress[-1].get("what") == "falling":
+            self.progress[-1] = kept
+        else:
+            self.progress = [*self.progress, kept][-PROGRESS_KEPT:]
+        self.tell({"kind": "progress", **kept})
+        ko = (self.current or {}).get("ko", True)
+        if what == "identified":
+            found = ("떨어지는 블록 게임으로 보고 코드가 두겠습니다" if ko else "It is a falling-block game: the code plays it") \
+                if event.get("falling") else (("게임을 알아봤습니다. 계열 후보: " if ko else "Identified the game. Families to try: ")
+                                              + ", ".join(event.get("candidates") or ()) if event.get("candidates") else
+                                              ("맞는 계열이 없어 모델이 직접 둡니다" if ko else "No family fits: the model plays it itself"))
+            self.say_back(found + ".", "progress")
+        elif what == "part" and "won" in event and event.get("outcome") in ("goal_reached", "game_over"):
+            # (a part that ended any other way ended no level: the end says why)
+            won = event.get("outcome") == "goal_reached"
+            self.say_back((f"레벨 하나를 {'깼' if won else '졌'}습니다: {event['won']}/{event['wanted']}개 깸, {event['lost']}개 짐."
+                           if ko else f"A level {'won' if won else 'lost'}: {event['won']} of {event['wanted']} won, {event['lost']} lost."),
+                          "progress")
 
     # ── a game ────────────────────────────────────────────────────────
 
-    def ask(self, words: str) -> str | None:
-        """Start a game for the words; why not, when it is not started."""
-        if self.playing:
-            return "busy"
-        if self._played_today() >= self.args.games_a_day:
-            return "day_limit"
+    def ask(self, words: str, said: bool = True) -> str | None:
+        """Start a game for the words; why not, when it is not started (and said so in the chat). `said`: the words
+        are put in the chat too (they came by `/ask`, not typed into it)."""
+        ko = talk.korean(words)
+        if said:
+            self.tell({"kind": "said", "words": words})
+        why = "busy" if self.playing else "day_limit" if self._played_today() >= self.args.games_a_day else None
+        if why is not None:
+            self.say_back(talk.said(why, ko), "refused", reason=why)
+            return why
         self.today += 1
         self.events = []
+        self.current = {"words": words, "ko": ko, "started": time.monotonic()}
+        self.progress, self.inputs = [], 0
+        self.recent.clear()
         self.cancel = asyncio.Event()
         self.game = asyncio.get_running_loop().create_task(self.play(words, self.cancel))
         return None
@@ -297,56 +525,73 @@ class Demo:
         args.asked = asked
         return args
 
+    def refuse(self, reason: str, detail: str = "") -> None:
+        self.tell({"kind": "refused", "reason": reason, **({"detail": detail} if detail else {})})
+        self.say_back(talk.said(reason, (self.current or {}).get("ko", True)), "refused", reason=reason)
+
     async def play(self, words: str, cancel: asyncio.Event) -> None:
         self.tell({"kind": "asked", "words": words})
         self.tell(self.status())
         stamp = time.strftime("%Y%m%d-%H%M%S")
+        ko = talk.korean(words)
         try:
             asked = await request.understand(self.model, words)
             surface = serial = None
             if asked["url"] is None and asked["hint"] is None:
                 # words that name no page and say nothing of a game do not start the emulator
-                self.tell({"kind": "refused", "reason": "no_game"})
+                self.refuse("no_game")
                 return
             if asked["url"] is None and self.args.web_only:
                 # the device is not this demo's to move (another run measures on it)
-                self.tell({"kind": "refused", "reason": "web_only"})
+                self.refuse("web_only")
                 return
+            label = None
             if asked["url"] is None:
                 # no page: an app on the device, which is asked about again with the apps installed there
                 serial = await self.emulator.ensure(lambda: self.tell({"kind": "opening", "where": "emulator"}))
                 surface = self.device(serial)
-                asked = await request.understand(self.model, words, await self.apps(surface))
+                installed = await self.apps(surface)
+                asked = await request.understand(self.model, words, installed)
+                label = next((app.get("label") for app in installed if app["package"] == asked["app"]), None)
+            self.current["asked"] = asked
             self.tell({"kind": "understood", "url": asked["url"], "app": asked["app"], "goal": asked["goal"].to_json(),
                        "hint": asked["hint"]})
+            if asked["url"] is None and asked["app"] is None:
+                self.refuse("no_game")
+                return
+            self.say_back(talk.promise({**asked, "app": label or asked["app"]},
+                                       {"inputs": self.args.max_actions, "seconds": self.args.max_seconds}, ko), "start")
             if asked["url"] is not None:
                 summary = await self.web_game(asked, f"web-{stamp}", cancel)
-            elif asked["app"] is not None:
-                summary = await self.android_game(asked, f"app-{stamp}", serial, surface, cancel)
             else:
-                self.tell({"kind": "refused", "reason": "no_game"})
-                return
+                summary = await self.android_game(asked, f"app-{stamp}", serial, surface, cancel)
+            self.current["summary"] = summary
             adapted = summary.get("adaptation") or {}
             self.tell({"kind": "result", "outcome": summary["outcome"], "reason": summary["reason"],
                        "actions": summary["actions_used"], "confirmed": summary["confirmed_actions"],
                        "tokens": adapted.get("tokens") or summary.get("model_tokens"), "seconds": summary["seconds"],
                        "family": (adapted.get("identified") or {}).get("family"), "generations": adapted.get("generations"),
                        "name": summary["name"], **({"told": summary["told"]} if summary.get("told") else {})})
+            self.say_back(talk.handed_back(summary, ko), "end")
         except guard.Refused:
-            self.tell({"kind": "refused", "reason": "not_public"})
+            self.refuse("not_public")
         except measure.Busy as busy:
-            self.tell({"kind": "refused", "reason": "in_use", "detail": str(busy)})
+            self.refuse("in_use", str(busy))
         except asyncio.CancelledError:
             self.tell({"kind": "result", "outcome": "budget_exhausted", "reason": "cancelled", "cut": True})
+            self.say_back(talk.handed_back({"outcome": "budget_exhausted", "reason": "cancelled"}, ko), "end")
             raise
         except Exception as error:
             self.tell({"kind": "error", "detail": f"{type(error).__name__}: {error}"[:500]})
+            self.say_back(talk.said("error", ko, f"{type(error).__name__}"), "end")
         finally:
             self.game = None
+            if self.current is not None:
+                self.current["ended"] = time.monotonic()
             self.tell(self.status())
 
     def watching(self, recorder: measure.Recorder) -> Watched:
-        return Watched(recorder, self.tell)
+        return Watched(recorder, self.tell, self.progressed)
 
     async def web_game(self, asked: dict[str, Any], name: str, cancel: asyncio.Event) -> dict[str, Any]:
         args = self.game_args(web.configure, asked)
@@ -429,7 +674,8 @@ class Demo:
             connection = http.WebSocketResponse(heartbeat=30)
             await connection.prepare(req)
             viewer = Viewer()
-            viewer.events.extend([*self.events, self.status()])
+            # the chat first, then this game's own events
+            viewer.events.extend([*self.chat_log, *self.events, self.status()])
             viewer.frame = self.frame
             viewer.wake.set()
             self.viewers.add(viewer)
@@ -454,6 +700,18 @@ class Demo:
                 return http.json_response({"refused": why}, status=409 if why == "busy" else 429)
             return http.json_response({"started": True}, status=202)
 
+        async def say(req: Any) -> Any:
+            try:
+                words = (await req.json()).get("words")
+            except (ValueError, AttributeError):
+                words = None
+            if not isinstance(words, str) or not words.strip() or len(words) > WORDS_MOST:
+                return http.json_response({"refused": "words"}, status=400)
+            why = self.say(words.strip())
+            if why is not None:
+                return http.json_response({"refused": why}, status=429)
+            return http.json_response({"said": True}, status=202)
+
         async def stop(req: Any) -> Any:
             return http.json_response({"stopping": True}, status=202) if self.stop() else \
                 http.json_response({"refused": "idle"}, status=409)
@@ -465,6 +723,9 @@ class Demo:
         app.router.add_get("/", page)
         app.router.add_get("/ws", socket)
         app.router.add_post("/ask", ask)
+        # what is typed into the chat: sorted there into a game, a question or a stop (`/ask` and `/stop` stay: a
+        # game asked for in so many words and the stop button need no model question and no chat of the day)
+        app.router.add_post("/say", say)
         app.router.add_post("/stop", stop)
         app.on_cleanup.append(closing)
         return app
@@ -479,17 +740,24 @@ async def main(args: argparse.Namespace) -> int:
     if model is None:
         raise SystemExit("a game is played with a model: name one with --vision-model")
     writer_client, writer = measure.writer_model(args, model)
-    demo = Demo(args, model, writer)
+    # the chat's own clients: its questions are not the game's (their tokens, their budget)
+    key = models.api_key()
+    chat_client = models.ChatClient(args.vision_model, key, base=args.model_base)
+    light = args.light_model if args.light_model and args.light_model != "none" else None
+    sort_client = models.ChatClient(light, key, base=args.model_base) if light else None
+    fixed = token_for(args)
+    demo = Demo(args, model, writer, token=fixed, chat=models.Recorded(chat_client), sorter=sort_client)
     runner = http.AppRunner(demo.application())
     await runner.setup()
     try:
         await http.TCPSite(runner, args.host, args.port).start()
-        print(json.dumps({"serving": f"http://{args.host}:{args.port}/?k={demo.token}",
-                          "out": str(args.out), "games_a_day": args.games_a_day}), flush=True)
+        print(json.dumps({"serving": f"http://{args.host}:{args.port}/?k={demo.token}", "token": "fixed" if fixed else "new",
+                          "out": str(args.out), "games_a_day": args.games_a_day, "chats_a_day": args.chats_a_day,
+                          "sorter": light or args.vision_model}), flush=True)
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
-        for opened in (client, writer_client):
+        for opened in (client, writer_client, chat_client, sort_client):
             if opened is not None:
                 await opened.close()
     return 0
@@ -507,6 +775,10 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-seconds", type=float, default=900, help="one game's seconds at most")
     parser.add_argument("--max-input-tokens", type=int, default=300_000, help="the tokens one game's model questions may send")
     parser.add_argument("--games-a-day", type=int, default=20, help="games played a day at most")
+    parser.add_argument("--chats-a-day", type=int, default=200,
+                        help="what may be typed into the chat a day at most (each is a model question or two)")
+    parser.add_argument("--token", help=f"a fixed access token ({TOKEN_VARIABLE} unless given; else a new one each start), "
+                                        f"{TOKEN_SHORTEST} letters at least")
     parser.add_argument("--accept-consent", action="store_true",
                         help="agree to a site's terms when it offers no refusal (else the game stops there)")
     parser.add_argument("--serial", help="the device to play apps on when several are attached (adb -s)")
