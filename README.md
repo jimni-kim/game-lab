@@ -59,6 +59,7 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 # 풀이기 실력 (화면 없음, 비용 없음)
 .venv/bin/python -m gamelab.eval policies --games 100 --out out/policies.json
 .venv/bin/python -m gamelab.eval policies --family falling --games 1000 --rule goal_lines=2 --rule goal_pieces=9 --hide goal_lines --hide goal_pieces   # 층의 목표, 목표를 모를 때와 견줌
+.venv/bin/python -m gamelab.eval policies --family falling --games 500 --rule 'pieces="pentomino"' --rule goal_lines=2 --rule goal_pieces=9   # 4칸이 아닌 조각(pentomino, small)
 
 # 모델 설정은 .env에 둔다 (.env.example 참고). 쓸 수 있는 모델 이름 보기:
 .venv/bin/python -m gamelab.eval models
@@ -131,6 +132,6 @@ cloudflared tunnel run --url http://127.0.0.1:8765 game-lab-demo
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 703개, 약 18분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 713개, 약 17분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```

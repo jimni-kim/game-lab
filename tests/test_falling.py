@@ -284,3 +284,72 @@ def test_a_preview_box_said_wider_than_the_frame_round_it_is_read():
     out = BytesIO()
     image.save(out, "PNG")
     assert realtime.Preview([0, 0, 100, 70]).read(out.getvalue(), None, 4) == rules.Cells({(0, 2), (1, 0), (1, 1), (1, 2)})
+
+
+# ── pieces of other sizes (PLAN §34, F6) ─────────────────────────────
+
+def test_the_simulated_game_deals_pieces_of_five_cells_or_of_one_to_four():
+    # the eighteen one-sided pieces of five, each a kind of its own; the small set has pieces of one to four
+    assert len({rules.kind(piece) for piece in rules.PIECE_SETS["pentomino"]}) == 18
+    assert {len(piece) for piece in rules.PIECE_SETS["small"]} == {1, 2, 3, 4}
+    for name, size in (("pentomino", {5}), ("small", {1, 2, 3, 4})):
+        game = policies.play("falling", "lookahead", 2000, 0, 30, (), {"pieces": name})
+        assert game["moves"] > 0
+        state = rules.initial_state({**rules.DEFAULT_RULES, "pieces": name}, 12345)
+        assert len(state["piece"]) in size
+
+
+def test_the_piece_after_the_next_is_averaged_over_the_pieces_the_game_deals():
+    stack = Cells({(r, c) for r in (18, 19) for c in range(10) if c not in (4, 5)})
+    piece, coming = Cells({(0, 0), (0, 1), (1, 0), (1, 1)}), Cells({(0, 0), (0, 1), (0, 2), (0, 3)})
+    goal = {"lines": 3, "pieces": 5}
+    seven = solver.place(stack, piece, 20, 10, policy="lookahead", queue=[coming], goal=goal)
+    none = solver.place(stack, piece, 20, 10, policy="lookahead", queue=[coming], goal=goal, dealt=())
+    five = solver.place(stack, piece, 20, 10, policy="lookahead", queue=[coming], goal=goal,
+                        dealt=rules.PIECE_SETS["pentomino"])
+    assert none["nodes"] < seven["nodes"] < five["nodes"]
+    assert seven["column"] == five["column"] == 4
+
+
+def test_a_preview_of_pieces_of_five_is_read_as_such():
+    preview = realtime.Preview([0, 0, 90, 70])
+    for piece in rules.PIECE_SETS["pentomino"]:
+        assert preview.read(_drawn(piece, 10), size={5}) == rules.normal(piece), piece
+
+
+def test_a_square_in_the_preview_is_one_cell_or_four_by_the_width_of_cells_read_right_before():
+    # a game of pieces of one to four cells: a filled square is a piece of one or the square of four, as the
+    # preview's cells are wide; that width is learned from the reads that came true
+    preview = realtime.Preview([0, 0, 90, 70])
+    one = _drawn([(0, 0)], 24)
+    assert preview.read(one, size={1, 2, 3, 4}) == O
+    assert preview.read(_drawn([(0, 0), (0, 1)], 24), size={1, 2, 3, 4}) == Cells({(0, 0), (0, 1)})
+    preview.came_true()
+    assert preview.read(one, size={1, 2, 3, 4}) == Cells({(0, 0)})
+
+
+MIXED = [[(0, 0)], [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)], [(0, 0), (0, 1)], [(0, 0), (1, 0), (1, 1)],
+         [(0, 0), (0, 1), (0, 2)], [(0, 1), (1, 0), (1, 1), (1, 2)], [(0, 0), (0, 1), (1, 0), (1, 1)]]
+
+
+async def test_a_game_of_pieces_of_one_to_five_cells_is_played_without_waiting_on_each_size(monkeypatch):
+    # (PLAN §34, F6) the loop took the size most pieces had for the game's: a piece of five was looked at again
+    # as a misread each time it came, and a piece of one or two at the well's top was waited on as one still
+    # coming in from above
+    import test_realtime
+    monkeypatch.setattr(test_realtime, "PIECES", MIXED)
+    monkeypatch.setattr(realtime, "IDLE_S", 0.3)
+    events = []
+    note = realtime.Loop._note
+
+    def noted(self, **what):
+        events.append(what.get("event"))
+        return note(self, **what)
+    monkeypatch.setattr(realtime.Loop, "_note", noted)
+    run, made = await play(Falling(every=4), Guide(ANSWER), None, goal=GoalSpec("reach_value", 4),
+                           budget=Budget(3000, 1, 60))
+    told = made["realtime"]
+    # before: the piece of five that came second was doubted until it lay, and the well was let go unread
+    assert run.record["outcome"] == "goal_reached", (run.record, told)
+    assert told["effects"]["confirmed"] == told["pieces"] and told["resyncs"] == 0
+    assert events.count("odd_piece") <= 3

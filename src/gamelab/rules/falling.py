@@ -30,7 +30,8 @@ Cells = frozenset
 EMPTY, FILLED = 0, 1
 # the standard well, the pieces it shows coming, the rows a game begins with (each full but for one cell), and a
 # level's goal
-DEFAULT_RULES = {"rows": 20, "cols": 10, "preview": 1, "garbage": 0, "goal_lines": None, "goal_pieces": None}
+DEFAULT_RULES = {"rows": 20, "cols": 10, "preview": 1, "garbage": 0, "goal_lines": None, "goal_pieces": None,
+                 "pieces": "tetromino"}
 # the pieces the simulated game deals from: the seven of four cells, each as it first shows
 STANDARD_PIECES = (
     ((0, 0), (0, 1), (0, 2), (0, 3)),          # I
@@ -41,6 +42,24 @@ STANDARD_PIECES = (
     ((0, 0), (1, 0), (1, 1), (1, 2)),          # J
     ((0, 2), (1, 0), (1, 1), (1, 2)),          # L
 )
+# (PLAN §34, F6) the same rules with pieces of other sizes: the eighteen pieces of five cells as they turn (the
+# twelve and the mirror of the six that are not their own mirror), and pieces of one to four cells (one, two, the
+# two of three, and the seven of four). The rule value `pieces` names the set the simulated game deals from
+_FIVE = (
+    ((0, 1), (0, 2), (1, 0), (1, 1), (2, 1)),  # F
+    ((0, 0), (0, 1), (0, 2), (0, 3), (0, 4)),  # I
+    ((0, 0), (1, 0), (2, 0), (3, 0), (3, 1)),  # L
+    ((0, 1), (1, 1), (2, 0), (2, 1), (3, 0)),  # N
+    ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0)),  # P
+    ((0, 0), (0, 1), (0, 2), (1, 1), (2, 1)),  # T
+    ((0, 0), (0, 2), (1, 0), (1, 1), (1, 2)),  # U
+    ((0, 0), (1, 0), (2, 0), (2, 1), (2, 2)),  # V
+    ((0, 0), (1, 0), (1, 1), (2, 1), (2, 2)),  # W
+    ((0, 1), (1, 0), (1, 1), (1, 2), (2, 1)),  # X
+    ((0, 1), (1, 0), (1, 1), (2, 1), (3, 1)),  # Y
+    ((0, 0), (0, 1), (1, 1), (2, 1), (2, 2)),  # Z
+)
+SMALL_PIECES = (((0, 0),), ((0, 0), (0, 1)), ((0, 0), (0, 1), (0, 2)), ((0, 0), (1, 0), (1, 1)), *STANDARD_PIECES)
 # a placement leaves one state; the piece dealt after it is chance (the general solvers are not offered it: a piece
 # drawn after each move is a chance node whose outcomes a search would weigh by a dealing nobody knows)
 CAPABILITIES = ("chance_sampled",)
@@ -54,6 +73,27 @@ def normal(cells: Any) -> Cells:
     return Cells((r - top, c - left) for r, c in cells)
 
 
+def kind(cells: Any) -> tuple:
+    """The same for every turn of a piece: which piece it is, whatever way it is turned now."""
+    return min(tuple(sorted(shape)) for shape in turns(cells))
+
+
+def _one_sided(pieces: tuple) -> tuple:
+    """Each piece and, where turning does not make it, its mirror: the pieces as a game that only turns them has."""
+    out, seen = [], set()
+    for piece in pieces:
+        for shape in (piece, tuple(sorted(normal(Cells((r, -c) for r, c in piece))))):
+            if kind(shape) not in seen:
+                seen.add(kind(shape))
+                out.append(tuple(sorted(shape)))
+    return tuple(out)
+
+
+def dealt(rules: dict) -> tuple:
+    """The pieces the simulated game deals from, by the rule value `pieces`."""
+    return PIECE_SETS[rules.get("pieces") or "tetromino"]
+
+
 def turns(cells: Any) -> list[Cells]:
     """A piece's shapes as it turns a quarter at a time, each with its top-left at (0, 0), without repeats."""
     out: list[Cells] = []
@@ -63,6 +103,10 @@ def turns(cells: Any) -> list[Cells]:
             out.append(shape)
         shape = normal(Cells((c, -r) for r, c in shape))
     return out
+
+
+# the sets the rule value `pieces` names (`dealt`)
+PIECE_SETS = {"tetromino": STANDARD_PIECES, "pentomino": _one_sided(_FIVE), "small": SMALL_PIECES}
 
 
 def fall(stack: Cells, cells: Cells, rows: int, cols: int) -> Cells | None:
@@ -251,9 +295,10 @@ def assess(before: dict, action: dict, after: dict, rules: dict) -> dict:
 
 # ── the simulated game's own dealing (seeded by the caller) ───────────
 
-def _piece(draw: int) -> tuple[list[list[int]], int]:
-    draw, pick = divmod(draw, len(STANDARD_PIECES))
-    return [list(cell) for cell in STANDARD_PIECES[pick]], draw
+def _piece(draw: int, rules: dict) -> tuple[list[list[int]], int]:
+    pieces = dealt(rules)
+    draw, pick = divmod(draw, len(pieces))
+    return [list(cell) for cell in pieces[pick]], draw
 
 
 def unread_state(rules: dict, scene: str) -> dict:
@@ -271,7 +316,7 @@ def initial_state(rules: dict, draw: int) -> dict:
         board[row] = [EMPTY if c == hole else FILLED for c in range(rules["cols"])]
     dealt = []
     for _ in range(1 + rules["preview"]):
-        piece, draw = _piece(draw)
+        piece, draw = _piece(draw, rules)
         dealt.append(piece)
     return {"board": board, "piece": dealt[0], "next": dealt[1:], "lines": 0, "pieces": 0, "score": 0}
 
@@ -282,7 +327,7 @@ def next_state(state: dict, rules: dict, action: dict, draw: int) -> dict:
     if action.get("kind") == "new_game":
         return initial_state(rules, draw)
     after = apply(state, rules, action)["state"]
-    coming = [*(state.get("next") or []), _piece(draw)[0]]
+    coming = [*(state.get("next") or []), _piece(draw, rules)[0]]
     return {**after, "piece": coming[0], "next": coming[1:1 + rules["preview"]]}
 
 

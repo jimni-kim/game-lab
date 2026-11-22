@@ -139,8 +139,12 @@ LET_GO = ("piece_still", "covered", "idle")
 PREVIEW_PX, PREVIEW_FAR, PREVIEW_LIT, PREVIEW_SQUARE, PREVIEW_MISSES = 96, 40, 6, 0.25, 3
 # colours are taken as one for the preview's background when each channel falls in the same step of this many
 PREVIEW_SHADE = 24
-# the cells of a piece in the games the loop's rules are of
+# the cells of a piece in the games the loop's rules are of: what a preview is first read as, until a piece came to
+# lie (F6: a game's pieces may have other sizes, and then the sizes seen are what is read)
 PIECE_CELLS = 4
+# (F6) a preview's cells are as wide as those of the reads that came true, within this share; the piece after the
+# next is averaged over the pieces seen once this many kinds were (fewer: over the seven of four cells)
+PREVIEW_CELL_NEAR, KINDS_LEAST = 0.2, 3
 # what a model says of the next piece's box when the screen does not show the game going yet
 NEXT_LATER = "after_start"
 # a level's goal is believed up to this many rows or pieces
@@ -309,10 +313,20 @@ class Preview:
 
     def __init__(self, box: list[int]) -> None:
         self.box = box
+        # the width of a cell in the read last, and in those that came true (F6)
+        self.last: float | None = None
+        self.widths: collections.deque = collections.deque(maxlen=FALLS_KEPT)
 
-    def read(self, png: bytes, region: list[int] | None = None, size: int | None = None) -> Cells | None:
+    def came_true(self) -> None:
+        """The read last was the piece that came: its cells' width is the preview's (F6)."""
+        if self.last is not None:
+            self.widths.append(self.last)
+
+    def read(self, png: bytes, region: list[int] | None = None, size: Any = None) -> Cells | None:
         """The next piece's shape, or None when the box shows none that can be told. `size`: the cells the game's
-        pieces have had (four, the rules' own, until one came to lie), preferred over any other split."""
+        pieces have had, one size or several (four, the rules' own, until one came to lie), preferred over any other
+        split; a split into cells as wide as those of the reads that came true is preferred over all (F6: a square
+        of four is a piece of one cell, or of four, by its cells' width alone)."""
         from PIL import Image
 
         image = within(pixels.decode(png, None), self.box, region)
@@ -342,14 +356,18 @@ class Preview:
             x, y = i % wide, i // wide
             edge.extend(j for j, ok in ((i - 1, x > 0), (i + 1, x < wide - 1), (i - wide, y > 0), (i + wide, y < high - 1))
                         if ok and inner[j])
+        sizes = {size} if isinstance(size, int) else set(size or ()) or {PIECE_CELLS}
+        width = statistics.median(self.widths) if self.widths else None
+        self.last = None
         for shown in ((inner, lit) if inner != lit else (lit,)):
-            found = self._split(shown, wide, size)
+            found = self._split(shown, wide, sizes, width)
             if found is not None:
-                return found
+                self.last = found[1]
+                return found[0]
         return None
 
     @staticmethod
-    def _split(lit: list[bool], wide: int, size: int | None) -> Cells | None:
+    def _split(lit: list[bool], wide: int, sizes: set[int], width: float | None) -> tuple[Cells, float] | None:
         """The piece the lit pixels make: their extent split into square cells each filled or empty."""
         xs = [i % wide for i, on in enumerate(lit) if on]
         ys = [i // wide for i, on in enumerate(lit) if on]
@@ -376,11 +394,11 @@ class Preview:
                 if not whole(Cells(cells)) or {r for r, _ in cells} != set(range(down)) \
                         or {c for _, c in cells} != set(range(across)):
                     continue
-                key = (len(cells) == (size or PIECE_CELLS), len(cells), -unsure,
-                       -abs(cell_x - cell_y) / max(cell_x, cell_y))
+                key = (width is not None and abs(cell_x - width) <= PREVIEW_CELL_NEAR * width, len(cells) in sizes,
+                       len(cells), -unsure, -abs(cell_x - cell_y) / max(cell_x, cell_y))
                 if found is None or key > found[0]:
-                    found = (key, Cells(cells))
-        return found[1] if found else None
+                    found = (key, Cells(cells), cell_x)
+        return (found[1], found[2]) if found else None
 
 
 def _key(value: Any) -> str | None:
@@ -647,8 +665,12 @@ class Loop:
             self.side = {**kept, "from": {"left": left[:2], "right": right[:2]}, "misses": 0}
         self.screen: list[int] | None = None
         self.wait, self.lags = WAIT_S, collections.deque(maxlen=LAGS_KEPT)
-        # how many cells the pieces that came to lie had
+        # how many cells the pieces that came to lie had; and (F6) the kinds of piece seen to come to lie where the
+        # code could tell (as planned, or straight down), each as it was seen
         self.sizes: collections.Counter = collections.Counter()
+        self.kinds: dict[tuple, Cells] = {}
+        # the size a preview was read as when none was known yet (F6)
+        self.guessed: int | None = None
         # how long a piece was seen to take to fall a row, the last few
         self.falls: collections.deque = collections.deque(maxlen=FALLS_KEPT)
         self.sent_at = 0.0
@@ -744,6 +766,7 @@ class Loop:
         # a stack other than planned is waited on to read the same twice
         fell_at: float | None = None
         doubt_since: float | None = None
+        doubted: Cells | None = None
         clear_since: float | None = None
         twice: Cells | None = None
         while True:
@@ -766,17 +789,23 @@ class Loop:
             idle_since = now
             piece = None if missing else piece_in(self.stack, extra, rows, cols, plan["turns"] if plan else None,
                                                   self.well.unlike())
-            usual = self.sizes.most_common(1)
-            if piece is not None and usual and len(piece) > usual[0][0]:
+            known = self._sizes()
+            if piece is not None and known and len(piece) > max(known) \
+                    and not (plan is not None and normal(piece) in plan["turns"]):
                 # more cells than the game's pieces have had (F5: a placed piece with a row-clear's words and a drop's
                 # trail drawn on it read as one piece of five, planned for, and the drop sent for it took the next
-                # piece unplanned): looked at again until it passes, or has stood so long
-                doubt_since = doubt_since or now
-                if now - doubt_since < COMING_S:
-                    self._note(event="odd_piece")
-                    continue
+                # piece unplanned): looked at again until it passes, or has stood so long. One seen to go down a row
+                # as it stood is a piece (F6: a game's first piece of five, its pieces of one to four seen before)
+                fell = doubted is not None and normal(doubted) == normal(piece) \
+                    and min(c for _, c in doubted) == min(c for _, c in piece) \
+                    and min(r for r, _ in doubted) < min(r for r, _ in piece)
+                if not fell:
+                    doubted, doubt_since = piece, doubt_since or now
+                    if now - doubt_since < COMING_S:
+                        self._note(event="odd_piece")
+                        continue
             else:
-                doubt_since = None
+                doubted = doubt_since = None
             if piece is not None:
                 # a piece on its way over the stack as the code knows it (with its shadow, where a game draws one)
                 odd_since = odd_last = None
@@ -789,8 +818,8 @@ class Loop:
                 self.shadow = self.shadow or piece != extra
                 shape = normal(piece)
                 if plan is None or shape not in plan["turns"]:
-                    if usual and len(piece) < usual[0][0] and piece == extra and min(r for r, _ in piece) == 0 \
-                            and now - still[1] < COMING_S:
+                    if known and len(piece) < max(known) and self.rules.kind(piece) not in self.kinds \
+                            and piece == extra and min(r for r, _ in piece) == 0 and now - still[1] < COMING_S:
                         # part of it is still above the well: what is sent now would go to a piece not yet seen
                         self._note(event="coming")
                         continue
@@ -997,7 +1026,8 @@ class Loop:
         """Where the solver puts the piece on the stack as it stands, with the next piece where it was read and what
         is left of the level's goal."""
         return self.solver.place(self.stack, piece, self.well.rows, self.well.cols, policy=self.policy,
-                                 queue=[self.coming] if self.coming is not None else [], goal=self._left(), only=only)
+                                 queue=[self.coming] if self.coming is not None else [], goal=self._left(), only=only,
+                                 dealt=list(self.kinds.values()) if len(self.kinds) >= KINDS_LEAST else None)
 
     def _left(self) -> dict[str, Any] | None:
         """The level's goal still to meet: rows to clear and pieces left for them (this one among them)."""
@@ -1013,18 +1043,32 @@ class Loop:
         held against this one, which it was to be. A preview read wrong more often than right is not read again."""
         if self.coming is not None:
             hit = normal(piece) in self.rules.turns(self.coming)
-            self.foreseen["matched" if hit else "missed"] += 1
+            if hit and self.preview is not None:
+                self.preview.came_true()
+            if hit or self.guessed is None:
+                # (F6) a read made before any piece came to lie took the size of a piece of four cells: a miss then
+                # is the guess's, not the preview's
+                self.foreseen["matched" if hit else "missed"] += 1
             if self.foreseen["missed"] >= PREVIEW_MISSES and self.foreseen["missed"] > self.foreseen["matched"]:
                 self.preview = None
         self.coming = None
         if self.preview is None or getattr(self, "png", None) is None:
             return
         try:
-            self.coming = self.preview.read(self.png, self.region, self.sizes.most_common(1)[0][0]
-                                            if self.sizes else None)
+            self.guessed = None if self._sizes() else PIECE_CELLS
+            self.coming = self.preview.read(self.png, self.region, self._sizes() or None)
         except Exception:
             self.coming = None
         self.foreseen["read" if self.coming is not None else "unread"] += 1
+
+    def _sizes(self) -> set[int]:
+        """The sizes of the pieces this game has: those of the kinds seen to come to lie where the code could tell,
+        or, before any was, the size most pieces that came to lie had (F6: a game of pieces of several sizes has
+        them all, and a piece of five in a game of fours is no more taken for a misread than a piece of one)."""
+        if self.kinds:
+            return {len(shape) for shape in self.kinds.values()}
+        usual = self.sizes.most_common(1)
+        return {usual[0][0]} if usual else set()
 
     def _still_s(self) -> float:
         """How long a piece stands as it stood before it is not being played: longer in a game seen to let its
@@ -1110,6 +1154,8 @@ class Loop:
                 piece: Cells | None = None) -> None:
         if piece is not None:
             self.sizes[len(piece)] += 1
+            if effect in ("confirmed", "elsewhere"):
+                self.kinds.setdefault(self.rules.kind(piece), normal(piece))
         self.pieces += 1
         self.effects[effect] += 1
         self.piece_s.append(seconds)

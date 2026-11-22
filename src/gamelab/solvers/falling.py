@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..rules.falling import STANDARD_PIECES, Cells, fall, level_spent, listed, normal, settle, stack_of, turns
+from ..rules.falling import STANDARD_PIECES, Cells, dealt, fall, level_spent, listed, normal, settle, stack_of, turns
 
 POLICIES = ("greedy", "lookahead")
 # the weights such games are played by (the height of all columns, lines cleared, holes, unevenness): Yiyuan Lee's,
@@ -46,7 +46,8 @@ GOAL_SOON, W_GOAL, W_NEAR = 12, 2.0, 0.15
 # placements of this piece and the best SECONDS of the next on each. The goal's bonus averaged so is about the
 # chance of meeting it within three pieces (as solution-finder's `percent` reckons a perfect clear's). Simulated, it
 # met a level's goal 2 to 5 points more often than the two pieces alone (90.8 -> 96.0% of 500 levels of 2 rows in
-# 9 pieces), at about 25 ms a piece; the third pieces are drawn evenly from the seven, as the simulated game does
+# 9 pieces), at about 25 ms a piece; the third pieces are drawn evenly from those the game deals (`place`'s
+# `dealt`: the seven of four cells unless said, F6)
 EXPECT_FIRSTS, EXPECT_SECONDS = 3, 2
 
 
@@ -147,13 +148,15 @@ def _options(well: list[int], piece: Cells, rows: int, cols: int, only: Cells | 
 
 def place(stack: Cells, piece: Cells, rows: int, cols: int, *, policy: str = "greedy", queue: list[Cells] = (),
           goal: dict | None = None, only: Cells | None = None, budget: int = DEFAULT_BUDGET,
-          excluded: list[tuple[Cells, int]] = ()) -> dict[str, Any] | None:
+          excluded: list[tuple[Cells, int]] = (), dealt: Any = None) -> dict[str, Any] | None:
     """Where to put the piece: `{"shape", "column", "placed", "after", "lines", "score", "nodes"}`, the turn of it
     and the column of its leftmost cell that leave the best well when it is dropped straight down from the top.
     `queue`: the coming pieces the game shows, first first (`lookahead` places the first of them too). `goal`: the
     level's (`{"lines", "pieces"}`, what is still to clear and the pieces left for it, this one among them).
     `only`: this turn of it alone (the game would not turn it further). `excluded`: (shape, column) not to choose.
-    None when it fits nowhere."""
+    `dealt`: the pieces the game deals, each once (the piece after the next is averaged over them near a level's
+    end); None: the seven of four cells, empty: the piece after the next is not weighed. None when it fits nowhere."""
+    thirds = [normal(Cells(map(tuple, cells))) for cells in (STANDARD_PIECES if dealt is None else dealt)]
     if policy not in POLICIES:
         raise ValueError("unknown_policy")
     full = (1 << cols) - 1
@@ -191,7 +194,7 @@ def place(stack: Cells, piece: Cells, rows: int, cols: int, *, policy: str = "gr
                 # the goal is met by this piece: nothing after it matters
                 found, kept = (alone if found is None else max(found, alone)), []
             scores[i], seconds[i] = (DEAD + alone if found is None else found), kept
-        if goal and goal.get("pieces") is not None and met and goal["pieces"] <= GOAL_SOON and nodes < budget:
+        if thirds and goal and goal.get("pieces") is not None and met and goal["pieces"] <= GOAL_SOON and nodes < budget:
             # near a level's end: the piece after the next weighed too, unseen (`EXPECT_FIRSTS`)
             deep = sorted(scores, key=lambda i: (-scores[i], i))[:EXPECT_FIRSTS]
             for i in deep:
@@ -201,15 +204,15 @@ def place(stack: Cells, piece: Cells, rows: int, cols: int, *, policy: str = "gr
                         worth = value
                     else:
                         total = 0.0
-                        for third in STANDARD_PIECES:
+                        for third in thirds:
                             most = None
-                            for _, column, rows_of, top in _options(then, Cells(map(tuple, third)), rows, cols):
+                            for _, column, rows_of, top in _options(then, third, rows, cols):
                                 after3, more = _settle(then, rows_of, column, top, full)
                                 value3 = _value(after3, cols, lines + more, goal, 3)
                                 most = value3 if most is None or value3 > most else most
                                 nodes += 1
                             total += DEAD + value if most is None else most
-                        worth = total / len(STANDARD_PIECES)
+                        worth = total / len(thirds)
                     best_here = worth if best_here is None or worth > best_here else best_here
                 if best_here is not None:
                     scores[i] = best_here
@@ -252,7 +255,7 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
             if move.get("kind") == "place" and move.get("shape")]
     found = place(stack, normal(Cells(map(tuple, piece))), rules["rows"], rules["cols"], policy=policy, queue=queue,
                   goal=goal_of(rules, state.get("lines") or 0, state.get("pieces") or 0), budget=budget,
-                  excluded=left)
+                  excluded=left, dealt=dealt(rules))
     if found is None:
         return {"action": None, "nodes": 0}
     return {"action": {"kind": "place", "shape": listed(found["shape"]), "column": found["column"]},

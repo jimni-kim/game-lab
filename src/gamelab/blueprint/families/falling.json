@@ -1,6 +1,6 @@
 {
   "id": "falling",
-  "revision": 1,
+  "revision": 2,
   "summary": "A well that pieces of a few cells fall into on their own as time passes. Each move is one piece come to lie: turned and moved sideways while it falls, then dropped. Every row filled from side to side vanishes and what was above it moves down. The game ends when a piece has no room; a level may ask for so many rows within so many pieces. Played by the realtime loop, not by a kit: the loop reads the well and asks the rules and the solver where each piece goes.",
   "state_schema": "falling.v1",
   "board": {
@@ -36,7 +36,8 @@
     "preview": {"description": "how many coming pieces the game shows", "values": {"type": "integer", "minimum": 0, "maximum": 6}},
     "garbage": {"description": "rows the simulated game begins with at the well's floor, each full but for one cell", "values": {"type": "integer", "minimum": 0, "maximum": 30}},
     "goal_lines": {"description": "rows a level asks to clear; null when it asks none or it is not known", "values": {"type": ["integer", "null"], "minimum": 1}},
-    "goal_pieces": {"description": "pieces a level gives to clear them in; null when it sets no limit or it is not known", "values": {"type": ["integer", "null"], "minimum": 1}}
+    "goal_pieces": {"description": "pieces a level gives to clear them in; null when it sets no limit or it is not known", "values": {"type": ["integer", "null"], "minimum": 1}},
+    "pieces": {"description": "the pieces the simulated game deals from: \"tetromino\" (the seven of four cells), \"pentomino\" (the eighteen of five), \"small\" (one to four cells); a real game's pieces are those seen coming", "values": {"enum": ["tetromino", "pentomino", "small"]}}
   },
   "policies": ["greedy", "lookahead"],
   "baseline_policy": "greedy",
