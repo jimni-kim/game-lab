@@ -117,3 +117,32 @@ def test_a_levels_goals_read_again_keep_what_they_are_about_and_take_how_many_ar
     # another level: more of one needed than was left, or other goals
     assert _same_level(was, [{**now[0], "count": 30}, now[1]]) == [{**now[0], "count": 30}, now[1]]
     assert _same_level(was, now[:1]) == now[:1] and _same_level(None, now) == now
+
+
+def test_the_replay_game_counts_a_levels_goals_down_and_ends_it_won_once_they_are_met():
+    """PLAN §33 session P2: a simulated level's goals, as its screen would show them, go down by what each move
+    took, lines its new pieces set off included; the level is won (and offers no move) once nothing is left to go."""
+    level = {**rules.DEFAULT_RULES, "goals": [{"kind": "collect", "target": R, "count": 6}]}
+    state = rules.initial_state(level, 7)
+    assert rules.won(state, level) is False and rules.won(state, rules.DEFAULT_RULES) is None
+    draw = 7
+    for _ in range(40):
+        if not rules.legal_actions(state, level):
+            break
+        draw += 1
+        before = rules.rules_now(state, level)["goals"][0]["count"]
+        state = rules.next_state(state, level, choose(state, rules.rules_now(state, level), "greedy", 200)["action"], draw)
+        assert 0 <= state["goals_left"][0]["count"] <= before
+    assert rules.won(state, level) and state["scene"] == rules.WON and state["goals_left"][0]["count"] == 0
+
+
+def test_the_sampled_policy_weighs_the_greedy_policys_best_moves_by_the_same_fills_and_picks_one_of_them():
+    """PLAN §33 P6: what comes in at the top is sampled from fixed seeds mixed with the board, the same fills for
+    every move weighed, so the same board always gets the same move, and only a move the greedy policy ranks
+    among its best is played."""
+    from gamelab.solvers.match3 import SAMPLED_MOST, rank
+    goals = [{"kind": "collect", "target": G, "count": 10}]
+    state = {"grid": BOARD, "score": None, "scene": "playing"}
+    picked = choose(state, rules_for(BOARD, goals=goals), "sampled", 400)
+    assert picked == choose(state, rules_for(BOARD, goals=goals), "sampled", 400)
+    assert picked["action"] in [entry["action"] for entry in rank(state, rules_for(BOARD, goals=goals), 400, most=SAMPLED_MOST)]

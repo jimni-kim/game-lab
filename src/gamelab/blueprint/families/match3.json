@@ -213,10 +213,11 @@
   },
   "policies": [
     "first",
-    "greedy"
+    "greedy",
+    "sampled"
   ],
   "baseline_policy": "first",
-  "default_policy": "greedy",
+  "default_policy": "sampled",
   "default_compute": 200,
   "goal_value": "the game's score",
   "verify_every": 1

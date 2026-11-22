@@ -212,9 +212,11 @@ async def test_a_piece_with_a_power_is_learned_from_the_move_that_made_it_and_th
 
 
 async def test_a_game_that_sets_a_power_off_by_a_tap_is_found_out_by_trying_and_one_with_no_powers_costs_one_move(tmp_path):
+    # which ways get tried within so many moves is what the policy happens to pick: played by the greedy one
+    # (the sampled policy, the family's own since PLAN §33 session P2, made no square in these 40 moves)
     fake = gems.Gems(powers=True, rules=WAYS["tap"])
     played, made = await agent.play(fake, gems.Jeweller(fake), "match3", goal=GoalSpec("actions", 40), budget=Budget(60, 200, 120),
-                                    store=Store(tmp_path))
+                                    store=Store(tmp_path), policy="greedy")
     assert played.record["outcome"] == "goal_reached", (played.record, made)
     # a swap with a power and a square were each refused once, and after that a power was tapped
     ways = made["kit"]["ways"]
@@ -225,11 +227,11 @@ async def test_a_game_that_sets_a_power_off_by_a_tap_is_found_out_by_trying_and_
     assert {name: kept["rules"][name] for name in ways} == ways
     again = gems.Gems(draw=7, powers=True, rules=WAYS["tap"])
     played, made = await agent.play(again, gems.Jeweller(again), "match3", goal=GoalSpec("actions", 20), budget=Budget(40, 200, 120),
-                                    store=Store(tmp_path))
+                                    store=Store(tmp_path), policy="greedy")
     assert played.record["outcome"] == "goal_reached" and not again.refused and "ways" not in made["kit"], (again.refused, made["kit"])
     # a game with no powers at all: only the square is tried, once
     plain = gems.Gems()
-    played, made = await agent.play(plain, gems.Jeweller(plain), "match3", goal=GoalSpec("actions", 30), budget=Budget(50, 200, 120))
+    played, made = await agent.play(plain, gems.Jeweller(plain), "match3", goal=GoalSpec("actions", 30), budget=Budget(50, 200, 120), policy="greedy")
     assert made["kit"].get("ways", {}) in ({}, {"square": True}) and not plain.refused, (made["kit"], plain.refused)
 
 
