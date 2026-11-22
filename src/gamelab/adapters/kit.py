@@ -195,10 +195,11 @@ class KitAdapter:
         cells = [action[name] for name in ("cell", "to") if isinstance(action.get(name), list)]
         return bool(refused(png, cells)) if refused is not None and cells else False
 
-    def questions(self, png: bytes) -> list[tuple[list[tuple[int, int]], list[bytes]]] | None:
+    def questions(self, png: bytes, again: bool = False) -> list[tuple[list[tuple[int, int]], list[bytes]]] | None:
         """What a light model is to be asked of a screen's unread cells: each kind of them (cells that look
         alike) with pictures of a few. None when the family's cells are not a light model's to name, the kinds
-        are too many to be new values (something lies over the board), or these were asked about before."""
+        are too many to be new values (something lies over the board), or these were asked about before (unless
+        `again`: an answer the rules refused of one board is asked for once more when that board is in doubt)."""
         if getattr(self.kit, "options", lambda: None)() is None:
             return None
         kinds = self.kit.kinds(png)
@@ -206,7 +207,7 @@ class KitAdapter:
             return None
         looks = dict(self.kit.unread(png))
         fresh = [kind for kind in kinds if looks[kind[0]] not in self._asked]
-        if len(fresh) != len(kinds):
+        if len(fresh) != len(kinds) and not again:
             return None
         self._asked.update(looks[kind[0]] for kind in kinds)
         return [(kind, [picture for cell in kind[:self.kit.SHOWN]

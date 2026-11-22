@@ -81,6 +81,10 @@ KIT_FIRST_S = 0.15
 REASK_MOST = 2
 # moves in a row that did not do what the rules predict before the reading (L3) or the screen (L2) is doubted
 MAX_STALLED = 3
+# moves confirmed since play last started over from a screen two readers agreed on (`_reseed`) before it may do so
+# again: readings refused more often than that are not one board misread, and the rules or the family are what is
+# wrong. And how many of the times play started over are told
+RESEED_EVERY, RESEEDS_KEPT = 3, 20
 # confirmed moves read by the model after an adapter could not be written, before it is tried once more, and
 # how often in one game
 RETRY_LOOKS, RETRIES = 12, 2
@@ -475,6 +479,13 @@ class Agent:
         self.on_board = False
         # each time play by a family was handed to the model's own inputs, and why (`_let_go`)
         self.let_go: list[dict[str, Any]] = []
+        # each time play went on from a board that is no result of the last move from the board before it, and who
+        # read that board (`_reseed`: two readers agreed; `_restarted`: one reader alone, as it always did); how
+        # many moves were confirmed when two readers last agreed; and a move whose result its own reader read as
+        # none the rules allow, until the next board is read
+        self.reseeds: list[dict[str, Any]] = []
+        self.reseeded_at: int | None = None
+        self.unlike: Reading | None = None
         # moves in a row the game did not take (`FRUITLESS_MOST`)
         self.fruitless = 0
         # the model's own play, kept when play goes back to a family and comes back to it
@@ -916,6 +927,7 @@ class Agent:
                 self.unread_move = held
                 await self._unstick(self.why, "read")
                 return
+            self._restarted(before)
             if self.fresh_scene:
                 self.fresh_scene, held = False, None
             if held is not None and self._effect(held[0].state, held[1], before.state) == "absent":
@@ -1008,10 +1020,17 @@ class Agent:
             raise _End(Outcome.GAME_OVER, "terminal")
         if after is None:
             self.unread_move = (before, action)
-            if self.why == "inconsistent" and await self._rules_again():
+            if self.why == "inconsistent":
+                refused = self.refused
                 # the screen was read, and the made family's rules refused it: with rules written again from
-                # it, the same screen is read once more as that move's result
-                return
+                # it, the same screen is read once more as that move's result. A registered family's rules stand,
+                # and the board the move was played from may be what was read wrongly: play starts over from
+                # this screen when two readers agree on it
+                if await self._rules_again() or await self._reseed(refused):
+                    return
+        elif effect == "inconsistent":
+            # read by the reader the game is read by, and no result of the move: the next board is read for itself
+            self.unlike = before
         if effect == "confirmed":
             if self.resized is not None:
                 self.resized["left"] -= 1
@@ -1732,33 +1751,9 @@ class Agent:
         if self.light is not None and self.foreseen is not None and self.foreseen[0] is png:
             return await self._ask_changed(*self.foreseen[1:])
         self.told = None
-        if self.light is None or not isinstance(self.adapter, KitAdapter) or self.adapter.partial is None:
+        state = await self._light_names(png)
+        if state is None:
             return False
-        asked = self.adapter.questions(png)
-        if not asked:
-            return False
-        kit = self.adapter.kit
-        checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.options())
-                  for index, (_, pictures) in enumerate(asked) for shown, picture in enumerate(pictures)]
-        self.light_told["questions"] += 1
-        started = time.monotonic()
-        try:
-            answers = await self.light.ask(checks, LIGHT_CONTEXT.format(game=self.family.descriptor["summary"]))
-        except Exception as error:
-            log.info("the light model could not be asked: %s", error)
-            return False
-        finally:
-            self.model_seconds += time.monotonic() - started
-        state = json.loads(json.dumps(self.adapter.partial))
-        grid = state[kit.field]
-        for index, (cells, pictures) in enumerate(asked):
-            said = {(answers.get(f"k{index}-{shown}") or {}).get("choice") for shown in range(len(pictures))}
-            if len(said) != 1 or None in said:
-                self.light_told["refused"] += 1
-                return False            # no answer, or two pictures of one kind named differently
-            value = kit.value(next(iter(said)))
-            for row, col in cells:
-                grid[row][col] = value
         try:
             fits = self._effect(expect[0].state, expect[1], state) == "confirmed"
         except (ValueError, KeyError, TypeError):
@@ -1769,6 +1764,43 @@ class Agent:
         learned = self.adapter.teach(png, state, "light")
         self.light_told["named"] += learned
         return bool(learned)
+
+    async def _light_names(self, png: bytes, again: bool = False) -> dict[str, Any] | None:
+        """What the family's reader read of a screen, with each kind of cell it left unread named by a light model
+        shown it alone. None when there is no light model, the cells are not a light model's to name, they were
+        asked about before (unless `again`), or it gave no one answer for a kind."""
+        if self.light is None or not isinstance(self.adapter, KitAdapter) or self.adapter.partial is None:
+            return None
+        asked = self.adapter.questions(png, again)
+        if not asked:
+            return None
+        kit = self.adapter.kit
+        checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.options())
+                  for index, (_, pictures) in enumerate(asked) for shown, picture in enumerate(pictures)]
+        self.light_told["questions"] += 1
+        started = time.monotonic()
+        try:
+            answers = await self.light.ask(checks, LIGHT_CONTEXT.format(game=self.family.descriptor["summary"]))
+        except Exception as error:
+            log.info("the light model could not be asked: %s", error)
+            return None
+        finally:
+            self.model_seconds += time.monotonic() - started
+        state = json.loads(json.dumps(self.adapter.partial))
+        grid = state[kit.field]
+        for index, (cells, pictures) in enumerate(asked):
+            said = {(answers.get(f"k{index}-{shown}") or {}).get("choice") for shown in range(len(pictures))}
+            if len(said) != 1 or None in said:
+                self.light_told["refused"] += 1
+                return None             # no answer, or two pictures of one kind named differently
+            try:
+                value = kit.value(next(iter(said)))
+            except (ValueError, KeyError, TypeError):
+                self.light_told["refused"] += 1
+                return None
+            for row, col in cells:
+                grid[row][col] = value
+        return state
 
     async def _ask_changed(self, kept: list[tuple[Any, bytes]], moved: list[tuple[Any, bytes, list[float]]],
                            foreseen: dict[str, Any]) -> bool:
@@ -2131,8 +2163,10 @@ class Agent:
         the screen is looked at again. The game ends when the model sees its end on the screen, sees nothing
         to do, or MAX_TRIES inputs in a row brought no confirmed move. `stage`: where the family's play stopped
         (the screen not read as its board, the level read as ended, no move on it, a message of the game's)."""
-        if reason == "inconsistent" and (await self._rules_again() or await self._other_family()):
-            return
+        if reason == "inconsistent":
+            refused = self.refused
+            if await self._rules_again() or await self._reseed(refused) or await self._other_family():
+                return
         if self._before_any():
             if self.direct:
                 self._let_go(reason, stage)
@@ -2261,6 +2295,88 @@ class Agent:
     def _made_plays(self) -> bool:
         return self.game is not None and self.family_id == self.game.id and self.game.code.source is not None
 
+    def _reader(self, reading: Reading) -> str:
+        """Who read a board: the family's own reader, an adapter written for the game, or the model."""
+        if reading.by != L3:
+            return "model"
+        return "kit" if isinstance(self.adapter, KitAdapter) else "adapter"
+
+    def _restart(self, entry: dict[str, Any]) -> None:
+        """Play goes on from a board that does not follow from the one before it: told with the game, and nothing
+        that was built on the boards before is carried on to it. What the family's solver kept from screen to screen
+        (`GridFamily.recall`: the cards a stock has shown) was read off those boards, one of them wrongly; it
+        starts again from this one."""
+        self.reseeds.append(entry)
+        told = [{name: value for name, value in each.items() if name != "confirmed"} for each in self.reseeds]
+        self.found["reseeds"] = {"agreed": sum(len(each["read_by"]) > 1 for each in told),
+                                 "alone": sum(len(each["read_by"]) == 1 for each in told), "each": told[-RESEEDS_KEPT:]}
+        self.recalled = self.ineffective = None
+
+    def _restarted(self, before: Reading) -> None:
+        """A board read for itself after a move whose result, read by the game's own reader, was none the rules
+        allow: play goes on from it on one reader's word, as it always did. It is told as that."""
+        doubted, self.unlike = self.unlike, None
+        if doubted is not None:
+            self._restart({"at_action": self.used, "read_by": [self._reader(before)], "doubted": self._reader(doubted)})
+
+    async def _reseed(self, refused: dict[str, Any] | None) -> bool:
+        """The model read the screen, and what it read is no result the rules allow of the move just played from
+        the board read before it. That board may be what was read wrongly: what a move brings in is the game's to
+        choose, so a new tile taken for another passes the rules, and the next screen, however rightly read, then
+        fits nothing (PLAN §26 G, §33 P: 2026-11-20, a new 2 taken for a 4 ended a game at its second move).
+
+        Play starts over from the screen as it reads now, with nothing taken from the board before, when two
+        readers that were not shown that board agree on every cell of it: what the model read, and the reader the
+        game is read by, reading by what it learned with no result expected of it; a cell that reader cannot read
+        is shown alone to a light model. One model reading the same twice is not two readers: a model that reads
+        a screen wrongly reads it so again (`test_no_move_is_chosen_from_a_reading_that_takes_the_last_move_back`),
+        so a game read by the model alone is held to the last move as before. Not again until RESEED_EVERY moves
+        were confirmed since the last time: readings refused that often are not one board misread. True when play
+        goes on from the board agreed on (PLAN §32, R1)."""
+        held = self.unread_move
+        if refused is None or held is None or self.adapter is None or (self.game is not None and self.family_id == self.game.id) \
+                or refused["state"] is not held[0].state or refused["action"] != held[1]:
+            return False
+        if self.reseeded_at is not None and self.confirmed - self.reseeded_at < RESEED_EVERY:
+            return False
+        said, kit = refused["after"], isinstance(self.adapter, KitAdapter)
+        frame = await self.frames.frame(None)
+        png, self.last_png = frame.png, frame.png
+        self.shots += 1
+        if kit:
+            self.adapter.expecting(None, None)
+        state, why = self._observe(png)
+        who, lit = "kit" if kit else "adapter", 0
+        if state is not None:
+            seen = state.payload
+            agreed = (self.adapter.kit.same(seen, said) or self.adapter.alike(seen, said)) if kit else _board(seen) == _board(said)
+        elif kit and why == adaptation.CELLS_UNREAD and _agrees(_board(self.adapter.partial), _board(said)):
+            lit = _gaps(_board(self.adapter.partial))
+            seen = await self._light_names(png, again=True)
+            agreed = seen is not None and _board(seen) == _board(said)
+            if agreed:
+                # what the light model named, the reader reads from now on
+                self.light_told["named"] += self.adapter.teach(png, seen, "light")
+                state, _ = self._observe(png)
+        else:
+            return False
+        if not agreed:
+            log.info("the screen the rules refused is not read the same by a second reader: play does not start over")
+            return False
+        cells = _gaps(_board(said), unread=False)
+        log.info("play starts over from the screen as %s read it: the board before it was read wrongly",
+                 " and ".join(["the model", f"the {who}", *(["a light model"] if lit else [])]))
+        self._restart({"at_action": self.used, "read_by": ["model", who, *(["light"] if lit else [])],
+                       "doubted": self._reader(held[0]), "cells": {who: cells - lit, **({"light": lit} if lit else {})},
+                       "confirmed": self.confirmed})
+        self.reseeded_at = self.confirmed
+        # the reader read this screen as the model did: it reads on, and its next moves are trial moves
+        self.unread_move, self.unlike = None, None
+        self.distrusted, self.blind, self.trial, self.stalled, self.shrugged = False, False, TRIAL_MOVES, 0, False
+        reading = Reading(png, state.payload, frame.at, L3) if state is not None else Reading(png, seen, frame.at, L2)
+        self.carried, self.state = reading, reading.state
+        return True
+
     async def _rules_again(self) -> bool:
         """A made family's rules refused what the screen really showed after a move: they are written again
         from it. True when rules that take it (and every move borne out before) are now in use."""
@@ -2275,13 +2391,23 @@ class Agent:
 
     async def _give_up(self, reason: str) -> None:
         """Play cannot go on by the family's rules. A made family's rules may simply be wrong: the game is
-        then the model's to play with its own inputs. Otherwise the game is given up."""
-        if self._made_plays() or self.resumed:
+        then the model's to play with its own inputs. So is a registered family's game whose screens keep being
+        read as no result of the move played (`inconsistent`) where play could not start over from the screen
+        (`_reseed`): the board is there and in play, as the model asked what was in the way saw, and a game is not
+        ended while the model can move in it; the family is tried again on the board as it then reads, some inputs
+        on (`_resume`, PLAN §32, R1: 2026-11-20, a game ended at its second move with the board in plain sight).
+        Otherwise the game is given up: with no board read, or no input taken, the model asked what was in the way
+        had the screen to itself already and found nothing to do."""
+        unfollowed = reason == "inconsistent" and self.direct and self.family_id is not None and self.policy != "model"
+        if self._made_plays() or self.resumed or unfollowed:
             # a family gone back to from the model's own play is left again the same way
             log.info("the family is dropped: %s", reason)
             self.failures.append({"reason": "made_family_dropped" if self._made_plays() else "family_dropped",
                                   "detail": reason})
             self._let_go(reason, "given_up")
+            if self.resumable is None and not self._made_plays() and (self.game is None or self.family_id != self.game.id):
+                self.resumable = self.family_id
+                self.fruitless = self.since_tried = 0
             await self._play_direct(self._situation())
             return
         raise _End(Outcome.GAVE_UP, reason, self._situation())
@@ -3144,6 +3270,15 @@ class Agent:
         if not await self._next_family() and not await self._make_family():
             await self._play_direct(self._situation())
         return True
+
+
+def _gaps(read: Any, unread: bool = True) -> int:
+    """How many values of a reading are unread (None); with `unread` off, how many are read."""
+    if isinstance(read, dict):
+        return sum(_gaps(value, unread) for value in read.values())
+    if isinstance(read, list):
+        return sum(_gaps(value, unread) for value in read)
+    return int((read is None) == unread)
 
 
 def _same_level(was: Any, now: Any) -> Any:
