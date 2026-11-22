@@ -168,9 +168,12 @@ def test_the_minesweeper_solver_wins_more_games_than_the_baseline_on_the_same_bu
     assert wins["solver"] > wins["baseline"] and wins["solver"] >= 36, wins
 
 
-def test_games_played_with_the_count_of_mines_known_are_the_ones_recorded_before_it_could_be_unknown():
+def test_games_played_with_the_count_of_mines_known_are_the_ones_recorded_before_it_could_be_unknown(monkeypatch):
     """PLAN §10: letting the count be unknown changes nothing where it is known. Whole games recorded before
-    the change (three sizes, both policies) are played again cell for cell."""
+    the change (three sizes, both policies) are played again cell for cell. The guesses recorded are the safest
+    cell's: weighing a guess by what follows it (PLAN §33 session P2) is left out here, it chooses otherwise."""
+    monkeypatch.setattr(minesweeper_solver, "GUESS_WEIGHED", 0)
+    monkeypatch.setattr(minesweeper_solver, "ENDGAME_LAYOUTS", 0)
     recorded = json.loads((FIXTURES / "minesweeper_games.json").read_text(encoding="utf-8"))["games"]
     for game in recorded:
         _, played = _play("minesweeper", game["rules"], game["policy"], game["budget"], game["seed"], 500)
@@ -310,3 +313,74 @@ def test_hindsight_wins_deals_greedy_does_not_and_plays_the_same_game_twice():
            for policy in ("greedy", "hindsight")}
     assert sum(won["hindsight"]) > sum(won["greedy"]), won
     assert _klondike("hindsight", 40, 3) == _klondike("hindsight", 40, 3)
+
+
+def _layouts_brute(grid, rules):
+    """Every way to lay the rules' mines on the covered cells of a small board that agrees with its numbers."""
+    from itertools import combinations
+    rows, cols = rules["rows"], rules["cols"]
+    covered = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == minesweeper.COVERED]
+    return [set(laid) for laid in combinations(covered, rules["mines"])
+            if all(grid[r][c] == sum((y, x) in laid for y, x in minesweeper.neighbours(r, c, rows, cols))
+                   for r in range(rows) for c in range(cols) if minesweeper.is_open(grid[r][c]))], covered
+
+
+def _win_brute(layouts, covered, rules, cell=None):
+    """How often a game is won from these layouts played best to the end (opening `cell` first when given): a
+    cell opened safely shows how many mines are around it, and the game is won once one layout is left."""
+    if len(layouts) == 1:
+        return 1.0
+    best = 0.0
+    for tried in [cell] if cell is not None else covered:
+        shown = {}
+        for laid in layouts:
+            if tried not in laid:
+                near = minesweeper.neighbours(*tried, rules["rows"], rules["cols"])
+                shown.setdefault(sum(other in laid for other in near), []).append(laid)
+        if not shown or (len(shown) == 1 and len(next(iter(shown.values()))) == len(layouts)):
+            continue
+        best = max(best, sum(len(kept) * _win_brute(kept, covered, rules) for kept in shown.values()) / len(layouts))
+    return best
+
+
+@pytest.mark.parametrize("rows, mines, shown", [
+    (3, 2, ["1....", ".....", "..1.."]),
+    (3, 3, ["1..1.", ".....", "....."]),
+    (3, 3, ["..1..", ".....", "..1.1"]),
+])
+def test_a_minesweeper_guess_with_few_layouts_left_is_the_cell_that_wins_most_often_played_to_the_end(rows, mines, shown, monkeypatch):
+    """PLAN §33 session P2 (JSMinesweeper's endgame): with few layouts left, the guess is the one that wins most
+    often played to the end, counted here over every layout by brute force. On these boards the safest cell
+    (what the solver opened before) wins less often."""
+    grid = [[minesweeper.COVERED if ch == "." else int(ch) for ch in line] for line in shown]
+    rules = {**minesweeper.DEFAULT_RULES, "rows": rows, "cols": len(shown[0]), "mines": mines, "first_open": "cell"}
+    layouts, covered = _layouts_brute(grid, rules)
+    state = {"grid": grid, "score": None, "scene": "playing"}
+    picked = minesweeper_solver.choose(state, rules, "solver", 20000)["action"]["cell"]
+    monkeypatch.setattr(minesweeper_solver, "GUESS_WEIGHED", 0)
+    monkeypatch.setattr(minesweeper_solver, "ENDGAME_LAYOUTS", 0)
+    safest = minesweeper_solver.choose(state, rules, "solver", 20000)["action"]["cell"]
+    won = {cell: _win_brute(layouts, covered, rules, cell) for cell in covered}
+    assert won[tuple(picked)] == max(won.values()) > won[tuple(safest)], (picked, safest, won)
+
+
+def test_a_minesweeper_guess_among_many_layouts_is_the_one_most_likely_followed_by_a_second_move_that_survives(monkeypatch):
+    """PLAN §33 session P2: with too many layouts to play to the end, a guess is worth how likely it and the
+    safest move after what it shows both survive; counted here over every layout by brute force."""
+    monkeypatch.setattr(minesweeper_solver, "ENDGAME_LAYOUTS", 0)
+    shown = ["1....", ".....", "..1.."]
+    grid = [[minesweeper.COVERED if ch == "." else int(ch) for ch in line] for line in shown]
+    rules = {**minesweeper.DEFAULT_RULES, "rows": 3, "cols": 5, "mines": 2, "first_open": "cell"}
+    layouts, covered = _layouts_brute(grid, rules)
+
+    def survives(cell):
+        shown = {}
+        for laid in layouts:
+            if cell not in laid:
+                near = minesweeper.neighbours(*cell, 3, 5)
+                shown.setdefault(sum(other in laid for other in near), []).append(laid)
+        return sum(max(sum(other not in laid for laid in kept) for other in covered if other != cell)
+                   for kept in shown.values()) / len(layouts)
+
+    picked = tuple(minesweeper_solver.choose({"grid": grid, "score": None, "scene": "playing"}, rules, "solver", 20000)["action"]["cell"])
+    assert survives(picked) == max(survives(cell) for cell in covered), (picked, {cell: survives(cell) for cell in covered})
