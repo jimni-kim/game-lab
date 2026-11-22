@@ -240,6 +240,9 @@ def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
             **{name: kit[name] for name in ("goals_seen", "ways", "picks") if kit.get(name)},
             **({"resumes": adapted["resumes"][-RESUMES_TOLD:]} if adapted.get("resumes") else {}),
             **({"let_go": adapted["let_go"][-RESUMES_TOLD:]} if adapted.get("let_go") else {}),
+            # the times play went on from a board that was no result of the last move, and who read that board
+            # (`agent.Agent._reseed`)
+            **({"reseeds": adapted["reseeds"]} if adapted.get("reseeds") else {}),
             "used": (adapted.get("account") or {}).get("used") or {}}
 
 

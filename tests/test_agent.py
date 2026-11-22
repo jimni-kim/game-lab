@@ -349,10 +349,12 @@ class Mistaken(Reader):
 
 async def test_no_move_is_chosen_from_a_reading_that_takes_the_last_move_back():
     """The model misreads every screen after the second move. The reading is not one the move can have left,
-    and it stays refused when the screen is looked at again: no further move is played from it."""
+    and it stays refused when the screen is looked at again: no further move is played from it. (Where the model
+    may play the game itself it is left to that then: `test_kit_reseed.py`.)"""
     fake = Mines()
     reader = Mistaken(fake, since=2, times=10 ** 6)
-    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300))
+    played, made = await agent.play(fake, reader, "minesweeper", goal=GoalSpec("play_until_end"), budget=Budget(60, COMPUTE, 300),
+                                    direct=False)
     assert ending(played) == ("gave_up", "inconsistent"), (played.record, made)
     assert len(fake.taps) == 2
 
