@@ -384,3 +384,16 @@ def test_a_minesweeper_guess_among_many_layouts_is_the_one_most_likely_followed_
 
     picked = tuple(minesweeper_solver.choose({"grid": grid, "score": None, "scene": "playing"}, rules, "solver", 20000)["action"]["cell"])
     assert survives(picked) == max(survives(cell) for cell in covered), (picked, {cell: survives(cell) for cell in covered})
+
+
+def test_a_block_search_line_ends_on_a_board_worth_the_pieces_that_still_fit_on_it():
+    """PLAN §33 P5: the next tray is not known, so where a line of the search ends the board is worth, besides its
+    own cells, how many pieces of the replay set still fit somewhere: all of them on an empty board, and on a board
+    with one empty square of four cells the single, both dominoes, the four corners and the square."""
+    rules = block_placement.DEFAULT_RULES
+    empty = [[block_placement.EMPTY] * 8 for _ in range(8)]
+    assert block_placement_solver._room(empty, rules) == len(block_placement.STANDARD_PIECES)
+    square = [[block_placement.FILLED] * 8 for _ in range(8)]
+    for r, c in ((3, 3), (3, 4), (4, 3), (4, 4)):
+        square[r][c] = block_placement.EMPTY
+    assert block_placement_solver._room(square, rules) == 8
