@@ -57,6 +57,9 @@ class _Numbered:
     async def sent(self) -> None:
         await self.watch.sent()
 
+    def progress(self, event: dict[str, Any]) -> None:
+        agent.progress(self.watch, **event)
+
 
 def _left(budget: Budget, used: int, started: float, tokens: int) -> tuple[Budget, str | None]:
     """What the parts before left of the work's budget, and which part of it is used up (None: none is)."""
@@ -152,6 +155,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             lost, empty, again = lost + 1, 0, True
             if LOST in goal.stop_conditions or "retry" not in goal.allowed_meta_actions:
                 ended = (str(Outcome.GAME_OVER), "level_lost", detail)
+        agent.progress(watch, "part", number=len(parts), outcome=outcome, reason=reason, family=record.get("family"),
+                       inputs=used, **({"won": won, "lost": lost, "wanted": goal.target_value} if levels else {}))
     outcome, reason, detail = ended
     last_run, last = parts[-1]
     account = {"used": {}, "refused": {}}
@@ -198,6 +203,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         # what the game's routines did in this work: the steps kept, sent by code, failed and learned (PLAN §28)
         **({"routines": book.summary()} if book.summary() else {}),
     }
+    agent.progress(watch, "handback", work=handback)
     moves = [{**move, "part": number} for number, (run, _) in enumerate(parts, 1) for move in run.moves]
     record = {**last_run.record, "outcome": outcome, "reason": reason, "detail": detail, "goal": goal.to_json(),
               "budget": budget.to_json(), "actions_used": used, "confirmed_actions": confirmed,

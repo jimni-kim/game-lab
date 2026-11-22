@@ -203,12 +203,25 @@ UNREAD_SHARE = 0.6
 
 
 class Watch(Protocol):
-    """What a run may hang on the loop to measure it; the game is not told."""
+    """What a run may hang on the loop to measure it; the game is not told. A watcher may also have
+    `progress(event)`, told how the work goes while it goes (`progress`); one without it is told nothing more."""
 
     async def seen(self, png: bytes) -> None: ...
     async def sending(self, number: int, action: dict[str, Any], state: dict[str, Any], sent: dict[str, Any],
                       observed_s: float) -> None: ...
     async def sent(self) -> None: ...
+
+
+def progress(watch: Any, what: str, **facts: Any) -> None:
+    """Tell a watcher with `progress` how the work goes (PLAN §35: the game identified, a family taken or let go, a
+    falling game's lines and pieces, a level's end, the handback). Nothing waits on it and nothing it does stops
+    the game."""
+    tell = getattr(watch, "progress", None)
+    if tell is not None:
+        try:
+            tell({"what": what, **facts})
+        except Exception as error:
+            log.info("a watcher could not be told of %s: %s", what, error)
 
 
 @dataclass(frozen=True)
@@ -640,6 +653,8 @@ class Agent:
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
+                progress(self.watch, "identified", candidates=list(self.candidates), falling=bool(asked.get("falling")),
+                         situation=asked["situation"])
                 if asked.get("falling") and await self._play_realtime():
                     return
         if not await self._next_family() and not await self._make_family():
@@ -768,6 +783,7 @@ class Agent:
         self.family = catalog.family(family_id).bind({"rules": self.trace.rules} if self.trace else None)
         if "identified" in self.found:
             self.found["identified"]["family"] = family_id
+        progress(self.watch, "taken", family=family_id, again=bool(self.resumes), at_input=self.used)
         return True
 
     def _recovery(self, family_id: str | None, known: list[dict[str, Any]] | None) -> Recovery:
@@ -2244,6 +2260,7 @@ class Agent:
             entry["read_by"] = "kit" if isinstance(self.adapter, KitAdapter) else "adapter" if self.adapter else "model"
         self.let_go = [*self.let_go, entry][-LET_GO_KEPT:]
         self.found["let_go"] = self.let_go
+        progress(self.watch, "let_go", family=self.family_id, stage=entry["stage"], why=why, at_input=self.used)
         if self.found.get("resumes") and self.resumed:
             self.found["resumes"][-1].setdefault("let_go", entry)
         if self.resumed and not self.since_taken:
@@ -2470,6 +2487,7 @@ class Agent:
                 self.level_moves += 1
             self.moves.append({"action_id": f"a{self.used}", **move, "level": realtime.RT, "delivery": "delivered",
                                "at_s": round(time.monotonic() - self.started, 2)})
+            progress(self.watch, "falling", lines=lines + loop.lines, pieces=pieces + loop.pieces, goal=setup.get("goal"))
 
         objective, target = str(self.goal.objective), self.goal.target_value
         # what the stretches before this one cleared and placed (the loop is taken up again after each letting go)

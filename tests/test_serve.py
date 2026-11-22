@@ -6,16 +6,17 @@ import argparse
 import asyncio
 from io import BytesIO
 import json
+import time
 
 from aiohttp import WSMsgType, web as http
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image, ImageDraw
 import pytest
 
-from gamelab import adaptation, agent, direct, motion, recovery
+from gamelab import adaptation, agent, direct, motion, recovery, work
 from gamelab.contracts import Budget, GoalSpec
 from gamelab.environments.android import AndroidSurface
-from gamelab.eval import android, measure, serve
+from gamelab.eval import android, measure, serve, talk
 from gamelab.eval import web as web_eval
 from gamelab.model import Recorded, TurnResult
 from fake_screen import Screen
@@ -152,9 +153,11 @@ async def test_a_request_for_an_app_is_played_to_its_end_and_watched_from_the_fi
         # someone who comes in now is sent this game's events from its request on
         late = await client.ws_connect("/ws", headers={"Origin": origin(client)})
         again, _ = await until(late, "result")
-        # (the looks counted in one event, where they came one by one to those watching from the start)
-        unseen = [kind for kind in kinds[1:] if kind != "seen"]
-        assert [event["kind"] for event in again if event["kind"] != "seen"] == unseen and "seen" in [event["kind"] for event in again]
+        # (the looks counted in one event, where they came one by one to those watching from the start; the chat's
+        # lines first, then the game's own events)
+        unseen = [kind for kind in kinds[1:] if kind not in ("seen", *serve.CHAT)]
+        assert [event["kind"] for event in again if event["kind"] not in ("seen", *serve.CHAT)] == unseen
+        assert "seen" in [event["kind"] for event in again] and again[0]["kind"] == "said"
         # and the last screen, with the game over
         messages = [await late.receive(timeout=5) for _ in range(3)]
         assert [message.type for message in messages] == [WSMsgType.TEXT, WSMsgType.TEXT, WSMsgType.BINARY]
@@ -430,3 +433,282 @@ async def test_a_demo_for_pages_only_refuses_an_app_without_touching_the_device(
         assert events[-1]["reason"] == "web_only" and demo.emulator.ensured == 0
     finally:
         await client.close()
+
+
+# ── the chat (PLAN §35) ─────────────────────────────────────────────
+
+
+class Talker:
+    """The chat's models as a fake: what is typed is sorted by its words (a stop, a question, else a game), and a
+    question is answered with what the context counted, each context kept."""
+
+    def __init__(self, hold=None):
+        self.sorted, self.contexts, self.pictures, self.hold = [], [], [], hold
+
+    async def complete(self, turn):
+        context = json.loads(turn.messages[0].content[0]["text"])
+        if turn.name == "chat_sort":
+            words = context["words"]
+            kind = "stop" if "멈춰" in words else "question" if "?" in words else "game"
+            self.sorted.append((words, context["playing"], kind))
+            return TurnResult(text=json.dumps({"kind": kind}))
+        assert turn.name == "chat_reply"
+        self.contexts.append(context)
+        self.pictures.append([part for part in turn.messages[0].content if part["type"] == "image"])
+        if self.hold is not None:
+            await self.hold.wait()
+        return TurnResult(text=json.dumps({"reply": f"입력 {context['game']['inputs']}번 보냈습니다"}, ensure_ascii=False))
+
+
+def chatting(tmp_path, answer, device, *more, chat=None):
+    model = Recorded(Asked(answer, Author(device.game, [])))
+
+    async def installed(surface):
+        return [{"package": "com.example.game", "label": "Merge Tiles"}]
+    return serve.Demo(options(tmp_path, *more), model, token=TOKEN, emulator=Running(), chat=chat or Talker(),
+                      device=lambda serial: AndroidSurface(device.adb), apps=installed)
+
+
+async def test_the_chat_answers_a_request_with_what_will_be_done_a_question_while_it_plays_and_hands_the_end_back(tmp_path):
+    device = Device(tmp_path)
+    await device.kept()
+    talker = Talker()
+    demo = chatting(tmp_path, lambda context: {"url": None, "app": "com.example.game" if "apps" in context else None,
+                                               "objective": "play_until_end", "game": "2048", "stop": ["lost"]},
+                    device, chat=talker)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/say", json={"words": "Merge Tiles 앱에서 끝까지 해줘"}, headers=mine)).status == 202
+        asked = []
+
+        async def talk(event):
+            if event["kind"] == "sent" and event["inputs"] == 2 and not asked:
+                asked.append("where")
+                assert (await client.post("/say", json={"words": "어디까지 했어?"}, headers=mine)).status == 202
+            elif event["kind"] == "reply" and event["about"] == "question":
+                # answered while the game goes on; a game asked for now is not started, and the game is stopped
+                assert demo.playing
+                assert (await client.post("/say", json={"words": "https://example.com 게임 해줘"}, headers=mine)).status == 202
+            elif event["kind"] == "reply" and event.get("reason") == "busy":
+                assert (await client.post("/say", json={"words": "멈춰"}, headers=mine)).status == 202
+
+        events, _ = await until(socket, "result", talk)
+        events += (await until(socket, "reply"))[0]
+        replies = [event for event in events if event["kind"] == "reply"]
+        abouts = [event["about"] for event in replies]
+        # what will be done, made from the goal the host checked
+        start = replies[abouts.index("start")]["text"]
+        assert "Merge Tiles" in start and "게임이 끝날 때까지" in start and "게임을 새로 띄워서" in start
+        assert "지면 거기서 멈춥니다" in start and "쓰지 않습니다" in start and "입력 300번" in start
+        # the question, answered from the game as it stood: its inputs, goal, progress and screen
+        context = talker.contexts[0]
+        assert context["playing"] and context["words"] == "어디까지 했어?" and context["game"]["inputs"] >= 2
+        assert context["game"]["goal"]["objective"] == "play_until_end" and context["game"]["where"] == "com.example.game"
+        assert context["known"]["family"] == "slide_merge" and any(step["what"] == "taken" for step in context["progress"])
+        assert context["chat"][0] == {"who": "person", "text": "Merge Tiles 앱에서 끝까지 해줘"}
+        assert talker.pictures[0] and talker.pictures[0][0]["source"]["media_type"] == "image/jpeg"
+        assert replies[abouts.index("question")]["text"].startswith("입력 ")
+        # the game asked for while one was played was not started
+        assert [event["kind"] for event in events].count("asked") == 1
+        assert ("https://example.com 게임 해줘", True, "game") in talker.sorted
+        assert abouts[-2:] == ["stop", "end"] or abouts[-1] == "end"
+        assert events[[event["kind"] for event in events].index("result")]["reason"] == "cancelled"
+        assert "중지 요청으로 멈췄습니다" in replies[-1]["text"] and "입력 " in replies[-1]["text"]
+        # the chat's questions are not the game's: none of them among its model's answers
+        assert {answer["prompt"] for answer in demo.model.answers}.isdisjoint({"chat_sort", "chat_reply"})
+        # a question after the game is answered from what it handed back
+        assert (await client.post("/say", json={"words": "왜 멈췄어?"}, headers=mine)).status == 202
+        await until(socket, "reply")
+        after = talker.contexts[-1]
+        assert not after["playing"] and after["handback"]["reason"] == "cancelled" and after["known"]["ended"]["reason"] == "cancelled"
+    finally:
+        await client.close()
+
+
+async def test_the_chat_is_kept_across_games_and_sent_to_whoever_comes_in_later(tmp_path):
+    talker = Talker()
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({"url": None, "app": None})), token=TOKEN, emulator=Running(),
+                      chat=talker)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        for words in ("뭐든 해줘", "아무거나 해줘"):
+            assert (await client.post("/say", json={"words": words}, headers=mine)).status == 202
+            events, _ = await until(socket, "reply")
+            assert events[-1]["about"] == "refused" and "주소나 게임을 찾지 못해" in events[-1]["text"]
+            await until(socket, "status")
+        # a question with no game being played is answered too
+        assert (await client.post("/say", json={"words": "아까 뭐 했어?"}, headers=mine)).status == 202
+        await until(socket, "reply")
+        late = await client.ws_connect("/ws", headers=mine)
+        history, _ = await until(late, "status")
+        chat = [(event["kind"], event.get("words") or event.get("about")) for event in history if event["kind"] in serve.CHAT]
+        assert chat == [("said", "뭐든 해줘"), ("reply", "refused"), ("said", "아무거나 해줘"), ("reply", "refused"),
+                        ("said", "아까 뭐 했어?"), ("reply", "question")]
+        # the game's own events are the last game's alone
+        assert [event["words"] for event in history if event["kind"] == "asked"] == ["아무거나 해줘"]
+        # each line kept in the day's file
+        assert len(list((tmp_path / "serve").glob("chat-*.jsonl"))[0].read_text().splitlines()) == 6
+    finally:
+        await client.close()
+
+
+async def test_what_is_typed_from_another_origin_or_past_the_days_chats_is_not_taken(tmp_path):
+    talker = Talker()
+    demo = serve.Demo(options(tmp_path, "--chats-a-day", "1"), Recorded(Asked({"url": None, "app": None})), token=TOKEN,
+                      emulator=Running(), chat=talker)
+    client = await started(demo)
+    try:
+        assert (await client.post("/say", json={"words": "안녕?"})).status == 401
+        await admitted(client)
+        assert (await client.post("/say", json={"words": "안녕?"}, headers={"Origin": "https://evil.example"})).status == 403
+        assert (await client.post("/say", json={"words": "안녕?"})).status == 403
+        mine = {"Origin": origin(client)}
+        assert (await client.post("/say", json={"words": ""}, headers=mine)).status == 400
+        assert (await client.post("/say", json={"words": "안녕?"}, headers=mine)).status == 202
+        again = await client.post("/say", json={"words": "또 안녕?"}, headers=mine)
+        assert again.status == 429 and (await again.json())["refused"] == "chat_limit"
+        assert [words for words, _, _ in talker.sorted] == ["안녕?"]
+        # the day's chats are counted by the file they were kept in: a server started again counts them too
+        assert serve.chatted_on(tmp_path / "serve", time.strftime("%Y%m%d")) == 1
+    finally:
+        await client.close()
+
+
+async def test_a_question_is_answered_while_the_game_goes_on_without_waiting_for_it(tmp_path):
+    device = Device(tmp_path)
+    await device.kept()
+    held = asyncio.Event()
+    talker = Talker(hold=held)
+    demo = chatting(tmp_path, lambda context: {"url": None, "app": "com.example.game" if "apps" in context else None,
+                                               "objective": "actions", "target_value": 6, "game": "2048"},
+                    device, chat=talker)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/ask", json={"words": "Merge Tiles 6수"}, headers=mine)).status == 202
+
+        async def talk(event):
+            if event["kind"] == "sent" and event["inputs"] == 1:
+                await client.post("/say", json={"words": "지금 뭐 해?"}, headers=mine)
+
+        # the model answering is held: the game plays on to its end all the same
+        events, _ = await until(socket, "result", talk)
+        assert events[-1]["outcome"] == "goal_reached" and talker.contexts and talker.contexts[0]["playing"]
+        held.set()
+        events, _ = await until(socket, "reply")
+        while events[-1]["about"] != "question":
+            events, _ = await until(socket, "reply")
+        assert events[-1]["text"].startswith("입력 1번") or events[-1]["text"].startswith("입력 ")
+    finally:
+        await client.close()
+
+
+def test_a_fixed_token_is_taken_from_the_option_or_the_environment_and_a_short_one_refused(tmp_path, monkeypatch):
+    monkeypatch.delenv(serve.TOKEN_VARIABLE, raising=False)
+    fixed = "f" * 32
+    assert serve.token_for(options(tmp_path)) is None
+    assert serve.token_for(options(tmp_path, "--token", fixed)) == fixed
+    monkeypatch.setenv(serve.TOKEN_VARIABLE, "e" * 30)
+    assert serve.token_for(options(tmp_path)) == "e" * 30
+    assert serve.Demo(options(tmp_path), Recorded(Asked({})), emulator=Running()).token == "e" * 30
+    for bad in ("short", "x" * 23, "y" * 30 + " &k"):
+        with pytest.raises(SystemExit):
+            serve.token_for(options(tmp_path, "--token", bad))
+    monkeypatch.delenv(serve.TOKEN_VARIABLE)
+    # none fixed: a new one each start
+    assert serve.Demo(options(tmp_path), Recorded(Asked({})), emulator=Running()).token != \
+        serve.Demo(options(tmp_path), Recorded(Asked({})), emulator=Running()).token
+
+
+async def test_a_fixed_token_opens_the_page(tmp_path):
+    fixed = "z" * 32
+    demo = serve.Demo(options(tmp_path, "--token", fixed), Recorded(Asked({})), emulator=Running())
+    client = await started(demo)
+    try:
+        assert (await client.get(f"/?k={fixed}", allow_redirects=False)).status == 303
+        assert (await client.get("/")).status == 200
+    finally:
+        await client.close()
+
+
+def test_what_will_be_done_is_said_from_the_goal_the_host_checked():
+    asked = {"url": None, "app": "Royal Match", "hint": None, "within": None, "task": None,
+             "goal": GoalSpec("levels", 2, scope="current_game", stop_conditions=("lost",),
+                              allowed_meta_actions=frozenset({"retry"}))}
+    said = talk.promise(asked, {"inputs": 300, "seconds": 900}, True)
+    assert said.startswith("Royal Match에서 레벨 2개를 연달아 깨겠습니다.")
+    assert "지금 화면에서 이어서" in said and "지면 거기서 멈춥니다" in said and "허락하신 것: 다시 하기" in said
+    assert "되돌릴 수 없는 이야기 선택지" in said and "900초" in said
+    english = talk.promise({**asked, "goal": GoalSpec("reach_value", 1024, scope="new_game", choices="the kind way")},
+                           {"inputs": 300, "seconds": 900}, False)
+    assert "reaches 1024" in english and "start the game again" in english and "'the kind way'" in english
+    errand = talk.promise({**asked, "url": "https://a.example/", "task": "gather_wood", "wait": True}, {"inputs": 9, "seconds": 60}, True)
+    assert "'gather_wood' 작업" in errand and "기다렸다가" in errand
+    assert talk.korean("어디까지 했어?") and not talk.korean("how far?")
+    # a game's name that says again what the app is is not said twice
+    assert talk.promise({**asked, "app": "Block Night", "hint": "block night"}, {"inputs": 9, "seconds": 60}, True).startswith("Block Night에서 ")
+
+
+def test_the_end_is_said_from_what_was_handed_back():
+    summary = {"outcome": "stopped", "reason": "out_of_lives", "actions_used": 40, "confirmed_actions": 35,
+               "work": {"outcome": "stopped", "reason": "out_of_lives", "levels": {"wanted": 3, "won": 1, "lost": 1},
+                        "spent": {"inputs": 40, "moves": 35, "used": {"retry": 1}, "seconds": 300.0},
+                        "stopped_at": {"where": "app", "family": "match3", "screen": "map", "situation": "the map, level 9 next"},
+                        "out_of_lives": {"minutes": 25}},
+               "adaptation": {"choice": {"asks": "Who goes?", "options": ["Anna", "Ben"], "sent": False}}}
+    said = talk.handed_back(summary, True)
+    for part in ("하트(목숨)가 없어", "레벨 3개 가운데 1개를 깼고 1개를 졌습니다", "입력 40번(확인된 수 35)", "다시 하기 1",
+                 "멈춘 화면: map — the map, level 9 next", "약 25분", "선택지: Anna / Ben"):
+        assert part in said, (part, said)
+    english = talk.handed_back(summary, False)
+    assert "Levels won 1 of 3, lost 1" in english and "about 25 min" in english
+    falling = talk.handed_back({"outcome": "goal_reached", "reason": "reach_value", "actions_used": 12, "confirmed_actions": 12,
+                                "adaptation": {"realtime": {"pieces": 12, "lines": 5}}}, True)
+    assert "목표를 이뤘습니다" in falling and "조각 12개를 놓아 줄 5개" in falling
+    short = talk.handed_back({"outcome": "budget_exhausted", "reason": "actions", "actions_used": 300, "confirmed_actions": 14,
+                              "work": {"goal": {"objective": "reach_value", "target_value": 5}},
+                              "adaptation": {"realtime": {"pieces": 14, "lines": 4}}}, True)
+    assert "입력 한도" in short and "목표 5 가운데 4에 닿았습니다" in short
+
+
+async def test_the_loop_tells_a_watcher_with_progress_each_level_and_one_without_is_told_nothing_more():
+    from test_work import COMPUTE, WINNING, Levels, Passing
+
+    class Told(measure.Recorder):
+        def __init__(self):
+            super().__init__("told")
+            self.told = []
+
+        def progress(self, event):
+            self.told.append(event)
+
+    fake, told = Levels([WINNING] * 2), Told()
+    played, made = await work.play(fake, Passing(fake), "minesweeper", goal=GoalSpec("levels", 2),
+                                   budget=Budget(200, COMPUTE, 600), watch=told)
+    assert played.record["outcome"] == "goal_reached"
+    parts = [event for event in told.told if event["what"] == "part"]
+    assert [(event["number"], event["won"], event["wanted"]) for event in parts] == [(1, 1, 2), (2, 2, 2)]
+    assert any(event["what"] == "taken" and event["family"] == "minesweeper" for event in told.told)
+    assert told.told[-1]["what"] == "handback" and told.told[-1]["work"]["levels"]["won"] == 2
+    # a watcher with no progress (eval web's and eval android's recorder) plays the same
+    fake = Levels([WINNING] * 2)
+    played, _ = await work.play(fake, Passing(fake), "minesweeper", goal=GoalSpec("levels", 2),
+                                budget=Budget(200, COMPUTE, 600), watch=measure.Recorder("plain"))
+    assert played.record["outcome"] == "goal_reached"
+    agent.progress(object(), "anything")
+
+
+def test_a_part_that_ended_no_level_is_not_said_as_a_level(tmp_path):
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Running())
+    demo.progressed({"what": "part", "number": 1, "outcome": "gave_up", "reason": "error", "won": 0, "lost": 0, "wanted": 2})
+    assert not demo.chat_log and demo.counted()["levels"] == {"won": 0, "lost": 0, "wanted": 2}
+    demo.progressed({"what": "part", "number": 2, "outcome": "goal_reached", "reason": "won", "won": 1, "lost": 0, "wanted": 2})
+    assert [line["text"] for line in demo.chat_log] == ["레벨 하나를 깼습니다: 1/2개 깸, 0개 짐."]
