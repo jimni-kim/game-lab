@@ -10,7 +10,7 @@ import json
 from PIL import Image, ImageDraw
 import pytest
 
-from gamelab import adaptation, agent, catalog, recovery
+from gamelab import adaptation, agent, catalog, families, recovery
 from gamelab.adaptation import Adaptation, AdaptationFailed, Store, adopt, cell_box
 from gamelab.agent import play as play_adaptive
 from gamelab.contracts import Budget, GoalSpec
@@ -31,6 +31,13 @@ MINE_INK, FLAG_INK = (20, 20, 20), (200, 30, 30)
 # the solver's moves on these seeds, by the rules alone (compute 2000): a game won in 11 moves, one lost at its
 # fourth move; the centre cell is the solver's first guess
 WINNING, LOST_EARLY, COMPUTE = 0, 180, 2000
+
+
+def as_given(monkeypatch) -> None:
+    """LOST_EARLY is a deal the solver opens a mine on with COMPUTE boards a move. A live game spends no less than
+    the family's floor (`least_compute`), and with that many the solver guesses elsewhere and the game is not
+    lost: a test of a lost game plays with the budget it names."""
+    monkeypatch.setattr(families, "least", lambda descriptor, asked: asked)
 MINED_CENTRE = [[0, 0], [0, 8], [2, 2], [4, 4], [5, 0], [6, 6], [7, 1], [8, 3], [8, 7], [8, 8]]
 
 
@@ -315,10 +322,11 @@ async def test_a_mine_under_a_first_guess_ends_the_exploring_with_its_own_reason
     assert played.record["confirmed_actions"] == 1 and len(again.taps) == 1 and made["generations"] == 0 and "failed" not in made
 
 
-async def test_a_game_lost_after_enough_moves_still_gives_an_adapter_and_ends_as_the_game_ended(tmp_path):
+async def test_a_game_lost_after_enough_moves_still_gives_an_adapter_and_ends_as_the_game_ended(tmp_path, monkeypatch):
     """A mine opened after the first few moves ends the exploring early with a screen of the lost game as its
     last look. Enough was seen to write the adapter, which must read that screen too; the game ends as the
     game's own end, and the adapter is written then and kept for the next game."""
+    as_given(monkeypatch)
     fake = Mines(draw=LOST_EARLY)
     trace = await Adaptation(Reader(fake), "minesweeper", compute=COMPUTE).explore(fake)
     assert len(trace.looks) == 5 and len(fake.taps) == 4 and trace.looks[-1].action is None

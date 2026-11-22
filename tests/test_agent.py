@@ -401,5 +401,5 @@ async def test_a_live_2048_spends_its_familys_floor_of_boards_whatever_smaller_b
     least = agent.catalog.descriptor("slide_merge")["least_compute"]
     assert least >= 2000 and spent and set(spent) == {("slide_merge", least)}, (played.record, spent)
     # a family that names no floor spends the run's budget as it is
-    assert agent.catalog.family("minesweeper").compute(200) == 200
+    assert agent.catalog.family("klondike").compute(200) == 200
     assert agent.catalog.family("slide_merge").compute(20000) == 20000

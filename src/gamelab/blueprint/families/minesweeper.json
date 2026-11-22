@@ -108,6 +108,7 @@
   "baseline_policy": "baseline",
   "default_policy": "solver",
   "default_compute": 20000,
+  "least_compute": 20000,
   "goal_value": "the cells opened",
   "verify_every": 1,
   "discovery": {

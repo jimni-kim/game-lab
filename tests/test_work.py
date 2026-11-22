@@ -9,7 +9,7 @@ from gamelab import work
 from gamelab.contracts import LOST, Budget, GoalSpec, Scope
 from gamelab.model import TurnResult
 from gamelab.rules.minesweeper import EXPLODED
-from test_adaptation_mines import BOARD, COMPUTE, LOST_EARLY, WINNING, Mines, Reader, middle, quick, source as mines_source  # noqa: F401
+from test_adaptation_mines import BOARD, COMPUTE, LOST_EARLY, WINNING, Mines, Reader, as_given, middle, quick, source as mines_source  # noqa: F401
 from test_direct import PRESS, Lamps, Player
 
 
@@ -124,7 +124,8 @@ async def test_levels_are_cleared_one_after_another_and_the_work_hands_back_what
     assert handback["spent"]["used"] == {} and "levels won 3 of 3" in work.told(handback)
 
 
-async def test_a_lost_level_ends_the_work_unless_another_try_was_allowed():
+async def test_a_lost_level_ends_the_work_unless_another_try_was_allowed(monkeypatch):
+    as_given(monkeypatch)
     fake = Levels([LOST_EARLY, WINNING])
     played, made = await work.play(fake, Passing(fake, uses=again), "minesweeper", goal=GoalSpec("levels", 2),
                                    budget=Budget(200, COMPUTE, 600))

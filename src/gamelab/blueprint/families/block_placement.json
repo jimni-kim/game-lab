@@ -128,6 +128,7 @@
   "baseline_policy": "greedy",
   "default_policy": "search",
   "default_compute": 1000,
+  "least_compute": 1000,
   "goal_value": "the game's score",
   "verify_every": 1
 }

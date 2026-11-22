@@ -771,7 +771,10 @@ def configure(parser: argparse.ArgumentParser) -> None:
                              "the Host a request names; a tunnel passes its own host on, so it needs none")
     parser.add_argument("--out", type=Path, default=measure.ROOT / "out" / "serve", help="each game's files")
     parser.add_argument("--compute", type=int, default=200, help="evaluated boards per decision")
-    parser.add_argument("--max-actions", type=int, default=300, help="one game's inputs at most")
+    parser.add_argument("--max-actions", type=int, default=6000,
+                        help="one game's inputs at most: generous, since a falling game counts each key or swipe as "
+                             "one (300 ended a request for five lines at four); the seconds and the tokens are what "
+                             "bound a game")
     parser.add_argument("--max-seconds", type=float, default=900, help="one game's seconds at most")
     parser.add_argument("--max-input-tokens", type=int, default=300_000, help="the tokens one game's model questions may send")
     parser.add_argument("--games-a-day", type=int, default=20, help="games played a day at most")

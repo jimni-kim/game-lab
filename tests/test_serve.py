@@ -502,7 +502,7 @@ async def test_the_chat_answers_a_request_with_what_will_be_done_a_question_whil
         # what will be done, made from the goal the host checked
         start = replies[abouts.index("start")]["text"]
         assert "Merge Tiles" in start and "게임이 끝날 때까지" in start and "게임을 새로 띄워서" in start
-        assert "지면 거기서 멈춥니다" in start and "쓰지 않습니다" in start and "입력 300번" in start
+        assert "지면 거기서 멈춥니다" in start and "쓰지 않습니다" in start and "입력 6000번" in start
         # the question, answered from the game as it stood: its inputs, goal, progress and screen
         context = talker.contexts[0]
         assert context["playing"] and context["words"] == "어디까지 했어?" and context["game"]["inputs"] >= 2

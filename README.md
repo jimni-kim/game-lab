@@ -4,11 +4,12 @@
 규칙을 아는 계열(2048, 지뢰찾기, 블록 놓기, 3매치, 클론다이크, 떨어지는 블록)은 모델이 첫 화면을 보정해 주면 코드가 판을 읽고 풀이기가 수를 고른다.
 처음 보는 게임은 모델이 규칙 코드를 쓰거나(만든 계열) 입력을 직접 고르고(직접 두기), 판 밖 화면은 한 번 지난 길을 코드가 다시 누른다(루틴).
 떨어지는 블록류(실시간: 모델은 우물과 조작을 한 번 말하고, 코드가 초당 몇 번 읽고 계열의 풀이기로 놓을 곳을 고름. 웹과 Android 몸짓 조작), 요청 사이에 이어지는 게임(세계 기억), 스토리형(대사는 코드, 선택지는 모델)도 뼈대가 있다.
+데모 페이지(`eval serve`)는 게임 화면 옆의 대화창에서 요청을 받고, 판이 도는 중의 "어디까지 했어?"에 코드가 센 진행으로 답한다.
 
 ARMY 게임 플러그인(`codex/game-adaptive-perception` `92ccefe5f`)에서 분리했다.
 
-- **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z, 실시간은 Z2에서 고침, 2026-11-21)
-- [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§34)
+- **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z·Z2, 2026-11-21. R1·P2·D2를 합친 뒤 고침, 2026-11-23)
+- [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§35)
 - [docs/PLAN-archive.md](docs/PLAN-archive.md): 분리 계획과 그 전의 기록(§1~§23)
 - [docs/origin/](docs/origin/2026-11-13-game-adaptive-perception.md): 처음 실험 계획과 조사, [docs/reports/](docs/reports/): 단계별 리포트
 
@@ -44,9 +45,10 @@ agent.py                    한 판의 루프: 경로를 고르고, 판을 읽�
 ├─ environments/web.py      Playwright Chromium (페이지 요소 outline 포함)
 └─ environments/android.py  adb (screencap, input tap/swipe/keyevent)
 eval/                       평가 CLI (policies, web, android, offline, checks, serve, models)
+├─ talk.py                  데모 대화창의 문장: 최초 요청의 답과 끝의 말(코드), 말 가르기·질문의 답(모델)
 ├─ guard.py                 요청으로 연 페이지가 공개 주소에만 닿게 하는 주소 확인과 프록시
 ├─ emulator.py              데모가 쓰는 에뮬레이터: 켜져 있으면 쓰고, 없으면 켬
-└─ serve.py, serve.html     말로 요청하는 데모 페이지
+└─ serve.py, serve.html     데모 페이지: 게임 화면과 대화창 (POST /say, 루프의 진행 알림 agent.progress)
 ```
 
 경로마다 하는 일과 파일은 [STATUS.md §1](docs/STATUS.md)의 표에 있다.
@@ -66,6 +68,7 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 
 # 웹 실사이트 (모델 비용이 든다). 사이트는 sites.json의 이름으로만 정한다
 .venv/bin/python -m gamelab.eval web --site ovolve_2048 --games 3 --objective reach_value --target 2048 --compute 500 --out out/ovolve
+# 라이브는 --compute를 계열의 바닥 값(least_compute)까지 올린다: 2048 8000, 지뢰찾기 20000, 블록 놓기 1000
 .venv/bin/python -m gamelab.eval web --site march2048_4x4 --identify --games 3 --compute 500 --out out/march   # 계열도 화면에서 찾음
 
 # Android (에뮬레이터를 먼저 켠다: emulator -avd game-lab)
@@ -122,7 +125,7 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 ```
 
 - 모델은 `.env`의 `AGENTIC_OPENAI_KEY`, `AGENTIC_OPENAI_MODEL`(또는 `--vision-model`)을 쓴다.
-- 한 번에 한 판(도는 중의 요청은 거절), 판당 수 300·900초·입력 토큰 30만, 하루 20판(`--max-actions`, `--max-seconds`,
+- 한 번에 한 판(도는 중의 요청은 거절), 판당 입력 6000번(실시간 게임은 키 하나가 입력 하나라 넉넉히 둠. 실제로 묶는 것은 시간과 토큰)·900초·입력 토큰 30만, 하루 20판(`--max-actions`, `--max-seconds`,
   `--max-input-tokens`, `--games-a-day`). 약관 동의는 기본으로 하지 않는다(`--accept-consent`).
 - 대화창에 쓴 말은 하루 200번까지(`--chats-a-day`, `out/serve/chat-날짜.jsonl`로 셈). 말을 가르는 질문은 경량 모델
   (`--light-model`, 기본 `gpt-6-luna`), 질문의 답은 `--vision-model`이 하고, 판의 토큰·예산과 따로 센다.
@@ -133,16 +136,18 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 - 결과는 `out/serve/`에 `eval web`·`eval android`와 같은 형식으로 남는다(`web-날짜-시각-01.json`, `app-날짜-시각-01.json`).
 - 요청의 주소는 공개 IP로만 풀릴 때 열고, 그 페이지가 여는 연결(리다이렉트, 하위 프레임, WebSocket)은 모두 서버 안의
   프록시가 연결마다 이름을 다시 풀어 확인한다.
-- 서버는 `127.0.0.1`에만 열린다. 바깥에서 보려면 Cloudflare 터널을 쓴다(이름 붙은 터널 `game-lab-demo`를 만들고 로그인한 뒤,
-  켜기 전에 확인한다). 터널은 Host를 그대로 넘기므로 Origin 검사에 따로 설정할 것이 없다. 데모할 때만 서버와 터널을 켠다.
+- 서버는 `127.0.0.1`에만 열린다. 바깥에서 보려면 Cloudflare 터널을 쓴다. 지금까지는 빠른 터널로 열었다: 로그인 없이
+  `https://….trycloudflare.com` 주소가 생기고, 켤 때마다 주소가 바뀐다. 이름 붙은 터널(고정 주소)은 Cloudflare에 도메인이
+  있어야 해서 만들지 않았다. 주소가 바뀌어도 접근 토큰은 `--token`이나 `GAMELAB_DEMO_TOKEN`으로 고정할 수 있다.
+  터널은 Host를 그대로 넘기므로 Origin 검사에 따로 설정할 것이 없다. 데모할 때만 서버와 터널을 켠다.
 
 ```sh
-cloudflared tunnel run --url http://127.0.0.1:8765 game-lab-demo
+cloudflared tunnel --url http://127.0.0.1:8765    # 빠른 터널: 출력에 trycloudflare.com 주소가 나옴
 ```
 
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 713개, 약 17분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 738개, 약 14분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```
