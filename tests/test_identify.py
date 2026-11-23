@@ -64,7 +64,7 @@ async def test_a_game_nobody_named_is_played_as_the_family_the_model_names_and_t
     assert (played.record["outcome"], played.record["reason"]) == ("goal_reached", "play_until_end"), (played.record, made)
     assert played.record["family"] == "minesweeper" and fake.over()
     assert made["identified"] == {"family": "minesweeper", "source": "model", "candidates": ["minesweeper"],
-                                  "tried": ["minesweeper"], "questions": 1, "inputs": 0, "situation": "as drawn"}
+                                  "tried": ["minesweeper"], "questions": 1, "inputs": 0, "unchanged": 0, "situation": "as drawn"}
     # the model is told of each family it may name, and nothing of the site
     assert [family["id"] for family in guide.asked[0]["families"]] == explorable() and set(guide.asked[0]) == {"families"}
     # the reading that bore the family out is the exploring's first: the first screen is read once

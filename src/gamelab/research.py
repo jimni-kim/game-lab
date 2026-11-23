@@ -140,11 +140,15 @@ def merged(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     return {**old, **new, **({TERMS: dict(list(terms.items())[-TERMS_MOST:])} if terms else {})}
 
 
-async def outside(model: Model, address: str, hint: str | None, found: dict[str, Any]) -> dict[str, Any]:
+async def outside(model: Model, address: str, hint: str | None, found: dict[str, Any],
+                  families: list[dict[str, str]] | None = None) -> dict[str, Any]:
     """One question: what the store page, the encyclopedia and the model's own knowledge say of the game, in
-    the parts of `PARTS` (`{}` when it answered none). `sources`: what it went by."""
+    the parts of `PARTS` (`{}` when it answered none). `sources`: what it went by. `families` (ids with a summary
+    each): the kinds of game the harness has rules for; `family`, when the model says the game is plainly one of
+    them, so that the game's own help is not looked at for a game its code plays."""
     prompt = (resources.FRAGMENT / "prompts" / "research_game.md").read_text(encoding="utf-8")
     asked = {"research": True, "address": address, **({"hint": hint} if hint else {}), **found,
+             **({"families": families} if families else {}),
              "parts": {**PARTS, TERMS: "the game's own words for its things (a resource, a status, a piece) with what each means"}}
     result = await model.complete(TurnRequest(
         system_stable=prompt, name="research_game", max_tokens=OUTSIDE_TOKENS, timeout_s=OUTSIDE_TIMEOUT_S,
@@ -156,11 +160,42 @@ async def outside(model: Model, address: str, hint: str | None, found: dict[str,
     if not isinstance(answer, dict) or answer.get("known") is False:
         return {}
     kept = parts(answer)
-    if not kept:
+    if not kept and not answer.get("family"):
         return {}
     sources = [name for name in ("store", "encyclopedia", "own_knowledge")
                if name in (answer.get("sources") or []) and (name == "own_knowledge" or name in found)]
-    return {**kept, "sources": sources, **({"game": answer["game"][:80]} if isinstance(answer.get("game"), str) else {})}
+    family = answer.get("family") if answer.get("family") in {listed["id"] for listed in families or ()} else None
+    return {**kept, "sources": sources, **({"game": answer["game"][:80]} if isinstance(answer.get("game"), str) else {}),
+            **({"family": family} if family else {})}
+
+
+def fresh_looked() -> dict[str, Any]:
+    """What looking at the game's own help spent, shared by the questions before the game is found (`recovery`) and
+    those of its play (`direct`): questions, input tokens, inputs and why it ended (None while it goes on)."""
+    return {"questions": 0, "tokens": 0, "inputs": 0, "done": None}
+
+
+def look_first(looked: dict[str, Any]) -> dict[str, Any]:
+    """What a question that may look at the game's own help is told of it."""
+    return {"parts": {**PARTS, TERMS: "the game's own words with what each means"},
+            "questions_left": QUESTIONS_MOST - looked["questions"]}
+
+
+def looked_at(answer: dict[str, Any], found: dict[str, Any], looked: dict[str, Any], on_board: bool) -> bool:
+    """What the model read of the game's own help is kept in `found["inside"]`; whether its input is one of looking
+    (`"research": true` in the action) rather than of play. Looking ends (`looked["done"]`) when it says it is done,
+    when it plays a move on a board (`on_board`), or when its questions are spent."""
+    read = parts(answer.get("found"))
+    if read:
+        found["inside"] = merged(found.get("inside") or {}, read)
+    action = answer.get("action")
+    marked = isinstance(action, dict) and action.get("research") is True
+    why = "said_done" if answer.get("research_done") is True else \
+        "played" if not marked and on_board else \
+        "spent" if looked["questions"] >= QUESTIONS_MOST else None
+    if why is not None:
+        looked["done"] = why
+    return marked and why != "played"
 
 
 def told(kept: dict[str, Any] | None) -> dict[str, Any] | None:

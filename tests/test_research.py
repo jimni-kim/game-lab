@@ -183,3 +183,68 @@ def test_a_store_page_and_what_a_model_said_are_kept_short():
     kept = research.parts({"rules": " r " * 500, "win": "", "terms": {"a": "b", "": "c", "d": 3}, "other": "x"})
     assert set(kept) == {"rules", "terms"} and len(kept["rules"]) == research.PART_MOST and kept["terms"] == {"a": "b"}
     assert research.package("android://com.example.lamps") == "com.example.lamps" and research.package("https://x.y/") is None
+
+
+class MenuFirst(Model):
+    """The game shows its menu first, which a model asked which game it is calls no game in play: the way to the
+    board is found by the questions that get past it (`recovery`), which may first read the game's help there."""
+
+    def __init__(self, fake, family=None):
+        super().__init__(fake)
+        self.family, self.identified, self.recovered = family, [], []
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if request.name == "research_game":
+            self.outside += 1
+            assert {listed["id"] for listed in context["families"]} >= {"slide_merge"}
+            return TurnResult(text=json.dumps({**OUTSIDE, **({"family": self.family} if self.family else {})}),
+                              usage=Usage(OUTSIDE_TOKENS, 50))
+        if "families" in context:
+            self.identified.append(context)
+            screen = "game" if self.fake.screen == "board" else "other"
+            return TurnResult(text=json.dumps({"screen": screen, "families": [], "situation": self.fake.screen}))
+        if "reason" in context:
+            self.recovered.append({**context, "prompt": request.system_stable})
+            if self.fake.screen == "menu" and "look_first" in context:
+                answer = {"scene": "map", "action": {"kind": "tap", "at": HELP, "research": True}}
+            elif self.fake.screen == "help":
+                answer = {"scene": "notice", "found": READ, "research_done": True,
+                          "action": {"kind": "tap", "at": CLOSE, "research": True}}
+            else:
+                answer = {"scene": "map", "action": {"kind": "tap", "at": PLAY}}
+            return TurnResult(text=json.dumps({"situation": self.fake.screen, **answer}), usage=Usage(PLAY_TOKENS, 20))
+        return await super().complete(request)
+
+
+async def test_a_new_game_is_looked_up_before_it_is_found_and_its_menu_read(tmp_path, looked_up):
+    fake, store = Lamps(), Store(tmp_path)
+    model = MenuFirst(fake)
+    played, made = await work.play(fake, model, None, goal=GoalSpec("actions", 2), budget=Budget(30, 1, 120),
+                                   store=store, research=True)
+    assert made["work"]["outcome"] == "goal_reached" and model.outside == 1 and fake.helped == 1
+    # what was found outside goes with the first question of which game it is, and with the way past its menu
+    assert model.identified[0]["research"]["unconfirmed"]["win"] == OUTSIDE["win"]
+    first = model.recovered[0]
+    assert "look_first" in first and first["research"]["unconfirmed"]["controls"] == OUTSIDE["controls"]
+    assert "look_first" in first["prompt"]
+    # once read, the menu's play button is pressed with nothing more to look at, and play does not look again
+    assert "look_first" not in model.recovered[-1] and model.recovered[-1]["research"]["read_in_game"] == READ
+    assert model.played and all("look_first" not in asked and asked["research"]["read_in_game"] == READ
+                                for asked in model.played)
+    told = made["research"]
+    assert told["early"] and told["looking_early"] and told["looked"]["done"] == "said_done"
+    assert told["looked"]["questions"] == 2 and told["looked"]["inputs"] == 2
+    assert told["aside_tokens"] == OUTSIDE_TOKENS + 2 * PLAY_TOKENS
+    assert store.research("android://com.example.lamps")["inside"] == READ
+
+
+async def test_a_game_of_a_family_costs_the_one_question_outside(tmp_path, looked_up):
+    fake = Lamps()
+    model = MenuFirst(fake, family="slide_merge")
+    await work.play(fake, model, None, goal=GoalSpec("actions", 1), budget=Budget(30, 1, 120),
+                    store=Store(tmp_path), research=True)
+    # the one question outside said it is a game of a family: its menu is passed, never read
+    assert model.outside == 1 and fake.helped == 0 and model.recovered
+    assert all("look_first" not in asked and "look_first" not in asked["prompt"] for asked in model.recovered)
+    assert all("research" in asked for asked in model.identified)

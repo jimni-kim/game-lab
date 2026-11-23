@@ -48,6 +48,7 @@ from .execution import TAP_MS
 from .families import state_id
 from .model import Model, Msg, TurnRequest, TurnResult
 from . import motion, research, world
+from .research import fresh_looked
 from .rules import DETERMINISTIC
 from .carry import _boxes as carry_boxes
 from .motion import Steady
@@ -309,6 +310,11 @@ class Agent:
         self.researching = research
         self.researched: dict[str, Any] | None = None
         self.outside_tokens = 0
+        # what looking at the game's own help spent, by the questions that got to the game and those of its play;
+        # and whether the screens before the game is found may be used for it (looked up before it is identified,
+        # not plainly a game of a family: PLAN §36 E4)
+        self.looked = fresh_looked()
+        self.looking_early = self.research_early = False
         # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
         # (`adaptation.keyed`)
         self.game_name = game
@@ -680,6 +686,13 @@ class Agent:
                 await self._play_direct("")
                 return
             else:
+                if self.researching and self.researched is None and not self.way:
+                    # a game never seen before is looked up before it is found, so that what is known of it helps
+                    # get past its first screens, which may be used to read its own help (PLAN §36 E4: looked up
+                    # only when play began, it could not shorten the way there)
+                    self.researched, looking = await self._research()
+                    self.research_early = True
+                    self.looking_early = looking and not (self.researched.get("outside") or {}).get("family")
                 asked = await self._identify()
                 if asked["inputs"] and self.found.get("made_kept") == "not_taken" and await self._made_again():
                     # the family kept of this game did not read the first screen because something stood on it (a
@@ -691,7 +704,7 @@ class Agent:
                 self._unfamiliar(asked)
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
-                                            "situation": asked["situation"]}
+                                            "unchanged": asked.get("unchanged", 0), "situation": asked["situation"]}
                 progress(self.watch, "identified", candidates=list(self.candidates), falling=bool(asked.get("falling")),
                          situation=asked["situation"])
                 if asked.get("falling") and await self._play_realtime():
@@ -777,8 +790,11 @@ class Agent:
         for attempt in range(1 + IDENTIFY_RETRIES):
             try:
                 recovery = self._recovery(None, [])
-                return await self._asking(identify(self.seen, self.model, recovery, hint=self.hint,
-                                                   **({} if tries is None else {"tries": tries})))
+                asked = await self._asking(identify(self.seen, self.model, recovery, hint=self.hint,
+                                                    research=research.told(self.researched),
+                                                    **({} if tries is None else {"tries": tries})))
+                # the inputs sent to get to the game after which the screen did not change (PLAN §36 E4)
+                return {**asked, "unchanged": sum(entry["changed"] is False for entry in recovery.log)}
             except Exception as error:
                 log.info("the game could not be asked about: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -843,7 +859,10 @@ class Agent:
 
     def _recovery(self, family_id: str | None, known: list[dict[str, Any]] | None) -> Recovery:
         return Recovery(self.model, family_id, known=known, accept_consent=self.accept_consent, account=self.account,
-                        allowed=self.goal.allowed_meta_actions, stops=self.goal.stop_conditions, profiles=self.profiles)
+                        allowed=self.goal.allowed_meta_actions, stops=self.goal.stop_conditions, profiles=self.profiles,
+                        found=self.researched if family_id is None else None,
+                        looked=self.looked if family_id is None and self.looking_early and self.researched is not None
+                        else None)
 
     def _restore(self, family_id: str, profile: dict[str, Any]) -> bool:
         """The family's reader as it was kept for this site: the game is read by it from the first screen, and
@@ -1463,8 +1482,7 @@ class Agent:
     def aside(self) -> int:
         """The input tokens spent on looking the game up before play, up to `research.TOKENS_MOST`: not counted
         against the board's budget (PLAN §27 M8)."""
-        looked = self.player.looked["tokens"] if self.player is not None else 0
-        return min(research.TOKENS_MOST, self.outside_tokens + looked)
+        return min(research.TOKENS_MOST, self.outside_tokens + self.looked["tokens"])
 
     async def _research(self) -> tuple[dict[str, Any], bool]:
         """What is known of the game from looking it up, looked up outside it now when it never was, and whether
@@ -1475,24 +1493,28 @@ class Agent:
             try:
                 gathered = await research.gather(await self.surface.address(), self.hint)
                 kept["gathered"] = sorted(gathered)
+                families = [{"id": name, "summary": catalog.descriptor(name)["summary"]} for name in explorable()]
                 kept["outside"] = await self._asking(research.outside(self.model, await self.surface.address(),
-                                                                      self.hint, gathered))
+                                                                      self.hint, gathered, families))
             except Exception as error:
                 log.info("the game could not be looked up: %s", error)
                 kept["outside"] = {}
             self.outside_tokens = self.model.input - before
+        if kept.get("looked"):
+            self.looked["done"] = kept["looked"]
         return kept, not kept.get("looked")
 
     def _keep_research(self) -> None:
-        if self.researched is None or self.player is None:
+        if self.researched is None:
             return
-        record = {**self.researched, **{key: value for key, value in self.player.found.items() if key == "inside"}}
-        if self.player.looked["done"]:
-            record["looked"] = self.player.looked["done"]
+        record = dict(self.researched)
+        if self.looked["done"] and not record.get("looked"):
+            record["looked"] = self.looked["done"]
         self.found["research"] = {"outside_parts": sorted(record.get("outside") or {}),
                                   "inside_parts": sorted(record.get("inside") or {}), "sources":
                                   (record.get("outside") or {}).get("sources", []), "gathered": record.get("gathered", []),
-                                  "outside_tokens": self.outside_tokens, "looked": dict(self.player.looked),
+                                  "outside_tokens": self.outside_tokens, "looked": dict(self.looked),
+                                  "early": self.research_early, "looking_early": self.looking_early,
                                   "aside_tokens": self.aside()}
         if self.store is not None and self.site:
             self.store.save_research(self.site, record)
@@ -2798,10 +2820,12 @@ class Agent:
             self.adapter.close()
         self.adapter, self.family_id, self.policy = None, None, "model"
         if self.player is None:
-            found, looking = await self._research() if self.researching else (None, False)
-            self.researched = found
+            if self.researching and self.researched is None:
+                self.researched, _ = await self._research()
+            looking = self.researched is not None and self.looked["done"] is None
             self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent,
-                                        refused=self.account["refused"], notes=self.notes, found=found, looking=looking)
+                                        refused=self.account["refused"], notes=self.notes, found=self.researched,
+                                        looking=looking, looked=self.looked)
         player = self.player
         if self.falling.get("note"):
             player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program",

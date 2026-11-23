@@ -22,7 +22,7 @@ import json
 import logging
 from typing import Any
 
-from . import catalog, resources
+from . import catalog, research, resources
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
@@ -71,6 +71,20 @@ REPLAYED_REASONS = frozenset({"label_failed", "board_not_found", "board_covered"
                               NEXT_LEVEL})
 # what is told the model of the inputs it already tried on this screen, and kept of those that worked
 TRIED_KEPT, KNOWN_KEPT = 8, 32
+# what a question before the game is known is told of what was found of it, and of looking at its own help first
+RESEARCH_TOLD = ("\n\nThe context has `research` because this game was looked up before it was found: `research.unconfirmed` "
+                 "is what was found outside the game (its store page, what is generally known of it), not checked against "
+                 "this game, so where it and the screen differ the screen is right; `research.read_in_game` is what was "
+                 "read on the game's own help screens. Use them to tell what the screens are and the way to the game.")
+LOOK_FIRST = ("\n\nThe context has `look_first` because the game was not yet looked at from inside. Before starting play from "
+              "a start screen or a menu, when the screen offers a help, how-to-play, rules, guide, tutorial text or a codex "
+              "(on the menu, in its settings, behind a \"?\" or an \"i\"), open it, read it page by page and close it again, "
+              "marking each input you send for that with `\"research\": true` inside the action. Add `found` to the answer: "
+              "an object with the parts of `look_first.parts`, each a short text, `terms` an object of the game's words "
+              "with what each means; give only what the screen showed. Never start a level or a run to reach such a page, "
+              "and never open one that costs anything or signs in. When you have read what there is, or this screen offers "
+              "none, add `\"research_done\": true` and give the input that gets to the game as usual. Inputs that only get "
+              "past a loading screen, a notice or a consent are sent as usual, without the mark.")
 
 
 def signature(png: bytes) -> list[int]:
@@ -185,7 +199,8 @@ async def send(surface: Any, action: dict[str, Any]) -> None:
 class Recovery:
     def __init__(self, model: Model, family_id: str | None, *, known: list[dict[str, Any]] | None = None,
                  accept_consent: bool = False, allowed: frozenset[str] = frozenset(), stops: tuple[str, ...] = (),
-                 account: dict[str, dict[str, int]] | None = None, profiles: list[dict[str, Any]] | None = None) -> None:
+                 account: dict[str, dict[str, int]] | None = None, profiles: list[dict[str, Any]] | None = None,
+                 found: dict[str, Any] | None = None, looked: dict[str, Any] | None = None) -> None:
         # `family_id` None: the game is not known yet (a screen before any board was seen)
         self.model, self.family_id, self.accept_consent = model, family_id, accept_consent
         # what the person allowed beyond the board (`META_ACTIONS` names) and the conditions they stop at
@@ -203,6 +218,14 @@ class Recovery:
         # what was tried since play last went on: told to the model, and credited when play goes on again
         self.tried: list[dict[str, Any]] = []
         self.questions = 0
+        # what was found out of the game before it was known (`research`, PLAN §27 M8, §36 E4), given with each
+        # question; and, while `looked` is given and not done, the screens before the game (a start screen, its
+        # menu) may first be used to read the game's own help (`research.look_first`), shared with its play
+        self.found, self.looked = found, looked
+
+    def _looking(self, reason: str) -> bool:
+        return reason == "game_not_shown" and self.looked is not None and self.looked["done"] is None \
+            and self.looked["questions"] < research.QUESTIONS_MOST
 
     async def attempt(self, surface: Any, reason: str, context: dict[str, Any], *, timeout_s: float | None = None) -> bool:
         """One thing done about the screen as it is now. True when an input was sent (or waited out) and the
@@ -302,13 +325,17 @@ class Recovery:
                  "allowed_meta_actions": sorted(self.allowed), **({"stop_conditions": list(self.stops)} if self.stops else {}),
                  "scenes": scenes.KINDS,
                  **context,
+                 **({"research": given} if (given := research.told(self.found)) else {}),
+                 **({"look_first": research.look_first(self.looked)} if (looking := self._looking(reason)) else {}),
                  "tried": [{"action": tried["action"], "screen_changed": tried["screen_changed"],
                             **({"refused": tried["refused"]} if "refused" in tried else {})}
                            for tried in self.tried[-TRIED_KEPT:]]}
-        prompt = (resources.FRAGMENT / "prompts" / "recover.md").read_text(encoding="utf-8")
+        prompt = (resources.FRAGMENT / "prompts" / "recover.md").read_text(encoding="utf-8") \
+            + (RESEARCH_TOLD if given else "") + (LOOK_FIRST if looking else "")
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(png).decode("ascii")}}
         self.questions += 1
+        result = None
         try:
             async with asyncio.timeout(timeout):
                 result = await self.model.complete(TurnRequest(
@@ -318,8 +345,13 @@ class Recovery:
         except Exception as error:
             entry["situation"] = f"no answer: {type(error).__name__}"
             return None
+        finally:
+            if looking:
+                self.looked["questions"] += 1
+                self.looked["tokens"] += result.usage.input_tokens if result is not None else 0
         if not isinstance(answer, dict):
             return None
+        marked = looking and research.looked_at(answer, self.found, self.looked, scenes.kind(answer.get("scene")) == scenes.BOARD)
         if isinstance(answer.get("situation"), str):
             entry["situation"] = answer["situation"][:300]
         if scenes.kind(answer.get("scene")) is not None:
@@ -335,6 +367,9 @@ class Recovery:
             entry["because"] = answer["action"]["because"][:200]
         if action["kind"] in (TAP, KEY) and (made := profile(answer["action"])) is not None:
             action["profile"] = made
+        if marked:
+            action["research"] = True
+            self.looked["inputs"] += 1
         # the model answered in the pixels of the picture it was shown: the input is sent in the screen's
         return action if action is None or scale == 1.0 else {
             key: [part / scale for part in value] if key in ("at", "from", "to") else value for key, value in action.items()}

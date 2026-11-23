@@ -1374,7 +1374,7 @@ def explorable() -> list[str]:
 
 
 async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: str | None = None,
-                   tries: int = MAX_TRIES) -> dict[str, Any]:
+                   tries: int = MAX_TRIES, research: dict[str, Any] | None = None) -> dict[str, Any]:
     """Which families the game on the screen may be, as a model sees it (PLAN §10, game identification):
     `{"families": [ids, likeliest first], "falling", "questions", "situation"}`. A screen that shows no game in play is
     not the end of it: the model gets past it with inputs of its own (`tries` at most; none: one question and
@@ -1386,7 +1386,8 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
     found: dict[str, Any] = {"families": [], "falling": False, "questions": 0, "situation": None, "shown": False}
     for tried in range(tries + 1):
         png = await surface.capture()
-        context = {"families": listed, **({"hint": hint} if hint else {})}
+        # what was found of the game outside it before it was found (`research.told`, PLAN §36 E4)
+        context = {"families": listed, **({"hint": hint} if hint else {}), **({"research": research} if research else {})}
         found["questions"] += 1
         result = await model.complete(TurnRequest(
             system_stable=_prompt("identify_game.md"), max_tokens=IDENTIFY_TOKENS, timeout_s=IDENTIFY_TIMEOUT_S,

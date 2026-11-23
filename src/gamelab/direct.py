@@ -511,13 +511,14 @@ class Direct:
 
     def __init__(self, model: Model, *, hint: str | None = None, accept_consent: bool = False,
                  refused: dict[str, int] | None = None, notes: Any = "", found: dict[str, Any] | None = None,
-                 looking: bool = False) -> None:
+                 looking: bool = False, looked: dict[str, Any] | None = None) -> None:
         self.model, self.hint, self.accept_consent = model, hint, accept_consent
         # what was found out of the game before it was played (`research`), whether the model is still to look at
-        # the game's own help before the first move, and the questions and tokens spent so (`research.QUESTIONS_MOST`)
-        self.found: dict[str, Any] = dict(found or {})
-        self.looking = looking
-        self.looked = {"questions": 0, "tokens": 0, "inputs": 0, "done": None}
+        # the game's own help before the first move, and the questions and tokens spent so (`research.QUESTIONS_MOST`;
+        # shared with the questions that got to the game, which may have looked first: `recovery.Recovery`)
+        self.found: dict[str, Any] = found if found is not None else {}
+        self.looked = looked if looked is not None else research.fresh_looked()
+        self.looking = looking and self.looked["done"] is None
         # what the model wants kept from one question to the next (`MEMORY`; a plain text is its plan), and what
         # it last said the screen shows
         self.memory: dict[str, str] = {}
@@ -613,9 +614,7 @@ class Direct:
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
                  **({"known": self.known} if self.known else {}),
                  **({"research": given} if given else {}),
-                 **({"look_first": {"parts": {**research.PARTS, research.TERMS: "the game's own words with what each "
-                                              "means"}, "questions_left": research.QUESTIONS_MOST - self.looked["questions"]}}
-                    if looking else {}),
+                 **({"look_first": research.look_first(self.looked)} if looking else {}),
                  **({"run_from_earlier_work": True} if self.earlier and not self.history else {}),
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -756,20 +755,11 @@ class Direct:
         return action
 
     def _looked(self, answer: dict[str, Any]) -> bool:
-        """What the model read of the game's own help is kept with what was found before; whether its input is
-        one of looking (`"research": true` in the action) rather than of play. Looking ends when it says it is
-        done, when it plays a move on a board, or when its questions are spent."""
-        read = research.parts(answer.get("found"))
-        if read:
-            self.found["inside"] = research.merged(self.found.get("inside") or {}, read)
-        action = answer.get("action")
-        marked = isinstance(action, dict) and action.get("research") is True
-        why = "said_done" if answer.get("research_done") is True else \
-            "played" if not marked and scenes.kind(answer.get("scene")) == scenes.BOARD else \
-            "spent" if self.looked["questions"] >= research.QUESTIONS_MOST else None
-        if why is not None:
-            self.looking, self.looked["done"] = False, why
-        return marked and why != "played"
+        """Whether the model's input is one of looking at the game's own help rather than of play
+        (`research.looked_at`)."""
+        marked = research.looked_at(answer, self.found, self.looked, scenes.kind(answer.get("scene")) == scenes.BOARD)
+        self.looking = self.looked["done"] is None
+        return marked
 
     def _remember(self, said: dict[str, Any]) -> None:
         """The parts of the memory the model gave take the place of what they held; a part it left out stays."""
