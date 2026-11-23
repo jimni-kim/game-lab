@@ -743,16 +743,34 @@ def png(colour=(30, 90, 200)):
 
 
 class Phone:
-    """The device's surface as a fake: its whole captures counted, the first `failing` of them failing."""
+    """The device's surface as a fake: its whole captures counted, the first `failing` of them failing, and the
+    inputs sent to it kept as `AndroidSurface` takes them (`hold` held, when given, until it is set)."""
 
-    def __init__(self, failing=0):
-        self.captured, self.failing = 0, failing
+    def __init__(self, failing=0, hold=None):
+        self.captured, self.failing, self.hold, self.sent = 0, failing, hold, []
 
     async def capture(self, region=None):
         self.captured += 1
         if self.captured <= self.failing:
             raise ValueError("capture_failed")
         return png()
+
+    async def size(self):
+        return [1080, 2400]
+
+    async def _input(self, *sent):
+        if self.hold is not None:
+            await self.hold.wait()
+        self.sent.append(sent)
+
+    async def tap(self, x, y, duration_ms):
+        await self._input("tap", x, y, duration_ms)
+
+    async def drag(self, x0, y0, x1, y1, duration_ms):
+        await self._input("drag", x0, y0, x1, y1, duration_ms)
+
+    async def key(self, key, hold_ms=0):
+        await self._input("key", key)
 
 
 async def statuses(socket, wanted, limit_s=10):
@@ -964,5 +982,186 @@ async def test_a_demo_for_pages_only_says_it_has_no_device_and_refuses_to_start_
         assert answer.status == 409 and await answer.json() == {"refused": "web_only", "device": "none"}
         await asyncio.sleep(0.1)
         assert demo.emulator.looked == demo.emulator.ensured == 0 and demo.watcher is None
+    finally:
+        await client.close()
+
+
+# ── a person's input on the device from the page (`--touch`, 2026-11-23) ──
+
+
+def test_the_fake_phone_takes_its_inputs_as_the_devices_surface_does():
+    import inspect
+    for name in ("size", "tap", "drag", "key"):
+        assert list(inspect.signature(getattr(Phone, name)).parameters) == \
+            list(inspect.signature(getattr(AndroidSurface, name)).parameters), name
+
+
+async def test_inputs_from_the_page_are_off_unless_the_server_is_told(tmp_path, often):
+    phone = Phone()
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Running(on=True), device=lambda serial: phone)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        first = json.loads((await socket.receive(timeout=5)).data)
+        assert first["kind"] == "status" and first["touch"] is False
+        answer = await client.post("/touch", json={"kind": "tap", "x": 0.5, "y": 0.5}, headers=mine)
+        assert answer.status == 403 and await answer.json() == {"refused": "touch_off"} and not phone.sent
+    finally:
+        await client.close()
+
+
+async def test_with_touch_a_tap_a_swipe_back_and_home_reach_the_device_in_its_pixels_and_are_told(tmp_path, often):
+    phone = Phone()
+    demo = serve.Demo(options(tmp_path, "--touch"), Recorded(Asked({})), token=TOKEN, emulator=Running(on=True),
+                      device=lambda serial: phone)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        first = json.loads((await socket.receive(timeout=5)).data)
+        assert first["touch"] is True and first["device"] == "on"
+        for body in ({"kind": "tap", "x": 0.5, "y": 0.25}, {"kind": "tap", "x": 1, "y": 0, "ms": 10},
+                     {"kind": "tap", "x": 0.1, "y": 0.1, "ms": 900}, {"kind": "tap", "x": 0.1, "y": 0.1, "ms": 99999},
+                     {"kind": "swipe", "x0": 0.5, "y0": 0.8, "x1": 0.5, "y1": 0.2, "ms": 400},
+                     {"kind": "swipe", "x0": 0, "y0": 0, "x1": 1, "y1": 1, "ms": 5},
+                     {"kind": "key", "key": "back"}, {"kind": "key", "key": "home"}):
+            answer = await client.post("/touch", json=body, headers=mine)
+            assert answer.status == 202 and await answer.json() == {"sent": True}, body
+        assert phone.sent == [("tap", 540.0, 600.0, 60), ("tap", 1079, 0.0, 50), ("tap", 108.0, 240.0, 900),
+                              ("tap", 108.0, 240.0, 2000), ("drag", 540.0, 1920.0, 540.0, 480.0, 400),
+                              ("drag", 0.0, 0.0, 1079, 2399, 100), ("key", "KEYCODE_BACK"), ("key", "KEYCODE_HOME")]
+        # each one told to whoever watches, and not kept for whoever comes in later
+        told = []
+        async with asyncio.timeout(5):
+            while len(told) < 8:
+                message = await socket.receive()
+                if message.type == WSMsgType.TEXT and (event := json.loads(message.data))["kind"] == "touched":
+                    told.append(event)
+        assert [event["input"] for event in told] == ["tap"] * 4 + ["swipe"] * 2 + ["key"] * 2
+        assert (told[0]["x"], told[0]["y"], told[0]["ms"]) == (0.5, 0.25, 60) and told[-1]["key"] == "home"
+        assert not any(event["kind"] == "touched" for event in demo.events)
+        late = await client.ws_connect("/ws", headers=mine)
+        history, _ = await until(late, "status")
+        assert not any(event["kind"] == "touched" for event in history)
+    finally:
+        await client.close()
+
+
+async def test_after_an_input_the_screen_is_captured_again_at_once(tmp_path, monkeypatch):
+    # looked at once a second as served: an input's effect is not left waiting for the next look
+    monkeypatch.setattr(serve, "DEVICE_EVERY_S", 30.0)
+    phone = Phone()
+    demo = serve.Demo(options(tmp_path, "--touch"), Recorded(Asked({})), token=TOKEN, emulator=Running(on=True),
+                      device=lambda serial: phone)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        message = await socket.receive(timeout=5)
+        while message.type != WSMsgType.BINARY:
+            message = await socket.receive(timeout=5)
+        captured = phone.captured
+        assert (await client.post("/touch", json={"kind": "tap", "x": 0.5, "y": 0.5}, headers=mine)).status == 202
+        message = await socket.receive(timeout=2)
+        while message.type != WSMsgType.BINARY:
+            message = await socket.receive(timeout=2)
+        assert phone.captured > captured
+        # and often for a while after it
+        assert demo.touched_until > time.monotonic()
+        await asyncio.sleep(serve.TOUCHED_EVERY_S * 3)
+        assert phone.captured >= captured + 3
+    finally:
+        await client.close()
+
+
+async def test_an_input_is_refused_while_a_game_is_played_the_device_is_off_or_held_or_one_is_on_its_way(tmp_path, often):
+    held, phone = asyncio.Event(), Phone()
+    emulator = Running(on=True)
+    demo = serve.Demo(options(tmp_path, "--touch"), Recorded(Asked({"url": None, "app": None}, wait=held)), token=TOKEN,
+                      emulator=emulator, device=lambda serial: phone, apps=lambda surface: asyncio.sleep(0, []))
+    client = await started(demo)
+    tap = {"kind": "tap", "x": 0.5, "y": 0.5}
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/ask", json={"words": "play something"}, headers=mine)).status == 202
+        answer = await client.post("/touch", json=tap, headers=mine)
+        assert answer.status == 409 and await answer.json() == {"refused": "playing"}
+        held.set()
+        await until(socket, "refused")
+        await until(socket, "status")
+        # another run holds the device
+        with measure.lock("android-emulator-5554"):
+            answer = await client.post("/touch", json=tap, headers=mine)
+            assert answer.status == 409 and await answer.json() == {"refused": "in_use"}
+        # one at a time: one sent while another is on its way is refused, not queued
+        phone.hold = asyncio.Event()
+        first = asyncio.ensure_future(client.post("/touch", json=tap, headers=mine))
+        while not demo.touching:
+            await asyncio.sleep(0.01)
+        answer = await client.post("/touch", json={"kind": "key", "key": "back"}, headers=mine)
+        assert answer.status == 429 and await answer.json() == {"refused": "busy"}
+        phone.hold.set()
+        assert (await first).status == 202 and phone.sent == [("tap", 540.0, 1200.0, 60)]
+        # the device off
+        emulator.on = False
+        answer = await client.post("/touch", json=tap, headers=mine)
+        assert answer.status == 409 and await answer.json() == {"refused": "device_off"} and len(phone.sent) == 1
+    finally:
+        await client.close()
+
+
+async def test_an_input_that_is_not_fit_from_another_origin_without_the_token_or_for_pages_only_is_refused(tmp_path, often):
+    phone = Phone()
+    demo = serve.Demo(options(tmp_path, "--touch"), Recorded(Asked({})), token=TOKEN, emulator=Running(on=True),
+                      device=lambda serial: phone)
+    client = await started(demo)
+    tap = {"kind": "tap", "x": 0.5, "y": 0.5}
+    try:
+        assert (await client.post("/touch", json=tap, headers={"Origin": origin(client)})).status == 401
+        await admitted(client)
+        assert (await client.post("/touch", json=tap, headers={"Origin": "https://evil.example"})).status == 403
+        assert (await client.post("/touch", json=tap)).status == 403
+        mine = {"Origin": origin(client)}
+        for body in ({"kind": "pinch", "x": 0.5, "y": 0.5}, {"kind": "tap", "x": "0.5", "y": 0.5}, {"kind": "tap", "x": 0.5},
+                     {"kind": "tap", "x": 1.5, "y": 0.5}, {"kind": "tap", "x": -0.1, "y": 0.5}, {"kind": "tap", "x": True, "y": 0.5},
+                     {"kind": "tap", "x": 0.5, "y": 0.5, "ms": "long"}, {"kind": "swipe", "x0": 0, "y0": 0, "x1": 1},
+                     {"kind": "key", "key": "power"}, {"kind": "key", "key": "KEYCODE_HOME"}, [1, 2], "tap", None):
+            answer = await client.post("/touch", json=body, headers=mine)
+            assert answer.status == 400 and await answer.json() == {"refused": "input"}, body
+        for text in ('{"kind": "tap", "x": NaN, "y": 0.5}', '{"kind": "tap", "x": 0.5, "y": Infinity}',
+                     '{"kind": "swipe", "x0": 0, "y0": 0, "x1": 1, "y1": 1, "ms": NaN}', "not json"):
+            answer = await client.post("/touch", data=text, headers={**mine, "Content-Type": "application/json"})
+            assert answer.status == 400 and await answer.json() == {"refused": "input"}, text
+        assert not phone.sent
+    finally:
+        await client.close()
+    demo = serve.Demo(options(tmp_path, "--touch", "--web-only"), Recorded(Asked({})), token=TOKEN, emulator=Running(on=True),
+                      device=lambda serial: phone)
+    assert demo.status()["touch"] is False
+    client = await started(demo)
+    try:
+        await admitted(client)
+        answer = await client.post("/touch", json={"kind": "key", "key": "back"}, headers={"Origin": origin(client)})
+        assert answer.status == 409 and await answer.json() == {"refused": "web_only"}
+        assert not phone.sent and demo.emulator.looked == 0
+    finally:
+        await client.close()
+
+
+async def test_the_page_offers_back_and_home_and_sends_its_inputs_to_touch(tmp_path):
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Running())
+    client = await started(demo)
+    try:
+        await admitted(client)
+        page = await (await client.get("/")).text()
+        assert 'id="back"' in page and ">뒤로<" in page and 'id="home"' in page and ">홈<" in page
+        assert '"/touch"' in page and "pointerdown" in page and "touch-action: none" in page
+        assert "event.touch === true" in page and "직접 누름" in page
     finally:
         await client.close()

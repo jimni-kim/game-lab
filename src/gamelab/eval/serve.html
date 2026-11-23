@@ -25,6 +25,11 @@
   .device { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; text-align: center; }
   .device p { margin: 0; }
   .device button { padding: 10px 18px; }
+  .screen img.touchable { touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .touch { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--muted); }
+  .touch[hidden] { display: none; }
+  .touch span { flex: 1; min-width: 0; }
+  .touch button { padding: 6px 14px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); }
   details { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; }
   summary { cursor: pointer; padding: 8px 12px; color: var(--muted); }
   ol { list-style: none; margin: 0; padding: 0 12px 8px; max-height: 30vh; overflow: auto; }
@@ -64,6 +69,8 @@
     <div class="screen"><img id="screen" alt="게임 화면" hidden><p id="empty">아직 화면이 없습니다</p>
       <div class="device" id="off" hidden><p>에뮬레이터가 꺼져 있습니다</p><button id="power" type="button">에뮬레이터 켜기</button></div>
       <p id="starting" hidden>에뮬레이터를 켜는 중입니다(1분쯤 걸립니다)</p></div>
+    <div class="touch" id="touchbar" hidden><span>화면을 눌러 조작할 수 있습니다</span>
+      <button id="back" type="button">뒤로</button><button id="home" type="button">홈</button></div>
     <details id="activity"><summary>활동 <span id="count"></span></summary><ol id="log"></ol></details>
   </section>
   <section class="chat">
@@ -80,7 +87,7 @@
   const $ = (id) => document.getElementById(id);
   const log = $("log"), talk = $("talk"), state = $("state"), screen = $("screen");
   const hint = $("hint");
-  let shown = null, playing = false, logged = 0, waiting = null, device = "none", framed = false;
+  let shown = null, playing = false, logged = 0, waiting = null, device = "none", framed = false, touch = false;
 
   const clock = (at) => new Date((at || Date.now() / 1000) * 1000).toLocaleTimeString();
   const say = (text, kind, at) => {
@@ -118,12 +125,18 @@
   const goal = (g) => g.objective === "reach_value" ? `${g.target_value}까지` : g.objective === "actions" ? `${g.target_value}수`
     : g.objective === "levels" ? `레벨 ${g.target_value}개` : "끝까지";
   const reasons = { busy: "다른 판이 도는 중", day_limit: "오늘 판 수 한도", chat_limit: "오늘 대화 한도", words: "말이 비었거나 너무 김",
-                    no_game: "주소나 설치된 앱을 찾지 못함", web_only: "지금은 웹 주소가 있는 요청만 받음", not_public: "공개 주소가 아님", in_use: "다른 실행이 기기를 쓰는 중", idle: "도는 판이 없음" };
+                    no_game: "주소나 설치된 앱을 찾지 못함", web_only: "지금은 웹 주소가 있는 요청만 받음", not_public: "공개 주소가 아님", in_use: "다른 실행이 기기를 쓰는 중", idle: "도는 판이 없음",
+                    touch_off: "서버가 화면 조작을 받지 않음", playing: "판이 도는 중", device_off: "기기가 켜져 있지 않음",
+                    input: "보낸 값이 맞지 않음", failed: "기기에 보내지 못함" };
+  // a refusal of an input from the screen: "busy" there is the input before it still on its way, not a game
+  const touchReasons = { ...reasons, busy: "앞의 입력이 아직 가는 중" };
   const progress = (e) => e.what === "identified" ? `식별: ${e.falling ? "떨어지는 블록" : (e.candidates || []).join(", ") || "계열 없음"}`
     : e.what === "taken" ? `계열 ${e.again ? "다시 " : ""}잡음: ${e.family}` : e.what === "let_go" ? `계열 놓음: ${e.family} (${e.why})`
     : e.what === "falling" ? `조각 ${e.pieces} · 줄 ${e.lines}` : e.what === "part" ? `부분 ${e.number} 끝: ${e.outcome}` + (e.wanted ? ` · ${e.won}/${e.wanted} 깸, ${e.lost} 짐` : "")
     : e.what;
   let last = null;
+
+  const touchable = () => touch && device === "on" && !playing && framed;
 
   // the screen's place: a game's frames while one is played (a page's are the browser's), else the device as it is
   const render = () => {
@@ -132,11 +145,16 @@
     $("empty").hidden = idle || framed;
     $("off").hidden = !(idle && device === "off");
     $("starting").hidden = !(idle && device === "starting");
+    // the screen takes a person's inputs only when the server says so (`--touch`), the device is on and no game is played
+    const takes = touchable();
+    screen.classList.toggle("touchable", takes);
+    $("touchbar").hidden = !takes;
   };
 
   const setState = (event) => {
     playing = event.state === "playing";
     if (event.device) device = event.device;
+    touch = event.touch === true;
     if (!playing && (device === "off" || device === "starting")) framed = false;
     render();
     state.textContent = playing ? "도는 중" : `대기 · 오늘 ${event.left_today}판 남음`;
@@ -171,6 +189,7 @@
       }
       case "refused": say(`받지 않음: ${reasons[event.reason] || event.reason}`, "bad", event.at); break;
       case "error": say(`오류: ${event.detail}`, "bad", event.at); break;
+      case "touched": say(`직접 누름: ${event.input}` + (event.key ? ` (${event.key})` : ""), "", event.at); break;
     }
   };
 
@@ -209,6 +228,49 @@
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("ask").requestSubmit(); }
   });
   $("stop").addEventListener("click", () => post("/stop"));
+
+  // a person's input on the device, sent from the screen; a refusal is a line in the log
+  const send = async (body) => {
+    try {
+      const answer = await fetch("/touch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (answer.status === 401) { say("받지 않음(누름): 접근 토큰이 없음", "bad"); return; }
+      const said = await answer.json().catch(() => ({}));
+      if (said.refused) say(`받지 않음(누름): ${touchReasons[said.refused] || said.refused}`, "bad");
+      else if (!answer.ok) say(`받지 않음(누름): ${answer.status}`, "bad");
+    } catch (error) { say("받지 않음(누름): 연결 안 됨", "bad"); }
+  };
+  // a press that moves less than this share of the screen's width is a tap; one held longer than LONG_MS is a long press
+  const STILL = 0.02, LONG_MS = 500;
+  let down = null;
+  const share = (event, box) => [Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)),
+                                 Math.min(1, Math.max(0, (event.clientY - box.top) / box.height))];
+  screen.addEventListener("dragstart", (event) => event.preventDefault());
+  screen.addEventListener("pointerdown", (event) => {
+    if (!touchable() || down || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    const box = screen.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    down = { id: event.pointerId, box, at: share(event, box), x: event.clientX, y: event.clientY, t: performance.now() };
+    try { screen.setPointerCapture(event.pointerId); } catch (error) { /* the pointer is gone already */ }
+  });
+  screen.addEventListener("pointerup", (event) => {
+    if (!down || event.pointerId !== down.id) return;
+    const was = down;
+    down = null;
+    if (!touchable()) return;
+    const ms = Math.round(performance.now() - was.t);
+    const moved = Math.hypot(event.clientX - was.x, event.clientY - was.y);
+    const [x, y] = was.at;
+    if (moved <= STILL * was.box.width) {
+      send(ms > LONG_MS ? { kind: "tap", x, y, ms } : { kind: "tap", x, y });
+    } else {
+      const [x1, y1] = share(event, was.box);
+      send({ kind: "swipe", x0: x, y0: y, x1, y1, ms });
+    }
+  });
+  screen.addEventListener("pointercancel", () => { down = null; });
+  $("back").addEventListener("click", () => send({ kind: "key", key: "back" }));
+  $("home").addEventListener("click", () => send({ kind: "key", key: "home" }));
   $("power").addEventListener("click", () => { $("power").disabled = true; post("/emulator").finally(() => { $("power").disabled = false; }); });
   connect();
 })();

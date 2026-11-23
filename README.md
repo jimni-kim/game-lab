@@ -127,6 +127,13 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 것이면 서버를 내릴 때 끈다. 설치된 앱 가운데 `eval/apps.json`에서 `"hide": true`인 앱(`ai.agentic.army`)은 요청을 읽는
 모델에게 주는 앱 목록에서 빠진다.
 
+`--touch`로 켜면 링크에서 기기 화면을 눌러 조작할 수 있다(`POST /touch`). 사람만 넘길 수 있는 화면(나이 확인, 로그인,
+창 닫기)을 링크에서 넘기려고 둔다. 판이 돌지 않고 기기가 켜져 있을 때만 받는다: 짧게 누르면 탭, 500ms 넘게 누르면 그
+길이의 길게 누르기, 끌면 쓸기이고, 화면 아래의 "뒤로"·"홈" 버튼이 그 키를 보낸다. 한 번에 하나만 보내고(앞의 입력이 가는
+중이면 429), 다른 실행이 기기 잠금을 잡고 있으면 거절한다. 보낸 입력은 보는 사람 모두의 활동 로그에 "직접 누름"으로 남고,
+그 뒤 3초 동안은 쉬는 화면을 0.3초마다 찍는다. 기본은 꺼짐이다: 켜면 링크와 토큰을 가진 사람이 기기에서 무엇이든 할 수
+있다(Play 스토어, 설정, 로그인된 계정). `--web-only`에서는 켜지지 않는다.
+
 ```sh
 .venv/bin/python -m gamelab.eval serve --compute 200
 # {"serving": "http://127.0.0.1:8765/?k=토큰", ...}  이 주소를 한 번 열면 토큰은 쿠키에 남고 주소에서 빠진다
@@ -140,7 +147,7 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 - 접근 토큰은 켤 때마다 새로 만든다. 고정 주소로 열 때는 `--token` 또는 `.env`의 `GAMELAB_DEMO_TOKEN`으로 정한다
   (24자 이상, `A-Z a-z 0-9 _ -`만. 예: `python -c 'import secrets; print(secrets.token_urlsafe(32))'`).
 - 끝점: `GET /`, `GET /ws`(이벤트와 화면), `POST /say`(대화창: 게임 요청·질문·중지로 가름), `POST /ask`(게임 요청만,
-  모델로 가르지 않음), `POST /stop`(중지 버튼), `POST /emulator`(켜기 버튼: 켜기 시작하면 202, 이미 켜져 있거나 켜는 중이면 아무것도 하지 않고 200, `--web-only`면 409). 모두 토큰 쿠키가 필요하고, `/ws`와 `POST`는 Origin을 검사한다.
+  모델로 가르지 않음), `POST /stop`(중지 버튼), `POST /emulator`(켜기 버튼: 켜기 시작하면 202, 이미 켜져 있거나 켜는 중이면 아무것도 하지 않고 200, `--web-only`면 409), `POST /touch`(`--touch`일 때만: 화면 누르기, 보내면 202, 꺼져 있으면 403). 모두 토큰 쿠키가 필요하고, `/ws`와 `POST`는 Origin을 검사한다.
 - 결과는 `out/serve/`에 `eval web`·`eval android`와 같은 형식으로 남는다(`web-날짜-시각-01.json`, `app-날짜-시각-01.json`).
 - 요청의 주소는 공개 IP로만 풀릴 때 열고, 그 페이지가 여는 연결(리다이렉트, 하위 프레임, WebSocket)은 모두 서버 안의
   프록시가 연결마다 이름을 다시 풀어 확인한다.
@@ -156,6 +163,6 @@ cloudflared tunnel --url http://127.0.0.1:8765    # 빠른 터널: 출력에 try
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 754개, 약 15분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 761개, 약 15분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```

@@ -20,6 +20,9 @@ with its files written under `--out` as theirs are.
 
 While no game is played and someone watches, the device is looked at once a second: its screen is shown when it
 is on, and the page offers to start it when it is off (`POST /emulator`); a request for an app starts it too.
+Served with `--touch`, that screen also takes a tap, a swipe, a back or a home from the page (`POST /touch`)
+while no game is played: for what only a person may get past (an age check, a sign-in, a notice). Off by
+default: whoever has the link and its token moves the device then, whatever is on it.
 
 One game at a time: a request while one is played is refused, never queued, and so is one past the day's
 `--games-a-day`; what is typed past the day's `--chats-a-day` is not answered. Each game has a budget of inputs, seconds and model tokens. Stopping ends the game at its
@@ -42,6 +45,7 @@ import hmac
 from importlib.resources import files
 from io import BytesIO
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -53,6 +57,7 @@ from urllib.parse import urlsplit
 from .. import model as models, request
 from ..environments.android import AndroidSurface
 from ..environments.web import browser
+from ..execution import TAP_MS
 from . import android, guard, measure, talk, web
 from .emulator import AVD, Emulator
 
@@ -83,6 +88,14 @@ TOKEN_LETTERS = re.compile(r"[A-Za-z0-9_-]+")
 CHAT = ("said", "reply")
 # a progress event's words at most
 SITUATION_MOST = 300
+# a person's input from the page (`--touch`): a tap's press (TAP_MS, the loop's own, unless said; longer is a long
+# press) and a swipe's time, held to these; the keys it may send, as the device names them
+TOUCH_TAP_MS, TOUCH_SWIPE_MS = (50, 2000), (100, 1500)
+SWIPE_MS = 300
+TOUCH_KEYS = {"back": "KEYCODE_BACK", "home": "KEYCODE_HOME"}
+# after an input from the page the idle screen is looked at this often for this long: once a second, what the
+# input did would show up to a second late and the person would press again
+TOUCHED_EVERY_S, TOUCHED_FOR_S = 0.3, 3.0
 
 
 def rounded(value: Any) -> Any:
@@ -257,6 +270,41 @@ def token_for(args: argparse.Namespace) -> str | None:
     return token
 
 
+def _share(value: Any) -> float | None:
+    """A place on the shown screen as a share of its width or height, 0 to 1; None for anything else."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+        return None
+    return float(value)
+
+
+def _held_to(value: Any, default: int, bounds: tuple[int, int]) -> int | None:
+    """An input's milliseconds held to `bounds`, `default` when not given; None for what is not a number."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return round(min(max(value, bounds[0]), bounds[1]))
+
+
+def touch_from(body: Any) -> dict[str, Any] | None:
+    """What the page asked to send to the device (`POST /touch`), its places shares of the shown screen; None
+    when it is not one of a tap, a swipe, a back or a home, or its values are not fit."""
+    if not isinstance(body, dict):
+        return None
+    kind = body.get("kind")
+    if kind == "tap":
+        x, y, ms = _share(body.get("x")), _share(body.get("y")), _held_to(body.get("ms"), TAP_MS, TOUCH_TAP_MS)
+        return None if None in (x, y, ms) else {"input": "tap", "x": x, "y": y, "ms": ms}
+    if kind == "swipe":
+        ends = [_share(body.get(key)) for key in ("x0", "y0", "x1", "y1")]
+        ms = _held_to(body.get("ms"), SWIPE_MS, TOUCH_SWIPE_MS)
+        return None if None in (*ends, ms) else {"input": "swipe", **dict(zip(("x0", "y0", "x1", "y1"), ends)), "ms": ms}
+    if kind == "key":
+        key = body.get("key")
+        return {"input": "key", "key": key} if isinstance(key, str) and key in TOUCH_KEYS else None
+    return None
+
+
 def _brief(event: dict[str, Any]) -> dict[str, Any]:
     """A progress event as it is shown and kept: its words cut short."""
     return {key: value[:SITUATION_MOST] if isinstance(value, str) else value for key, value in event.items()}
@@ -305,6 +353,10 @@ class Demo:
         self.idle_pictures: Pictures | None = None
         self.idle_surface: tuple[str, Any] | None = None
         self.last: bytes | None = None
+        # a person's input from the page (`--touch`): one at a time, the watcher woken by it and looking often until
+        self.touching = False
+        self.touched_until = 0.0
+        self.nudged = asyncio.Event()
 
     # ── what everyone watching is sent ─────────────────────────────────
 
@@ -349,7 +401,21 @@ class Demo:
     def status(self) -> dict[str, Any]:
         return {"kind": "status", "state": "playing" if self.playing else "idle",
                 "left_today": max(0, self.args.games_a_day - self._played_today()),
-                "left_chats": max(0, self.args.chats_a_day - self._chatted_today()), "device": self.device_state}
+                "left_chats": max(0, self.args.chats_a_day - self._chatted_today()), "device": self.device_state,
+                "touch": self.touchable}
+
+    @property
+    def touchable(self) -> bool:
+        """Whether the page may send inputs to the device (`--touch`, a device of this demo's)."""
+        return bool(getattr(self.args, "touch", False)) and not self.args.web_only
+
+    def tell_now(self, event: dict[str, Any]) -> None:
+        """An event told to everyone watching now and not kept among the game's events (whoever comes in later is
+        not sent it)."""
+        event = {**event, "at": round(time.time(), 2)}
+        for viewer in self.viewers:
+            viewer.events.append(event)
+            viewer.wake.set()
 
     @property
     def playing(self) -> bool:
@@ -644,10 +710,7 @@ class Demo:
         game's events: whoever comes in is sent the status as it stands)."""
         if state != self.device_state:
             self.device_state = state
-            event = {**self.status(), "at": round(time.time(), 2)}
-            for viewer in self.viewers:
-                viewer.events.append(event)
-                viewer.wake.set()
+            self.tell_now(self.status())
 
     async def switched_on(self, starting: Callable[[], None] | None = None) -> str:
         """The device's serial once it has booted, started first when it is not running (`starting` told then),
@@ -709,7 +772,8 @@ class Demo:
             self.idle_pictures.offer(png)
 
     async def watch_device(self, every_s: float | None = None) -> None:
-        """Until cancelled: the device looked at each `every_s` (`look_at_device`), a failure taken as nothing seen."""
+        """Until cancelled: the device looked at each `every_s` (`look_at_device`), a failure taken as nothing seen;
+        at once after an input from the page, and each TOUCHED_EVERY_S for TOUCHED_FOR_S after it."""
         while True:
             try:
                 await self.look_at_device()
@@ -717,7 +781,71 @@ class Demo:
                 raise
             except Exception:
                 pass
-            await asyncio.sleep(DEVICE_EVERY_S if every_s is None else every_s)
+            every = DEVICE_EVERY_S if every_s is None else every_s
+            if time.monotonic() < self.touched_until:
+                every = min(every, TOUCHED_EVERY_S)
+            try:
+                async with asyncio.timeout(every):
+                    await self.nudged.wait()
+            except TimeoutError:
+                pass
+            self.nudged.clear()
+
+    async def touch(self, asked: dict[str, Any]) -> str | None:
+        """An input from the page (`touch_from`) sent to the device while no game is played, its places turned into
+        the device's pixels; why not, when it was not sent. One at a time, under the device's lock (another run
+        moving it is not moved under), and told to everyone watching (not who sent it: nobody is known by name)."""
+        if self.playing:
+            return "playing"
+        if self.touching:
+            return "busy"
+        self.touching = True
+        try:
+            try:
+                async with asyncio.timeout(5):
+                    state, serial = await self.emulator.look()
+            except (TimeoutError, RuntimeError, OSError):
+                return "device_off"
+            if serial is None:
+                self.device_is("starting" if self.powering is not None and not self.powering.done() else state)
+                return "device_off"
+            self.device_is("on")
+            if self.idle_surface is None or self.idle_surface[0] != serial:
+                self.idle_surface = (serial, self.device(serial))
+            surface = self.idle_surface[1]
+            try:
+                with measure.lock(f"android-{serial}"):
+                    # a game asked for while the device was looked for is not moved under
+                    if self.playing:
+                        return "playing"
+                    await self._send(surface, asked)
+            except measure.Busy:
+                return "in_use"
+            except (ValueError, RuntimeError, OSError):
+                return "failed"
+        finally:
+            self.touching = False
+        self.touched_until = time.monotonic() + TOUCHED_FOR_S
+        self.nudged.set()
+        self.tell_now({"kind": "touched", **{key: round(value, 3) if isinstance(value, float) else value
+                                             for key, value in asked.items()}})
+        return None
+
+    @staticmethod
+    async def _send(surface: Any, asked: dict[str, Any]) -> None:
+        """The input on the device: its shares of the shown screen as the device's pixels (the size its captures have,
+        the screen as it is turned)."""
+        if asked["input"] == "key":
+            await surface.key(TOUCH_KEYS[asked["key"]])
+            return
+        width, height = await surface.size()
+
+        def at(x: float, y: float) -> tuple[float, float]:
+            return min(x * width, width - 1), min(y * height, height - 1)
+        if asked["input"] == "tap":
+            await surface.tap(*at(asked["x"], asked["y"]), asked["ms"])
+        else:
+            await surface.drag(*at(asked["x0"], asked["y0"]), *at(asked["x1"], asked["y1"]), asked["ms"])
 
     def watch(self) -> None:
         """The device's watcher started (once, while the server runs), unless the device is not this demo's."""
@@ -846,6 +974,23 @@ class Demo:
                 return http.json_response({"device": self.device_state}, status=200)
             return http.json_response({"device": self.switch_on()}, status=202)
 
+        async def touch(req: Any) -> Any:
+            # a person's input on the device from the page: only when the server was told so (`--touch`)
+            if not getattr(self.args, "touch", False):
+                return http.json_response({"refused": "touch_off"}, status=403)
+            if self.args.web_only:
+                return http.json_response({"refused": "web_only"}, status=409)
+            try:
+                asked = touch_from(await req.json())
+            except ValueError:
+                asked = None
+            if asked is None:
+                return http.json_response({"refused": "input"}, status=400)
+            why = await self.touch(asked)
+            if why is not None:
+                return http.json_response({"refused": why}, status={"busy": 429, "failed": 502}.get(why, 409))
+            return http.json_response({"sent": True}, status=202)
+
         async def closing(app: Any) -> None:
             await self.close()
 
@@ -858,6 +1003,7 @@ class Demo:
         app.router.add_post("/say", say)
         app.router.add_post("/stop", stop)
         app.router.add_post("/emulator", emulator)
+        app.router.add_post("/touch", touch)
         app.on_cleanup.append(closing)
         return app
 
@@ -925,4 +1071,9 @@ def configure(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--headed", action="store_true", help="show the browser window too")
     parser.add_argument("--web-only", action="store_true",
                         help="play pages only: a request for an app is refused and the device is never touched")
+    parser.add_argument("--touch", action="store_true",
+                        help="let the page tap, swipe and press back or home on the device while no game is played (to "
+                             "get past what only a person may: an age check, a sign-in, a notice). Whoever has the link "
+                             "and its token then moves the device directly, whatever is on it (the store, the settings, "
+                             "the accounts signed in): off unless given")
     measure.model_arguments(parser)
