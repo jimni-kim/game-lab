@@ -52,6 +52,21 @@ one at a time while each changes something (`agent._play_direct`; M1).
 
 An input the code sent itself between two questions, as a step of the game's routine (`routine`), is put in the
 history the model is shown, marked as the program's.
+
+A game that goes on for hours over fights and stages (a deck builder, a role-playing game) is played the same way
+with three things more (PLAN §36, session E3). An input that hands the turn to the game or another player carries
+how long the screen may take to come to rest (`then_wait_ms`): the program waits that out (`rested`) and the model
+is asked at its next turn, not in the middle of the other side's. What a named thing of the game does (a card, an
+item, an enemy), once read, is kept by its name (`known`) and given with every question, in this work and in later
+ones, so its description is not opened again. And one more part of the memory, `run`, says where such a game
+stands; it outlasts the work as the rules do, and the model holds it against the screen when it is given it again.
+
+A board of square cells on a screen that is a picture alone is read by code though no family knows it (PLAN §36,
+session E2; `lattice`). The model says once where the grid is and how many rows and columns it has (`grid`); from
+the next question on it is given the board's rows as letters, one for each kind of cell the code tells apart
+(`cells`), names each letter once (`names`), and may aim a press at a cell by its row and column. The picture is
+then shown smaller, as beside a page's text, and while the board stands exactly as it was told (every cell a kind
+named before) the instructions leave out what only other screens need (`board_read`).
 """
 from __future__ import annotations
 
@@ -63,6 +78,7 @@ import time
 from typing import Any
 
 from . import carry, frames, motion, recovery, resources, scenes, world
+from .lattice import Lattice
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
 from .model import Model, Msg, TurnRequest
@@ -84,7 +100,7 @@ KEYS = recovery.KEYS | {"Backspace", "Tab"}
 TYPED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
 TEXT_MOST = 32
 # moves told to the model of what it did before, the notes it may keep, and the changed places it is told of
-HISTORY_KEPT, NOTES_MOST, PLACES_TOLD = 8, 1800, 6
+HISTORY_KEPT, NOTES_MOST, PLACES_TOLD = 8, 2200, 6
 PLAY_TOKENS, PLAY_TIMEOUT_S = 3000, 90.0
 # how long an input is left to take effect, then until the screen shows the same twice this far apart, at most
 SETTLE_S, STILL_GAP_S, STILL_TIMEOUT_S = 0.6, 0.3, 3.0
@@ -103,14 +119,19 @@ SEQUENCE_MOST, SEQUENCE_GAP_S = 6, 0.3
 # of the screen one of them may change and still be followed by the next (a move changes more of a board than a
 # tap changes of a notice; more than this is a result or another screen)
 MOVES_MOST, MOVE_SHARE = 12, 0.5
+# on a board the model is given as text (`lattice`) it sees every cell exactly and may give this many
+CELL_MOVES_MOST = 24
 # the page's own account of the screen given as text (PLAN §27, M2): only when little of the view is under what
 # the page cannot be read through, it names at least this many things and its lines are no longer than this in
 # all (about twice what the whole picture costs: what is told is exact, which a picture's reading is not). The
 # picture is then shown with its longer side this long
 DRAWN_MOST, ELEMENTS_LEAST, ELEMENTS_CHARS, SMALL_SIDE = 0.1, 3, 8000, 768
+# a grid the model describes again within this many pixels of the board read is that board (`Direct._grid`)
+SAME_GRID = 6
 # a text of the page counts as words when it has this many letters; such a text coming up ends a sequence of moves
 WORD_LETTERS = 4
-_TAGGED = re.compile(r"^(\s*(?:- )?)\[when ([a-z_ ]+)\] ")
+_TAGGED = re.compile(r"^(\s*(?:- )?)((?:\[(?:when|unless) [a-z_ ]+\] )+)")
+_TAG = re.compile(r"\[(when|unless) ([a-z_ ]+)\] ")
 # what the model keeps for itself, each part with what it is told to put there, and how long a part may be. PLAN is
 # of the work in hand only; the others are kept by the game for the next work on it
 PLAN = "plan"
@@ -119,9 +140,17 @@ MEMORY = {
     "ways": "how this game gets from screen to screen outside a level: what opens the next level, what it puts in "
             "the way and how each is passed",
     "failed": "what you tried that did not work, so as not to try it again",
+    "run": "only for a game that goes on over many fights or stages: where it stands (the character and how it is "
+           "built, the stage reached, what is held) and what you are building toward",
     PLAN: "what you are doing now and mean to do next",
 }
 MEMORY_MOST = 400
+# what a named thing of the game does, kept once read (PLAN §36, E3): this many things, each name and text this long
+KNOWN_MOST, KNOWN_NAME, KNOWN_TEXT = 40, 40, 120
+# an input that hands the turn over (`then_wait_ms`): how long the screen may be waited for, and how long it must
+# show the same to be at rest (longer than the pause between two things the other side does: at 2 s two of four
+# waits ended with two enemies still to act, 2026-11-23)
+REST_MS_RANGE, REST_S = (500, 20000), 3.0
 # a wait for the screen to change: at most this long, looked at this often
 CHANGE_WAIT_MS, CHANGE_LOOK_S = 15000, 0.5
 # the game started again from nothing at most this many times a game
@@ -155,13 +184,15 @@ def _ms(value: Any, default: int, least: int, most: int) -> int | None:
 def prompt(flags: set[str]) -> str:
     """The instructions for a question: `play_direct.md` with each line tagged `[when a b]` kept only when one of
     the names is among `flags` (the inputs the screen takes, `onward`, `levels`, `anew`, `errand`, `elements`,
-    `look`), the tag taken off. A line with no tag is always given (PLAN §27, M7: the part by situation)."""
+    `look`, `grid`, `cells`, `board_read`), and each tagged `[unless a b]` only when none is; a line with several
+    tags is kept when every one of them keeps it. The tags are taken off. A line with no tag is always given
+    (PLAN §27, M7: the part by situation)."""
     kept = []
     for line in (resources.FRAGMENT / "prompts" / "play_direct.md").read_text(encoding="utf-8").split("\n"):
         tagged = _TAGGED.match(line)
         if tagged is None:
             kept.append(line)
-        elif set(tagged[2].split()) & flags:
+        elif all((word == "when") == bool(set(names.split()) & flags) for word, names in _TAG.findall(tagged[2])):
             kept.append(tagged[1] + line[tagged.end():])
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept))
 
@@ -246,7 +277,17 @@ def can(kind: Any, kinds: frozenset[str]) -> bool:
 
 def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int = SEQUENCE_MOST
           ) -> dict[str, Any] | None:
-    """The model's action as one the surface can be given, or None. `most`: how many inputs a sequence may have."""
+    """The model's action as one the surface can be given, or None. `most`: how many inputs a sequence may have.
+    An input to a place, or a sequence of them, may say how long the screen is to be waited for afterwards
+    (`then_wait_ms`, taken into its range)."""
+    checked = _check(action, size, kinds, most)
+    if checked is not None and (checked["kind"] in SEQUENCED or checked["kind"] == SEQUENCE) \
+            and "repeat" not in checked and "advance" not in checked and type(action.get("then_wait_ms")) is int:
+        checked["then_wait_ms"] = min(max(action["then_wait_ms"], REST_MS_RANGE[0]), REST_MS_RANGE[1])
+    return checked
+
+
+def _check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int) -> dict[str, Any] | None:
     if not isinstance(action, dict):
         return None
     kind = action.get("kind")
@@ -257,7 +298,7 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int =
         return {**tap, "repeat": action["repeat"]} if tap is not None and type(action["repeat"]) is int \
             and 2 <= action["repeat"] <= REPEAT_MOST else None
     if kind in (TAP, KEY) and action.get("advance") is True:
-        plain = check({name: value for name, value in action.items() if name not in ("advance", "repeat")}, size, kinds)
+        plain = _check({name: value for name, value in action.items() if name not in ("advance", "repeat")}, size, kinds, most)
         if plain is None:
             return None
         # where the story's lines are shown, when the model says: a change there is one more line
@@ -291,7 +332,7 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int =
     if kind in (BACK, RELAUNCH):
         return {"kind": kind}
     if kind == SEQUENCE and isinstance(action.get("inputs"), list) and 2 <= len(action["inputs"]) <= most:
-        inputs = [check(part, size, kinds) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
+        inputs = [_check(part, size, kinds, most) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
                   for part in action["inputs"]]
         return {"kind": kind, "inputs": inputs} if None not in inputs else None
     if kind == KEY and (action.get("key") in KEYS or (isinstance(action.get("key"), str) and len(action["key"]) == 1
@@ -319,6 +360,25 @@ def _world(action: dict[str, Any]) -> dict[str, Any]:
 
 
 uses = recovery.uses
+
+
+def _brief(told: dict[str, Any]) -> dict[str, Any]:
+    """An action as the history tells it: a press aimed at a cell by the cell alone."""
+    if "inputs" in told:
+        return {**told, "inputs": [_brief(part) for part in told["inputs"]]}
+    return {name: value for name, value in told.items() if name != "at"} if "cell" in told else told
+
+
+def _celled(action: dict[str, Any], said: Any) -> dict[str, Any]:
+    """A checked action as the model is told it afterwards: a press it aimed at a cell keeps the cell."""
+    told = dict(action)
+    if not isinstance(said, dict):
+        return told
+    if action["kind"] == SEQUENCE and isinstance(said.get("inputs"), list) and len(said["inputs"]) == len(action["inputs"]):
+        told["inputs"] = [_celled(part, other) for part, other in zip(action["inputs"], said["inputs"])]
+    elif "at" in action and isinstance(said.get("cell"), list):
+        told["cell"] = said["cell"]
+    return told
 
 
 def scaled(action: dict[str, Any], scale: float) -> dict[str, Any]:
@@ -414,6 +474,31 @@ async def settled(surface: Any) -> bytes:
     return previous.png
 
 
+async def rested(surface: Any, ms: int) -> bytes:
+    """The screen once it came to rest after an input that handed the turn over: the same for `REST_S` on end
+    from now (what keeps moving all the while left out), or as it is `ms` after this was asked."""
+    look = _looker(surface)
+    deadline = time.monotonic() + ms / 1000
+    previous = await look(None)
+    still_since = time.monotonic()
+    moving = list(getattr(surface, "moving", []))
+    while time.monotonic() < deadline and time.monotonic() - still_since < REST_S:
+        seen = await look(previous.at + CHANGE_LOOK_S)
+        moving = motion.joined(moving + list(getattr(surface, "moving", [])))
+        if motion.outside(carry._boxes(previous.png, seen.png), moving):
+            still_since = time.monotonic()
+        previous = seen
+    return previous.png
+
+
+def _known(said: Any) -> dict[str, str]:
+    """What a model said named things of the game do, as it is kept: short names with short texts."""
+    if not isinstance(said, dict):
+        return {}
+    return {name.strip()[:KNOWN_NAME]: text.strip()[:KNOWN_TEXT] for name, text in said.items()
+            if isinstance(name, str) and isinstance(text, str) and name.strip() and text.strip()}
+
+
 class Direct:
     """One game played by a model's own inputs."""
 
@@ -423,7 +508,14 @@ class Direct:
         # what the model wants kept from one question to the next (`MEMORY`; a plain text is its plan), and what
         # it last said the screen shows
         self.memory: dict[str, str] = {}
+        # what named things of the game do, as the model read it of them (`KNOWN_MOST`; the last read kept longest),
+        # and how many of them were read in this work
+        self.known: dict[str, str] = {}
+        self.learned = 0
         self._remember(notes if isinstance(notes, dict) else {PLAN: notes} if isinstance(notes, str) else {})
+        self._learn(notes.get("known") if isinstance(notes, dict) else None)
+        # whether the memory given came from an earlier work (its `run` is then to be held against the screen)
+        self.earlier = bool(self.memory.get("run"))
         self.situation = ""
         # the kind of screen it last named (`scenes`), and whether it said the game forces one input there
         self.scene: str | None = None
@@ -439,6 +531,12 @@ class Direct:
         self.hold_ms = 0
         # the model asked for the screen at full size where the page's text came with a small picture (`LOOK`)
         self.sharp = False
+        # the board of cells the model described, read by code from then on (`lattice`; one kept by an earlier work
+        # is read again when it still stands); whether the grid it last described read as no board; and the
+        # questions given the board as text, and of those the ones given the shorter instructions
+        self.lattice: Lattice | None = Lattice.restore(notes.get("grid")) if isinstance(notes, dict) else None
+        self.grid_refused = False
+        self.texted = self.plain = 0
         # inputs not sent because they used what the person did not allow, by what they would have used (the
         # game's own account when it gives one)
         self.refused: dict[str, int] = refused if refused is not None else {}
@@ -461,16 +559,31 @@ class Direct:
         `outline`: what the page under the picture says stands in view (`Surface.outline`), when it can be read:
         given as text (`lines`) with the picture shown smaller, until the model asks for it whole (`LOOK`)."""
         read = lines(outline) is not None
-        shown, scale = recovery.view(png, SMALL_SIDE if read and not self.sharp else recovery.VIEW_SIDE)
+        # the board's cells as the code reads them, where the model described a grid and it stands on this screen
+        known = len(self.lattice.kinds) if self.lattice is not None else 0
+        rows = self.lattice.read(png) if self.lattice is not None and not read else None
+        # every kind it shows has a name: the letters say all the picture would, which is then shown smaller
+        named = rows is not None and not self.lattice.unnamed(rows)
+        # and the board stands as it was told before, on a screen the model called a board: nothing else is here
+        plain = named and self.scene == scenes.BOARD and len(self.lattice.kinds) == known
+        small = (read or named) and not self.sharp
+        shown, scale = recovery.view(png, SMALL_SIDE if small else recovery.VIEW_SIDE)
         size = recovery._size(shown)
         offered = sorted(kind for kind in NEEDS if can(kind, kinds)
                          and (kind != RELAUNCH or self.relaunches < RELAUNCHES_MOST)) + [WAIT] \
-            + ([LOOK] if read and not self.sharp and scale != 1.0 else [])
+            + ([LOOK] if small and scale != 1.0 else [])
+        # a grid is asked for where the screen is a picture alone that can be pressed and no board is read on it
+        gridded = rows is None and not read and can(TAP, kinds)
+        refused, self.grid_refused = self.grid_refused, False
+        self.texted, self.plain = self.texted + (rows is not None), self.plain + plain
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
         asked = {"play": True, "goal": goal, "left": left, "screen": list(size),
                  **({"moving": told_moving} if told_moving else {}),
                  **({"drag_hold_ms_at_least": self.hold_ms} if self.hold_ms else {}),
                  "inputs": offered, **({"elements": lines(outline, scale)} if read else {}),
+                 **({"cells": self.lattice.told(rows, scale)} if rows is not None else {}),
+                 **({"grid_refused": "the grid you described did not read as a board of few kinds of cell (its box "
+                                     "or its counts were off, or it is no such board)"} if refused and gridded else {}),
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
                  "scenes": scenes.KINDS,
                  **({"onward": True} if onward else {}),
@@ -478,6 +591,8 @@ class Direct:
                  **({"errand": errand} if errand else {}),
                  **({"began": "second image"} if began else {}),
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
+                 **({"known": self.known} if self.known else {}),
+                 **({"run_from_earlier_work": True} if self.earlier and not self.history else {}),
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(shown).decode("ascii")}}
@@ -485,7 +600,7 @@ class Direct:
                                               "data": base64.b64encode(recovery.view(began)[0]).decode("ascii")}}] if began else []
         flags = set(offered) | {name for name, on in (
             ("onward", onward), ("levels", goal.get("objective") == "levels"), ("anew", anew), ("errand", errand),
-            ("elements", read)) if on}
+            ("elements", read), ("cells", rows is not None), ("grid", gridded), ("board_read", plain)) if on}
         self.questions += 1
         result = await self.model.complete(TurnRequest(
             system_stable=prompt(flags), name="play_direct", max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
@@ -502,6 +617,7 @@ class Direct:
             self._remember(answer["memory"])
         elif isinstance(answer.get("notes"), str):
             self._remember({PLAN: answer["notes"]})
+        self.learned += self._learn(answer.get("learned"))
         self.scene, self.guided = scenes.kind(answer.get("scene")), answer.get("guided") is True
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
@@ -509,7 +625,14 @@ class Direct:
         if isinstance(answer.get("action"), dict) and answer["action"].get("advance") is True and "lines" in answer:
             # where the lines are shown, given beside the action (as a model did, 2026-11-21)
             answer["action"].setdefault("lines", answer["lines"])
-        action = check(answer.get("action"), size, kinds, MOVES_MOST if self.scene == scenes.BOARD else SEQUENCE_MOST)
+        if rows is not None:
+            self.lattice.name(answer.get("names"))
+            # a press aimed at a cell is one at its middle
+            answer["action"] = self._aimed(answer.get("action"), scale)
+        if "grid" in answer and (gridded or rows is not None):
+            self._grid(png, answer["grid"], scale, rows is not None)
+        action = check(answer.get("action"), size, kinds, SEQUENCE_MOST if self.scene != scenes.BOARD else
+                       CELL_MOVES_MOST if rows is not None else MOVES_MOST)
         used = uses(answer.get("action"))
         if action is None or used is None or action["kind"] not in offered + [DONE, OUT_OF_LIVES, GIVE_UP, STOP]:
             return None
@@ -528,7 +651,7 @@ class Direct:
         self.relaunches += action["kind"] == RELAUNCH
         if action["kind"] == DRAG and action["hold_ms"] < self.hold_ms:
             action["hold_ms"] = self.hold_ms
-        told = dict(action)
+        told = _celled(action, answer["action"]) if rows is not None else dict(action)
         if scale != 1.0:
             action = scaled(action, scale)
         expect = answer["expect"][:200] if isinstance(answer.get("expect"), str) else ""
@@ -549,11 +672,14 @@ class Direct:
         scale = answer["scale"]
         places = sorted(motion.outside(carry._boxes(before, after), moving or []),
                         key=lambda box: -box[2] * box[3])[:PLACES_TOLD]
-        entry = {"action": answer["told"], "expected": answer["expect"], **({"uses": answer["uses"]} if answer.get("uses") else {}),
+        entry = {"action": _brief(answer["told"]), "expected": answer["expect"], **({"uses": answer["uses"]} if answer.get("uses") else {}),
                  **({"scene": answer["scene"]} if answer.get("scene") else {}),
                  "screen_changed": bool(places),
                  "changed_at": [[round(part * scale) for part in box] for box in places],
                  **({"repeated": repeated} if repeated else {})}
+        if self.lattice is not None and (cells := self.lattice.changed(before, after)) is not None:
+            # the board stood either side of the input: what it changed is told by cells
+            entry["cells_changed"] = cells
         if carried:
             # whether the thing was seen held on the way, the press it was given, and how far its drawing's middle
             # was from where it was to land when the finger let go (when it was seen then)
@@ -567,6 +693,36 @@ class Direct:
             self.hold_ms = max(self.hold_ms, entry["held_ms"])
         return bool(places)
 
+    def _grid(self, png: bytes, said: Any, scale: float, told: bool) -> None:
+        """What the model said of the board's grid: a box with its rows and columns is read as a board from now on
+        when it reads as one of few kinds of cell (else the model is told it did not, and a board read before is
+        kept); null in answer to a board given as text lets that board go."""
+        if said is None:
+            if told:
+                self.lattice = None
+            return
+        found = Lattice.said(png, said, scale)
+        if found is None:
+            self.grid_refused = True
+            return
+        old = self.lattice
+        if old is not None and (old.rows, old.cols) == (found.rows, found.cols) \
+                and all(abs(one - other) <= SAME_GRID for one, other in zip(old.box, found.box)):
+            return                      # the same board said again: its kinds and their names stay
+        self.lattice = found
+
+    def _aimed(self, action: Any, scale: float) -> Any:
+        """The action with each press aimed at a cell of the board (`cell`) aimed at that cell's middle in the
+        picture the model was shown; the cell is kept beside it."""
+        if not isinstance(action, dict):
+            return action
+        if action.get("kind") == SEQUENCE and isinstance(action.get("inputs"), list):
+            return {**action, "inputs": [self._aimed(part, scale) for part in action["inputs"]]}
+        if action.get("kind") in (TAP, DOUBLE_TAP, LONG_PRESS) and "at" not in action \
+                and (at := self.lattice.at(action.get("cell"), scale)) is not None:
+            return {**action, "at": at}
+        return action
+
     def _remember(self, said: dict[str, Any]) -> None:
         """The parts of the memory the model gave take the place of what they held; a part it left out stays."""
         for part in MEMORY:
@@ -574,14 +730,30 @@ class Direct:
                 self.memory[part] = said[part].strip()[:MEMORY_MOST]
         self.memory = {part: text for part, text in self.memory.items() if text}
 
+    def _learn(self, said: Any) -> int:
+        """What the model read of named things is kept by their names, the oldest dropped beyond `KNOWN_MOST`;
+        how many were new or read otherwise than before."""
+        new = {name: text for name, text in _known(said).items() if self.known.get(name) != text}
+        for name, text in new.items():
+            self.known.pop(name, None)
+            self.known[name] = text
+        for name in list(self.known)[:max(0, len(self.known) - KNOWN_MOST)]:
+            del self.known[name]
+        return len(new)
+
     @property
     def notes(self) -> str:
         """The memory as one text, for the record."""
         return "\n".join(f"{part}: {text}" for part, text in self.memory.items())[:NOTES_MOST]
 
     def lasting(self) -> dict[str, str]:
-        """What of the memory outlasts the work: all but the plan, when the model was asked at all."""
-        return {part: text for part, text in self.memory.items() if part != PLAN} if self.questions else {}
+        """What of the memory outlasts the work: all but the plan, what named things do, and the board of cells
+        with the names of its kinds, when the model was asked at all."""
+        if not self.questions:
+            return {}
+        return {**{part: text for part, text in self.memory.items() if part != PLAN},
+                **({"known": dict(self.known)} if self.known else {}),
+                **({"grid": self.lattice.kept()} if self.lattice is not None and self.lattice.names else {})}
 
     def replayed(self, told: dict[str, Any], scene: str | None, changed: bool) -> None:
         """An input the code sent itself, as a step of the game's routine (`routine`), kept for the next question
@@ -591,5 +763,9 @@ class Direct:
 
     def summary(self) -> dict[str, Any]:
         return {"questions": self.questions, "score_first": self.first_score, "score_last": self.score,
-                "notes": self.notes, "memory": dict(self.memory), "situation": self.situation, "scene": self.scene,
+                "notes": self.notes, "memory": {**self.memory, **({"known": dict(self.known)} if self.known else {})},
+                **({"learned": self.learned} if self.learned else {}),
+                **({"lattice": {**self.lattice.summary(), "told": self.texted, "plain": self.plain}}
+                   if self.lattice is not None else {}),
+                "situation": self.situation, "scene": self.scene,
                 **({"refused": dict(self.refused)} if self.refused else {})}

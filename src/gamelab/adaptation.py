@@ -1295,6 +1295,21 @@ class Store:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "memory.json").write_text(json.dumps(memory, ensure_ascii=False) + "\n", encoding="utf-8")
 
+    def unfamiliar(self, site: str) -> dict[str, Any] | None:
+        """That a model, shown this game in play, named none of the families for it, with the families there
+        were to name then (PLAN §36, E3): while there are no others the game is not asked about again."""
+        path = self._site(site) / "unfamiliar.json"
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+        return kept if isinstance(kept, dict) else None
+
+    def save_unfamiliar(self, site: str, record: dict[str, Any]) -> None:
+        folder = self._site(site)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "unfamiliar.json").write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
     def falling(self, site: str) -> dict[str, Any] | None:
         """What a model said once of this game's well and keys, and what its empty cells looked like
         (`realtime.record`, PLAN §29): the next game starts from it with no question."""
@@ -1353,7 +1368,7 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
     listed = [{key: descriptor[key] for key in ("id", "summary", "board", "actions")}
               for descriptor in map(catalog.descriptor, explorable())]
     known = {family["id"] for family in listed}
-    found: dict[str, Any] = {"families": [], "falling": False, "questions": 0, "situation": None}
+    found: dict[str, Any] = {"families": [], "falling": False, "questions": 0, "situation": None, "shown": False}
     for tried in range(tries + 1):
         png = await surface.capture()
         context = {"families": listed, **({"hint": hint} if hint else {})}
@@ -1370,6 +1385,8 @@ async def identify(surface: Surface, model: Model, recovery: Recovery, *, hint: 
         # a game in which time moves (pieces falling into a well) is no family's: it is played by a loop of its
         # own, which starts the game itself (`realtime`, PLAN §29)
         found["falling"] = answer.get("falling") is True and not found["families"]
+        # whether the model saw the game itself in play, whatever it made of it
+        found["shown"] = answer.get("screen") == "game"
         if found["families"] or found["falling"] or answer.get("screen") == "game":
             break
         if tried == tries:
