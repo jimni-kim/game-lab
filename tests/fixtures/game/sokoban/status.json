@@ -1,0 +1,379 @@
+{
+ "op": "status",
+ "cases": [
+  {
+   "name": "every box on a goal wins the level",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       5,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "boxes off their goals go on",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "a box that can never move again is no end",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       3,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       5,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       3,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  },
+  {
+   "name": "the game's own win message",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     ],
+     "score": null,
+     "scene": "won"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "goal": {
+     "objective": "play_until_end"
+    }
+   },
+   "expected": {
+    "terminal": true,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "a target of boxes on goals",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       5,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "goal": {
+     "objective": "reach_value",
+     "target_value": 1
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "reached"
+   }
+  },
+  {
+   "name": "a target not yet met",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "goal": {
+     "objective": "reach_value",
+     "target_value": 1
+    }
+   },
+   "expected": {
+    "terminal": false,
+    "goal": "not_reached"
+   }
+  }
+ ]
+}

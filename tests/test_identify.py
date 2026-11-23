@@ -56,7 +56,7 @@ async def mines(guide_answers, tmp_path, **reader):
 
 
 def test_only_families_whose_first_moves_can_be_played_are_offered():
-    assert explorable() == ["block_placement", "klondike", "match3", "minesweeper", "slide_merge"]
+    assert explorable() == ["block_placement", "klondike", "match3", "minesweeper", "slide_merge", "sokoban"]
 
 
 async def test_a_game_nobody_named_is_played_as_the_family_the_model_names_and_the_screen_bears_out(tmp_path):

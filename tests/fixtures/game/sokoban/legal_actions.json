@@ -1,0 +1,460 @@
+{
+ "op": "legal_actions",
+ "cases": [
+  {
+   "name": "a step onto floor and a push onto free floor, in direction order",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": [
+    {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      1
+     ]
+    },
+    {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a box against another box is not pushed",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": [
+    {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a box against a wall is not pushed",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       3,
+       5,
+       0,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": [
+    {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      3
+     ]
+    },
+    {
+     "kind": "move",
+     "direction": "left",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      4
+     ]
+    }
+   ]
+  },
+  {
+   "name": "the edge of the grid is a wall",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       5,
+       3,
+       0,
+       0,
+       2
+      ],
+      [
+       0,
+       0,
+       0,
+       3,
+       2
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 5
+    }
+   },
+   "expected": [
+    {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      1,
+      0
+     ]
+    },
+    {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      0,
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "name": "no move once every box is on a goal",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       5,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": []
+  },
+  {
+   "name": "no move behind the game's win message",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ],
+      [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     ],
+     "score": null,
+     "scene": "won"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": []
+  },
+  {
+   "name": "an unread cell is never taken for floor",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       null,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "error": "unknown_cells"
+  }
+ ]
+}

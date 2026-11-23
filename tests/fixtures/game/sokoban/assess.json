@@ -1,0 +1,896 @@
+{
+ "op": "assess",
+ "cases": [
+  {
+   "name": "a push moves the player and the box one cell",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       5,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a step moves the player alone",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      1
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       5,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "the player leaves a goal behind it",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       6,
+       3,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      1
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       2,
+       3,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       5,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  },
+  {
+   "name": "a tap that moved nothing",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "absent"
+   }
+  },
+  {
+   "name": "the box left behind: pulled, not pushed",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      1
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       5,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "a box that moved though another blocked it",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       5,
+       3,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "inconsistent"
+   }
+  },
+  {
+   "name": "an unread cell after the move",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      2
+     ]
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       5,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       null,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "unknown"
+   }
+  },
+  {
+   "name": "a new level",
+   "input": {
+    "before": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       5,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "action": {
+     "kind": "new_game"
+    },
+    "after": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    }
+   },
+   "expected": {
+    "effect": "confirmed"
+   }
+  }
+ ]
+}

@@ -11,7 +11,7 @@ colour.
               look it has, and no value when it looks like none or like two
 
 A family's reader stands on these and adds what its game needs (`block_placement`: which cells are empty, and
-the tray; `slide_merge`, `minesweeper`, `match3`: a value for every cell).
+the tray; `slide_merge`, `minesweeper`, `match3`, `sokoban`: a value for every cell).
 """
 from __future__ import annotations
 

@@ -470,6 +470,10 @@ class Adaptation:
             # the board is what is learned here: a score read off the page (in the site's own counting) would
             # only make a right board look like a wrong move
             read = {**_filled(answer["state"], prior), **({"score": None} if "score" in answer["state"] else {})}
+            # what a piece hides of the cell it stands on is told by what is known of the level, where the rule
+            # model says how (`rules.sokoban.beneath`): a model reads what the picture shows
+            if (beneath := getattr(family.model, "beneath", None)) is not None:
+                read = beneath(read, prior)
             state = family.estimate(Observation("label", 0, "explore", 0, 0.0, "explore", public_facts={"state": read}))
             if isinstance(state, NeedObservation) or state.unknown_fields:
                 problem = "state_refused"

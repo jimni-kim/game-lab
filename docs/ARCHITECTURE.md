@@ -205,6 +205,7 @@
 | 블록 놓기 (`block_placement`) | 놓기, 줄 지우기 | 탐색 `search` + 끝 판 값 | 키트 |
 | 3매치 (`match3`) | 바꾸기, 터뜨리기, 레벨 목표 | 표본 탐색 `sampled` | 키트 |
 | 클론다이크 (`klondike`) | 1장·3장 뽑기 | `hindsight` | 생성 어댑터 |
+| 소코반 (`sokoban`) | 한 걸음, 상자 밀기 | 밀기 단위 A* `search`(찾은 길을 기억) | 키트 |
 | 떨어지는 블록 (`falling`) | 놓기, 줄 지우기, 층 목표 | `lookahead`(다음 조각 하나) | 실시간 루프 |
 
 계열마다 기술자(`blueprint/families/`)가 판 모양·수 종류·조작·바닥 예산을 적고, `catalog.py`가 등록한다.

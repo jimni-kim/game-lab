@@ -46,7 +46,7 @@ DEFAULT_MAX_MOVES = 3000
 # (minesweeper's is the layouts its solver may count for one guess)
 DEFAULT_COMPUTE = {"slide_merge": (50, 500, 2000), "block_placement": (50, 200, 1000), "minesweeper": (20000,),
                    "match3": (200,), "klondike": (200,),
-                   "falling": (2000,)}
+                   "falling": (2000,), "sokoban": (20000,)}
 # 2048-style milestones whose reach rate is reported
 TILE_MILESTONES = (512, 1024, 2048, 4096)
 

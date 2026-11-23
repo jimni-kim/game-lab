@@ -1,0 +1,276 @@
+{
+ "op": "choose",
+ "cases": [
+  {
+   "name": "the baseline takes the first move the rules list",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       5,
+       3,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "policy": "baseline",
+    "budget": 100
+   },
+   "expected": {
+    "action": {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      1
+     ]
+    }
+   }
+  },
+  {
+   "name": "the search pushes the last box home",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       5,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "policy": "search",
+    "budget": 100
+   },
+   "expected": {
+    "action": {
+     "kind": "move",
+     "direction": "right",
+     "cell": [
+      1,
+      3
+     ]
+    }
+   }
+  },
+  {
+   "name": "no move once no push can win: the only box stands in a corner off its goal",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       3,
+       0,
+       0,
+       2,
+       1
+      ],
+      [
+       1,
+       5,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "policy": "search",
+    "budget": 1000
+   },
+   "expected": {
+    "action": null
+   }
+  },
+  {
+   "name": "a move shown to have no effect is not chosen again",
+   "input": {
+    "state": {
+     "grid": [
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      [
+       1,
+       0,
+       5,
+       3,
+       2,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       4,
+       1
+      ],
+      [
+       1,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      [
+       1,
+       1,
+       1,
+       1,
+       1,
+       1
+      ]
+     ],
+     "score": null,
+     "scene": "playing"
+    },
+    "rules": {
+     "rows": 5,
+     "cols": 6
+    },
+    "policy": "search",
+    "budget": 1000,
+    "excluded": [
+     {
+      "kind": "move",
+      "direction": "right",
+      "cell": [
+       1,
+       3
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "action": {
+     "kind": "move",
+     "direction": "down",
+     "cell": [
+      2,
+      2
+     ]
+    }
+   }
+  }
+ ]
+}

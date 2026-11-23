@@ -1,0 +1,114 @@
+{
+  "id": "sokoban",
+  "revision": 1,
+  "summary": "A grid of walls and floor seen from above, some floor cells marked as goals, boxes standing on the floor and one player. Each move steps the player one cell up, down, left or right onto floor, or pushes the one box in that cell one cell further when the cell behind it is free floor; boxes are never pulled. The level is won when every box stands on a goal.",
+  "state_schema": "sokoban.v1",
+  "board": {
+    "shape": "grid",
+    "cells": [
+      {
+        "kind": "floor",
+        "looks": "a plain cell the player can walk on, nothing on it"
+      },
+      {
+        "kind": "wall",
+        "looks": "a wall cell, often bricks or a raised block, or the ground outside the walls where nobody can walk"
+      },
+      {
+        "kind": "goal",
+        "looks": "a floor cell with a mark where a box belongs: a dot, a cross, a ring or a lit tile"
+      },
+      {
+        "kind": "box",
+        "looks": "a box or crate standing on plain floor"
+      },
+      {
+        "kind": "box_on_goal",
+        "looks": "a box standing on a goal, often in another colour, lit up or with a mark of its own"
+      },
+      {
+        "kind": "player",
+        "looks": "the figure the player moves, on plain floor or on a goal"
+      },
+      {
+        "kind": "unknown",
+        "looks": "a cell hidden by an animation or a dialog"
+      }
+    ]
+  },
+  "state_fields": {
+    "grid": "the grid's rows from the top, each a list of cells from the left: 0 floor, 1 a wall or the ground outside the walls, 2 an empty goal, 3 a box on floor, 4 a box on a goal, 5 the player on floor, 6 the player on a goal, null a cell nobody read (never the same as floor)",
+    "score": "always null: the game keeps no score",
+    "scene": "the id of the scene the screen shows"
+  },
+  "actions": [
+    {
+      "kind": "move",
+      "input": "tap",
+      "description": "one step of the player up, down, left or right, made by one tap on the cell beside the player it steps into (the box's cell when it pushes the box)"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "playing",
+      "looks": "the level with boxes still off their goals"
+    },
+    {
+      "id": "won",
+      "looks": "a notice that the level is solved, or every box shown on a goal"
+    }
+  ],
+  "meta_actions": [
+    {
+      "id": "new_game",
+      "description": "start another level after the end"
+    }
+  ],
+  "rule_parameters": {
+    "rows": {
+      "description": "rows on the grid, walls and the ground around them included; a level may have its own",
+      "values": {
+        "type": "integer",
+        "minimum": 3
+      }
+    },
+    "cols": {
+      "description": "columns on the grid, walls and the ground around them included; a level may have its own",
+      "values": {
+        "type": "integer",
+        "minimum": 3
+      }
+    }
+  },
+  "policies": [
+    "baseline",
+    "search"
+  ],
+  "baseline_policy": "baseline",
+  "default_policy": "search",
+  "default_compute": 20000,
+  "least_compute": 20000,
+  "goal_value": "the boxes on goals",
+  "verify_every": 1,
+  "discovery": {
+    "rules": {
+      "rows": {
+        "minimum": 3
+      },
+      "cols": {
+        "minimum": 3
+      }
+    },
+    "controls": {
+      "kind": "tap"
+    },
+    "settling": {
+      "timeout_s": 4,
+      "interval_s": 0.15,
+      "stable_s": 0.25,
+      "animation_s": 0.5,
+      "still": true
+    },
+    "tolerance": 2
+  }
+}

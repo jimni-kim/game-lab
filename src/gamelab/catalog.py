@@ -17,10 +17,10 @@ from typing import Any
 
 from . import resources, rules, solvers
 from .families import GridFamily
-from .rules import block_placement, falling, klondike, match3, minesweeper, slide_merge
+from .rules import block_placement, falling, klondike, match3, minesweeper, slide_merge, sokoban
 from .solvers import (block_placement as block_placement_solver, falling as falling_solver, klondike as klondike_solver,
                       match3 as match3_solver,
-                      minesweeper as minesweeper_solver, slide_merge as slide_merge_solver)
+                      minesweeper as minesweeper_solver, slide_merge as slide_merge_solver, sokoban as sokoban_solver)
 
 # the package's own blueprint (src/gamelab/blueprint)
 FRAGMENT = resources.FRAGMENT
@@ -28,11 +28,12 @@ SCHEMA = FRAGMENT / "family.schema.json"
 # each family's rule model, the one the harness trusts, and its solver, the registered policies over it
 MODELS: dict[str, ModuleType] = {"block_placement": block_placement, "falling": falling, "klondike": klondike, "match3": match3,
                                  "minesweeper": minesweeper,
-                                 "slide_merge": slide_merge}
+                                 "slide_merge": slide_merge, "sokoban": sokoban}
 SOLVERS: dict[str, ModuleType] = {"block_placement": block_placement_solver, "falling": falling_solver,
                                   "klondike": klondike_solver,
                                   "match3": match3_solver,
-                                  "minesweeper": minesweeper_solver, "slide_merge": slide_merge_solver}
+                                  "minesweeper": minesweeper_solver, "slide_merge": slide_merge_solver,
+                                  "sokoban": sokoban_solver}
 
 # families made while a game is played (`made`): each one's descriptor, rules and solver, by its id
 MADE: dict[str, tuple[dict[str, Any], Any, Any]] = {}

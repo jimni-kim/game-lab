@@ -9,8 +9,9 @@ from .block_placement import BlockKit
 from .match3 import Match3Kit
 from .minesweeper import MinesKit
 from .slide_merge import SlideKit
+from .sokoban import SokobanKit
 
-KITS: dict[str, Any] = {kit.family_id: kit for kit in (BlockKit, SlideKit, MinesKit, Match3Kit)}
+KITS: dict[str, Any] = {kit.family_id: kit for kit in (BlockKit, SlideKit, MinesKit, Match3Kit, SokobanKit)}
 
 
 def has(family_id: str | None) -> bool:

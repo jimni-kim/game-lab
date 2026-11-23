@@ -22,6 +22,8 @@ CAPABILITY_NAMES = (DETERMINISTIC, CHANCE_ENUMERABLE, CHANCE_SAMPLED, CONSTRAINT
 # a model whose moves' results can be listed offers `outcomes(state, action, rules) -> [[weight, state]]`;
 # `evaluate(state, rules) -> int`, a search's heuristic, is offered by those that have one
 ENUMERATING = (DETERMINISTIC, CHANCE_ENUMERABLE)
+# a model whose pieces hide what they stand on offers `beneath(state, prior) -> state`: a reading with those
+# cells told by what is known of the level (the state before, or the reading's own counts), not by the picture
 
 
 def capabilities(model) -> frozenset[str]:
