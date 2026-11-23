@@ -223,7 +223,7 @@ async def test_what_the_model_noted_of_a_game_is_kept_by_its_parts_and_given_to_
     await work.play(fake, model, "minesweeper", goal=GoalSpec("levels", 2), budget=budget(), store=Store(tmp_path))
     # a part given replaces what it held, one left out stays; a plain text is the plan. All but the plan are kept
     asked = plays(model)
-    assert asked[0]["memory"] == {} and set(asked[0]["memory_parts"]) == {"rules", "ways", "failed", "plan"}
+    assert asked[0]["memory"] == {} and set(asked[0]["memory_parts"]) == {"rules", "ways", "failed", "run", "plan"}
     assert asked[-1]["memory"]["ways"] == "three lines, then the map" and "plan" in asked[-1]["memory"]
     assert Store(tmp_path).memory("https://mines.example/") == {"ways": "three lines, then the map"}
     fake = Sale([WINNING] * 2, sales={1})

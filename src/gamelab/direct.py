@@ -52,6 +52,14 @@ one at a time while each changes something (`agent._play_direct`; M1).
 
 An input the code sent itself between two questions, as a step of the game's routine (`routine`), is put in the
 history the model is shown, marked as the program's.
+
+A game that goes on for hours over fights and stages (a deck builder, a role-playing game) is played the same way
+with three things more (PLAN §36, session E3). An input that hands the turn to the game or another player carries
+how long the screen may take to come to rest (`then_wait_ms`): the program waits that out (`rested`) and the model
+is asked at its next turn, not in the middle of the other side's. What a named thing of the game does (a card, an
+item, an enemy), once read, is kept by its name (`known`) and given with every question, in this work and in later
+ones, so its description is not opened again. And one more part of the memory, `run`, says where such a game
+stands; it outlasts the work as the rules do, and the model holds it against the screen when it is given it again.
 """
 from __future__ import annotations
 
@@ -84,7 +92,7 @@ KEYS = recovery.KEYS | {"Backspace", "Tab"}
 TYPED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ")
 TEXT_MOST = 32
 # moves told to the model of what it did before, the notes it may keep, and the changed places it is told of
-HISTORY_KEPT, NOTES_MOST, PLACES_TOLD = 8, 1800, 6
+HISTORY_KEPT, NOTES_MOST, PLACES_TOLD = 8, 2200, 6
 PLAY_TOKENS, PLAY_TIMEOUT_S = 3000, 90.0
 # how long an input is left to take effect, then until the screen shows the same twice this far apart, at most
 SETTLE_S, STILL_GAP_S, STILL_TIMEOUT_S = 0.6, 0.3, 3.0
@@ -119,9 +127,17 @@ MEMORY = {
     "ways": "how this game gets from screen to screen outside a level: what opens the next level, what it puts in "
             "the way and how each is passed",
     "failed": "what you tried that did not work, so as not to try it again",
+    "run": "only for a game that goes on over many fights or stages: where it stands (the character and how it is "
+           "built, the stage reached, what is held) and what you are building toward",
     PLAN: "what you are doing now and mean to do next",
 }
 MEMORY_MOST = 400
+# what a named thing of the game does, kept once read (PLAN §36, E3): this many things, each name and text this long
+KNOWN_MOST, KNOWN_NAME, KNOWN_TEXT = 40, 40, 120
+# an input that hands the turn over (`then_wait_ms`): how long the screen may be waited for, and how long it must
+# show the same to be at rest (longer than the pause between two things the other side does: at 2 s two of four
+# waits ended with two enemies still to act, 2026-11-23)
+REST_MS_RANGE, REST_S = (500, 20000), 3.0
 # a wait for the screen to change: at most this long, looked at this often
 CHANGE_WAIT_MS, CHANGE_LOOK_S = 15000, 0.5
 # the game started again from nothing at most this many times a game
@@ -246,7 +262,17 @@ def can(kind: Any, kinds: frozenset[str]) -> bool:
 
 def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int = SEQUENCE_MOST
           ) -> dict[str, Any] | None:
-    """The model's action as one the surface can be given, or None. `most`: how many inputs a sequence may have."""
+    """The model's action as one the surface can be given, or None. `most`: how many inputs a sequence may have.
+    An input to a place, or a sequence of them, may say how long the screen is to be waited for afterwards
+    (`then_wait_ms`, taken into its range)."""
+    checked = _check(action, size, kinds, most)
+    if checked is not None and (checked["kind"] in SEQUENCED or checked["kind"] == SEQUENCE) \
+            and "repeat" not in checked and "advance" not in checked and type(action.get("then_wait_ms")) is int:
+        checked["then_wait_ms"] = min(max(action["then_wait_ms"], REST_MS_RANGE[0]), REST_MS_RANGE[1])
+    return checked
+
+
+def _check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int) -> dict[str, Any] | None:
     if not isinstance(action, dict):
         return None
     kind = action.get("kind")
@@ -257,7 +283,7 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int =
         return {**tap, "repeat": action["repeat"]} if tap is not None and type(action["repeat"]) is int \
             and 2 <= action["repeat"] <= REPEAT_MOST else None
     if kind in (TAP, KEY) and action.get("advance") is True:
-        plain = check({name: value for name, value in action.items() if name not in ("advance", "repeat")}, size, kinds)
+        plain = _check({name: value for name, value in action.items() if name not in ("advance", "repeat")}, size, kinds, most)
         if plain is None:
             return None
         # where the story's lines are shown, when the model says: a change there is one more line
@@ -291,7 +317,7 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int =
     if kind in (BACK, RELAUNCH):
         return {"kind": kind}
     if kind == SEQUENCE and isinstance(action.get("inputs"), list) and 2 <= len(action["inputs"]) <= most:
-        inputs = [check(part, size, kinds) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
+        inputs = [_check(part, size, kinds, most) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
                   for part in action["inputs"]]
         return {"kind": kind, "inputs": inputs} if None not in inputs else None
     if kind == KEY and (action.get("key") in KEYS or (isinstance(action.get("key"), str) and len(action["key"]) == 1
@@ -414,6 +440,31 @@ async def settled(surface: Any) -> bytes:
     return previous.png
 
 
+async def rested(surface: Any, ms: int) -> bytes:
+    """The screen once it came to rest after an input that handed the turn over: the same for `REST_S` on end
+    from now (what keeps moving all the while left out), or as it is `ms` after this was asked."""
+    look = _looker(surface)
+    deadline = time.monotonic() + ms / 1000
+    previous = await look(None)
+    still_since = time.monotonic()
+    moving = list(getattr(surface, "moving", []))
+    while time.monotonic() < deadline and time.monotonic() - still_since < REST_S:
+        seen = await look(previous.at + CHANGE_LOOK_S)
+        moving = motion.joined(moving + list(getattr(surface, "moving", [])))
+        if motion.outside(carry._boxes(previous.png, seen.png), moving):
+            still_since = time.monotonic()
+        previous = seen
+    return previous.png
+
+
+def _known(said: Any) -> dict[str, str]:
+    """What a model said named things of the game do, as it is kept: short names with short texts."""
+    if not isinstance(said, dict):
+        return {}
+    return {name.strip()[:KNOWN_NAME]: text.strip()[:KNOWN_TEXT] for name, text in said.items()
+            if isinstance(name, str) and isinstance(text, str) and name.strip() and text.strip()}
+
+
 class Direct:
     """One game played by a model's own inputs."""
 
@@ -423,7 +474,14 @@ class Direct:
         # what the model wants kept from one question to the next (`MEMORY`; a plain text is its plan), and what
         # it last said the screen shows
         self.memory: dict[str, str] = {}
+        # what named things of the game do, as the model read it of them (`KNOWN_MOST`; the last read kept longest),
+        # and how many of them were read in this work
+        self.known: dict[str, str] = {}
+        self.learned = 0
         self._remember(notes if isinstance(notes, dict) else {PLAN: notes} if isinstance(notes, str) else {})
+        self._learn(notes.get("known") if isinstance(notes, dict) else None)
+        # whether the memory given came from an earlier work (its `run` is then to be held against the screen)
+        self.earlier = bool(self.memory.get("run"))
         self.situation = ""
         # the kind of screen it last named (`scenes`), and whether it said the game forces one input there
         self.scene: str | None = None
@@ -478,6 +536,8 @@ class Direct:
                  **({"errand": errand} if errand else {}),
                  **({"began": "second image"} if began else {}),
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
+                 **({"known": self.known} if self.known else {}),
+                 **({"run_from_earlier_work": True} if self.earlier and not self.history else {}),
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(shown).decode("ascii")}}
@@ -502,6 +562,7 @@ class Direct:
             self._remember(answer["memory"])
         elif isinstance(answer.get("notes"), str):
             self._remember({PLAN: answer["notes"]})
+        self.learned += self._learn(answer.get("learned"))
         self.scene, self.guided = scenes.kind(answer.get("scene")), answer.get("guided") is True
         if type(answer.get("score")) in (int, float):
             self.score = answer["score"]
@@ -574,14 +635,29 @@ class Direct:
                 self.memory[part] = said[part].strip()[:MEMORY_MOST]
         self.memory = {part: text for part, text in self.memory.items() if text}
 
+    def _learn(self, said: Any) -> int:
+        """What the model read of named things is kept by their names, the oldest dropped beyond `KNOWN_MOST`;
+        how many were new or read otherwise than before."""
+        new = {name: text for name, text in _known(said).items() if self.known.get(name) != text}
+        for name, text in new.items():
+            self.known.pop(name, None)
+            self.known[name] = text
+        for name in list(self.known)[:max(0, len(self.known) - KNOWN_MOST)]:
+            del self.known[name]
+        return len(new)
+
     @property
     def notes(self) -> str:
         """The memory as one text, for the record."""
         return "\n".join(f"{part}: {text}" for part, text in self.memory.items())[:NOTES_MOST]
 
     def lasting(self) -> dict[str, str]:
-        """What of the memory outlasts the work: all but the plan, when the model was asked at all."""
-        return {part: text for part, text in self.memory.items() if part != PLAN} if self.questions else {}
+        """What of the memory outlasts the work: all but the plan, and what named things do, when the model was
+        asked at all."""
+        if not self.questions:
+            return {}
+        return {**{part: text for part, text in self.memory.items() if part != PLAN},
+                **({"known": dict(self.known)} if self.known else {})}
 
     def replayed(self, told: dict[str, Any], scene: str | None, changed: bool) -> None:
         """An input the code sent itself, as a step of the game's routine (`routine`), kept for the next question
@@ -591,5 +667,7 @@ class Direct:
 
     def summary(self) -> dict[str, Any]:
         return {"questions": self.questions, "score_first": self.first_score, "score_last": self.score,
-                "notes": self.notes, "memory": dict(self.memory), "situation": self.situation, "scene": self.scene,
+                "notes": self.notes, "memory": {**self.memory, **({"known": dict(self.known)} if self.known else {})},
+                **({"learned": self.learned} if self.learned else {}),
+                "situation": self.situation, "scene": self.scene,
                 **({"refused": dict(self.refused)} if self.refused else {})}

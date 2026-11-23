@@ -79,6 +79,10 @@ RESIZE_TRIAL = 2
 KIT_FIRST_S = 0.15
 # a game no family was found for is asked about again from the model's own play at most this many times
 REASK_MOST = 2
+# the kinds of screen on which the game is not asked about again: what stands between levels shows no board
+BETWEEN = frozenset({scenes.MAP, scenes.POPUP, scenes.RESULT, scenes.LOADING, scenes.STORY})
+# a game is kept as none of the families once a model shown it in play said so this often
+UNNAMED_TWICE = 2
 # moves in a row that did not do what the rules predict before the reading (L3) or the screen (L2) is doubted
 MAX_STALLED = 3
 # moves confirmed since play last started over from a screen two readers agreed on (`_reseed`) before it may do so
@@ -380,6 +384,10 @@ class Agent:
         # inputs with no family looked for; "made", a family made from the model's description whatever it says
         # of written rules. None: the harness's own choice
         self.way = way
+        # a model saw this game in play and named none of the registered families for it (kept: `Store.unfamiliar`)
+        self.unfamiliar = False
+        # how often a model asked what the game is saw it in play and named no family
+        self.unnamed = 0
         # the family made for this game when none is registered for it (`made`), the moves played by its
         # written rules that the screen bore out, and a move whose real result those rules refused
         self.game: made.Game | None = None
@@ -599,6 +607,9 @@ class Agent:
         self.world.keep(self.store if self.site else None)
         if self.site and self.store is not None and self.player is not None and self.player.lasting():
             self.store.save_memory(self.site, self.player.lasting())
+        if self.site and self.store is not None and self.unfamiliar and self.player is not None and self.game is None \
+                and self.resumable is None and not self.way:
+            self.store.save_unfamiliar(self.site, {"families": explorable()})
 
     async def _begin(self) -> None:
         """The family the game is played as: the one given, the one a kept adapter of this site names, else
@@ -641,6 +652,15 @@ class Agent:
                                                    else self.store.load(self.site, name)) is not None]
             if kept:
                 self.candidates, self.found["identified"] = kept[:1], {"family": kept[0], "source": "kept", "questions": 0}
+            elif self._unfamiliar_kept():
+                # a model said before, of this game in play, that it is none of the families there are, and it was
+                # played by a model's own inputs: it is so played again with nothing asked (PLAN §36, E3:
+                # 2026-11-23, 82 thousand of a work's 303 thousand tokens went into asking what the game is)
+                self.unfamiliar = True
+                self.found["identified"] = {"family": None, "source": "kept_none", "candidates": [], "tried": [],
+                                            "questions": 0, "inputs": 0, "situation": None}
+                await self._play_direct("")
+                return
             else:
                 asked = await self._identify()
                 if asked["inputs"] and self.found.get("made_kept") == "not_taken" and await self._made_again():
@@ -650,6 +670,7 @@ class Agent:
                     self.found["made_kept"] = "taken_past_first_screen"
                     return
                 self.candidates, self.named = ([] if self.way == "made" else list(asked["families"])), True
+                self._unfamiliar(asked)
                 self.found["identified"] = {"family": None, "source": "model", "candidates": list(self.candidates),
                                             "tried": [], "questions": asked["questions"], "inputs": asked["inputs"],
                                             "situation": asked["situation"]}
@@ -717,13 +738,29 @@ class Agent:
         elif self.game.restored:
             self.store.save_made(self.site, None)
 
-    async def _identify(self) -> dict[str, Any]:
+    def _unfamiliar_kept(self) -> bool:
+        """Whether it is kept of this game that it is none of the families a game can be recognised as now."""
+        kept = None if self.store is None or self.fresh or not self.direct or self.way else self.store.unfamiliar(self.site)
+        return kept is not None and set(kept.get("families") or ()) >= set(explorable())
+
+    def _unfamiliar(self, asked: dict[str, Any]) -> None:
+        """A model that saw the game in play and named no family for it, twice, has said all it can: it is not
+        asked again in this work, and the answer is kept for the next (`close`). Once is not enough: a level's
+        reward over the board was read as a game of no family, and the board under it was one (PLAN §34, F4)."""
+        if asked.get("shown") and not asked["families"] and not asked.get("falling"):
+            self.unnamed += 1
+            if self.unnamed >= UNNAMED_TWICE:
+                self.unfamiliar, self.reasked = True, REASK_MOST
+
+    async def _identify(self, tries: int | None = None) -> dict[str, Any]:
         """Which families the game may be, as a model sees it; asked again when the model could not be reached
-        (a gateway's timeout is not the game's end)."""
+        (a gateway's timeout is not the game's end). `tries`: the inputs the asking may send to get to the game
+        (`adaptation.identify`), when not as many as it likes to."""
         for attempt in range(1 + IDENTIFY_RETRIES):
             try:
                 recovery = self._recovery(None, [])
-                return await self._asking(identify(self.seen, self.model, recovery, hint=self.hint))
+                return await self._asking(identify(self.seen, self.model, recovery, hint=self.hint,
+                                                   **({} if tries is None else {"tries": tries})))
             except Exception as error:
                 log.info("the game could not be asked about: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -2831,6 +2868,9 @@ class Agent:
                 # change there is one more line from now on
                 self.lines_ground += self.lines_pending
             self.lines_pending = None
+            # how long the screen may take to come to rest after the last input of this answer, when the model
+            # said the input hands the turn over (PLAN §36, E3)
+            rest = action.pop("then_wait_ms", None)
             if scene == scenes.BOARD and not answer["guided"] and self.resumable is not None \
                     and self.resumes < RESUMES_MOST and action["kind"] not in (direct.WAIT, direct.RELAUNCH) \
                     and (self.unread_at is None or self.used - self.unread_at >= RESUME_EVERY):
@@ -2923,6 +2963,17 @@ class Agent:
                     story["by_code"] += sends - 1
                     story["stretches"].append({"at_input": self.used - sends + 1, "sent": sends, "stopped": why,
                                                "by": "page" if pressed is not None else "picture"})
+            if rest and (repeated is None or repeated["stopped"] == "count"):
+                # every input of the answer was sent and the last hands the turn over: the screen is waited for
+                # until it rests, so that the model is asked at its next turn and not in the middle of the other
+                # side's (2026-11-23: of 20 questions of a card game's fights, four were only to wait)
+                waited = time.monotonic()
+                after = await self._rested(rest)
+                moving = motion.joined(moving + self.seen.moving)
+                turns = self.found.setdefault("handed_over", {"times": 0, "seconds": 0.0})
+                turns["times"], turns["seconds"] = turns["times"] + 1, round(turns["seconds"] + time.monotonic() - waited, 1)
+                repeated = {**(repeated or {"sent": 1, "stopped": "count"}),
+                            "waited_ms": round((time.monotonic() - waited) * 1000)}
             # whether the last input sent changed anything
             tail = bool(self._share(sent_on, after, moving)) if moves else None
             if moves:
@@ -2963,16 +3014,20 @@ class Agent:
                     raise _End(Outcome.GAVE_UP, "no_effect", player.situation)
             self.since_tried += bool(changed)
             if changed and self.resumable is None and self.named and self.game is None and "story" not in self.found \
-                    and self.reasked < REASK_MOST and self.since_tried >= RESUME_EVERY:
+                    and self.reasked < REASK_MOST and self.since_tried >= RESUME_EVERY and scene not in BETWEEN:
                 # the game was asked about on a screen that showed none yet (a splash, a notice) and so has no
                 # family: asked again now that the model's own moves are taken, it may be one there is play for
                 # (not a game whose lines the loop moved on: a story has no board to find, and the asking gets
                 # itself past screens with inputs of its own, which made a story's choice unasked, 2026-11-21)
+                # Asked where the model does not call the screen one between levels, and with the one question:
+                # the model's own play gets to the game, and the asking's inputs on the way cost more than its
+                # (PLAN §36, E3: 2026-11-23, the two askings took 8 questions, 6 of them at tutorial notices)
                 self.reasked, self.since_tried = self.reasked + 1, 0
                 try:
-                    asked = await self._identify()
+                    asked = await self._identify(tries=0)
                 except _End:
                     asked = {"families": []}
+                self._unfamiliar(asked)
                 if asked["families"]:
                     self.resumable = asked["families"][0]
                     self.found.setdefault("identified", {}).update(candidates=list(asked["families"]), reasked=self.reasked)
@@ -3005,6 +3060,13 @@ class Agent:
         no picture in time."""
         try:
             return await asyncio.wait_for(direct.settled(self.seen), SEND_TIMEOUT_S)
+        except (TimeoutError, ValueError):
+            raise _End(Outcome.NEEDS_RECOVERY, "surface_unresponsive", "the screen could not be looked at") from None
+
+    async def _rested(self, ms: int) -> bytes:
+        """The screen once it came to rest after an input that handed the turn over (`direct.rested`)."""
+        try:
+            return await asyncio.wait_for(direct.rested(self.seen, ms), SEND_TIMEOUT_S + ms / 1000)
         except (TimeoutError, ValueError):
             raise _End(Outcome.NEEDS_RECOVERY, "surface_unresponsive", "the screen could not be looked at") from None
 
