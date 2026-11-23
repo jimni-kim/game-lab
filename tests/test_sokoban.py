@@ -219,3 +219,30 @@ def test_the_reader_keeps_one_look_for_the_figure_wherever_it_stands():
     assert SokobanKit._key(rules.PLAYER_ON_GOAL) == rules.PLAYER == SokobanKit._key(rules.PLAYER)
     assert SokobanKit._key(rules.BOX_ON_GOAL) == rules.BOX_ON_GOAL
     assert str(rules.PLAYER_ON_GOAL) not in SokobanKit({"rows": 5, "cols": 4}).options()
+
+
+def test_a_level_no_pushes_win_is_told_as_spent_and_a_new_board_forgets_it():
+    """A box pushed where it can never be brought back from: the search goes through every position, gives no move,
+    and the memory says the level cannot be won as it stands (`spent`: the agent starts it again or ends it)."""
+    bound = {"rows": 12, "cols": 4}
+    start = [[1, 1, 1, 1], [1, 0, 0, 1], [1, 0, 0, 1], [1, 0, 0, 1], [1, 3, 0, 1], [1, 0, 0, 1], [1, 2, 1, 1],
+             [1, 2, 1, 1], [1, 0, 0, 1], [1, 3, 5, 1], [1, 0, 0, 1], [1, 1, 1, 1]]
+    # the upper box pushed into the mouth of the passage between the rooms, the player above it
+    dead = [[1, 1, 1, 1], [1, 0, 0, 1], [1, 0, 0, 1], [1, 0, 0, 1], [1, 5, 0, 1], [1, 3, 0, 1], [1, 2, 1, 1],
+            [1, 2, 1, 1], [1, 0, 0, 1], [1, 3, 0, 1], [1, 0, 0, 1], [1, 1, 1, 1]]
+    state = {"grid": dead, "score": None, "scene": "playing"}
+    memory = solver.recall(None, state, bound)
+    assert not solver.spent(memory, bound)
+    assert solver.choose(state, bound, "search", 20000, [], memory)["action"] is None
+    assert solver.spent(memory, bound)
+    # the level started again: another grid, nothing kept of the one that could not be won
+    again = {"grid": start, "score": None, "scene": "playing"}
+    memory = solver.recall(memory, again, bound)
+    assert not solver.spent(memory, bound)
+    assert solver.choose(again, bound, "search", 20000, [], memory)["action"] is not None
+    assert not solver.spent(memory, bound) and memory["plan"]
+    # a search that only ran out of nodes proved nothing
+    short = solver.recall(None, again, bound)
+    solver.choose(again, bound, "search", 1, [], short)
+    assert not solver.spent(short, bound)
+    assert catalog.family("sokoban").bind({"rules": bound}).spent(memory) is False

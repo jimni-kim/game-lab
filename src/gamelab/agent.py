@@ -48,10 +48,11 @@ from .execution import TAP_MS
 from .families import state_id
 from .model import Model, Msg, TurnRequest, TurnResult
 from . import motion, world
+from .rules import DETERMINISTIC
 from .carry import _boxes as carry_boxes
 from .motion import Steady
 from .run import Run, check
-from .recovery import GIVE_UP, MAX_TRIES, NEW_GAME, NEXT_LEVEL, NONE, STOP, Recovery
+from .recovery import GIVE_UP, MAX_TRIES, NEW_GAME, NEXT_LEVEL, NONE, START_OVER, STOP, Recovery
 
 log = logging.getLogger("gamelab.agent")
 
@@ -88,6 +89,8 @@ RESEED_EVERY, RESEEDS_KEPT = 3, 20
 # confirmed moves read by the model after an adapter could not be written, before it is tried once more, and
 # how often in one game
 RETRY_LOOKS, RETRIES = 12, 2
+# the inputs a part spends on starting a level again that cannot be won as it stands (`Agent._start_over`)
+START_OVER_MOST = 3
 # a game that must be still but whose pixels never rest is settled once its state has read the same this long;
 # a screen the adapter leaves unread the same way this long is not waited on further
 RESTLESS_S = 1.0
@@ -446,7 +449,7 @@ class Agent:
         self.unread: dict[str, Any] | None = None
         self.over = False
         self.moves: list[dict[str, Any]] = []
-        self.used = self.confirmed = self.stalled = self.tries = self.shots = self.sequence = 0
+        self.used = self.confirmed = self.stalled = self.tries = self.shots = self.sequence = self.started_over = 0
         self.shrugged = False
         self.ineffective: dict[str, Any] | None = None
         # what the family's solver keeps of the game from screen to screen (`GridFamily.recall`)
@@ -975,7 +978,10 @@ class Agent:
                                     **({"memory": self.recalled} if self.recalled is not None else {}))
         if action is None and not excluded and self.family.spent(self.recalled):
             # the solver's own memory shows the game going nowhere (a stock turned all the way round with nothing
-            # to play): it is over, whatever moves it still offers, as a state come back to is below
+            # to play, a level no pushes win any more): it is over, whatever moves it still offers, as a state come
+            # back to is below. Where the person allowed another try, the level is started again instead
+            if await self._start_over():
+                return
             raise _End(Outcome.GAME_OVER, "no_progress")
         if action is None or action["kind"] in self.family.meta_actions:
             # every move this board offers was tried without effect, or the game waits at a message of its own
@@ -1033,7 +1039,7 @@ class Agent:
             await self._settle(after, (before, action))
         self._remember(before, action, effect, after)
         if self.over:
-            raise _End(Outcome.GAME_OVER, "terminal")
+            raise _End(*self._over_as(before, action))
         if after is None:
             self.unread_move = (before, action)
             if self.why == "inconsistent":
@@ -1336,6 +1342,23 @@ class Agent:
             raise _End(Outcome.STOPPED, MET_BEFORE, "the game on the screen, still in play, already met the goal "
                        "before any move of this work; no new game was started, as that would throw it away")
         return seen["terminal"] or seen["goal"] == "reached"
+
+    def _over_as(self, before: Reading, action: dict[str, Any]) -> tuple[Outcome, str]:
+        """How a game ended that the rules show the move ended though the screen after it was not read whole
+        (`ended`): over, unless the rules leave one board after the move and that board is the goal reached (a
+        level whose last move wins it, the game's message already over the board). 2026-11-23: five levels a
+        family solved were each told as lost, and played again as lost ones (PLAN §36 E1)."""
+        outcomes = getattr(self.family.model, "outcomes", None)
+        objective = str(self.goal.objective)
+        if outcomes is not None and DETERMINISTIC in self.family.model.CAPABILITIES:
+            try:
+                left = outcomes(before.state, action, self.family.rules)
+                if len(left) == 1 and self.family.model.status(left[0][1], self.family.rules, {
+                        "objective": objective, "target_value": self.goal.target_value})["goal"] == "reached":
+                    return Outcome.GOAL_REACHED, objective
+            except (ValueError, KeyError, TypeError, IndexError):
+                pass
+        return Outcome.GAME_OVER, "terminal"
 
     def _judge(self, state: dict[str, Any]) -> None:
         objective = str(self.goal.objective)
@@ -2234,6 +2257,25 @@ class Agent:
         if await self._other_family():
             return
         await self._give_up(reason)
+
+    async def _start_over(self) -> bool:
+        """The level on the screen cannot be won as it stands and the game says nothing of it: a model is shown the
+        screen and presses what starts the level again (one input a look, START_OVER_MOST in a part: a button, then
+        the game's question whether it is meant). Only when the person allowed another try (`retry`): a level
+        started again may cost what a lost one does. True when an input went out and the screen is to be read
+        again, for itself: nothing on it follows from the board before (2026-11-23: a level left where no pushes
+        win was handed to the model's own moves, which pushed on and gave up, PLAN §36 E1)."""
+        if "retry" not in self.goal.allowed_meta_actions or self.started_over >= START_OVER_MOST:
+            return False
+        self._afford()
+        self.started_over += 1
+        context = {"state": self.state, "recent": []}
+        if not await self._asking(self.recovery.attempt(self.seen, START_OVER, context, timeout_s=self._left())):
+            return False
+        self.found["started_over"] = {"times": self.started_over, "at_action": self.used}
+        self.unread_move = self.carried = None
+        self.screen = self.recovery.log[-1].get("scene") or self.screen
+        return True
 
     def _out_of_lives(self, action: dict[str, Any], situation: str) -> None:
         """The game opens no level until time gives a life back, and buying one or watching an advertisement for

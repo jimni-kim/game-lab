@@ -41,6 +41,9 @@ NEXT_LEVEL = "next_level"
 # why play stopped when a game from its start was asked for and the one on the screen ended before the work began:
 # a new game of the same kind is to be started (`agent.Agent.anew`)
 NEW_GAME = "new_game"
+# the level on the screen cannot be won as it stands (the family's rules show it) and the game shows no end of its
+# own: the level is started again from its beginning, when the person allowed another try
+START_OVER = "start_over"
 # what a model giving up may say of the game itself: its own end screen, won or lost, stands where the board was
 ENDS = ("won", "lost")
 # what an input of the model's is carried out with (`Surface.kinds`)

@@ -242,6 +242,7 @@ def recall(memory: dict | None, state: dict, rules: dict) -> dict | None:
     if memory is not None:
         if memory["grid"] == grid:
             return memory
+        # (another grid: what was found of the one before, a level that could not be won too, is not kept)
         if memory["plan"] and step(memory["grid"], memory["plan"][0]["direction"]) == grid:
             return {"grid": [list(row) for row in grid], "plan": memory["plan"][1:]}
     return {"grid": [list(row) for row in grid], "plan": []}
@@ -270,7 +271,16 @@ def choose(state: dict, rules: dict, policy: str, budget: int, excluded: list[di
     moves, nodes = _search(grid, budget, legal, excluded)
     if memory is not None:
         memory["grid"], memory["plan"] = [list(row) for row in grid], moves or []
+        # the search went through every position the pushes reach and none wins (`spent`)
+        memory["dead"] = moves is None and not excluded
     return {"action": moves[0] if moves else None, "nodes": nodes}
+
+
+def spent(memory: dict | None, rules: dict) -> bool:
+    """Whether the level as it stands cannot be won: the search from the grid kept went through every position
+    the pushes reach and none has every box on a goal (a box was pushed where it can never be brought back
+    from). The game shows no end of its own for it; only starting the level again helps."""
+    return bool(memory and memory.get("dead"))
 
 
 def _search(grid, budget: int, legal: list[dict], excluded) -> tuple[list[dict] | None, int]:
