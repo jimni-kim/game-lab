@@ -39,7 +39,34 @@ KINDS = {
 ROUND_MOST = 6
 # the inputs tried from a screen that are told when play comes back to it
 TRIED_TOLD = 4
-NAME_TOKENS, NAME_TIMEOUT_S = 400, 45.0
+NAME_TOKENS, NAME_TIMEOUT_S = 700, 45.0
+# the values a screen shows of how well play went that are kept from one naming (PLAN §27, M9), and how long a name
+MEASURES_MOST, MEASURE_NAME_MOST = 8, 40
+BETTER = ("higher", "lower")
+
+
+def _number(value: Any) -> float | int | None:
+    return value if type(value) in (int, float) and value == value and abs(value) < 1e15 else None
+
+
+def measures(value: Any) -> list[dict[str, Any]]:
+    """The values a model read off a screen of how well the level or the run went (`name`): each with the game's
+    own label, its number, the most it can be when the screen shows one (health 32 of 70, 2 stars of 3), and
+    whether more is better or fewer (None: not said). Anything else in the answer is left out."""
+    kept: list[dict[str, Any]] = []
+    for item in value if isinstance(value, list) else ():
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+            continue
+        number = _number(item.get("value"))
+        if number is None:
+            continue
+        most = _number(item.get("most"))
+        better = item.get("better") if item.get("better") in BETTER else None
+        kept.append({"name": item["name"].strip()[:MEASURE_NAME_MOST], "value": number,
+                     **({"most": most} if most is not None else {}), **({"better": better} if better else {})})
+        if len(kept) >= MEASURES_MOST:
+            break
+    return kept
 
 
 def kind(value: Any) -> str | None:
@@ -90,10 +117,12 @@ class Trail:
 
 async def name(model: Model, png: bytes) -> dict[str, Any]:
     """What kind of screen this is and what it shows, as a model names it: `{"scene", "situation", "level",
-    "level_won"}` (None, "", None and None when it gave no such answer): the number of the level the screen is
-    about (played, about to be opened, just ended) as the game shows it, and whether the screen shows that level
-    just won. Asked where the work is handed back and no model looked at its last screen, and while levels are
-    played up to one (`work`, `until_level`) to count them by the game's own numbers."""
+    "level_won", "counted", "measures"}` (None, "", None, None, None and [] when it gave no such answer): the number
+    the game counts its progress by that the screen is about (a level, a stage, a floor, a day: played, about to be
+    opened, just ended), whether the screen shows that one just won, what that number counts (`counted`, the game's
+    word), and the values it shows of how well play went (`measures`: moves or steps taken, health left, stars, a
+    score; PLAN §27, M9). Asked where the work is handed back, after each level played, and before the first when
+    levels are played up to one (`work`, `until_level`) to count them by the game's own numbers."""
     shown, _ = recovery.view(png)
     prompt = (resources.FRAGMENT / "prompts" / "name_screen.md").read_text(encoding="utf-8")
     image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -106,9 +135,12 @@ async def name(model: Model, png: bytes) -> dict[str, Any]:
     except ValueError:
         answer = None
     if not isinstance(answer, dict):
-        return {"scene": None, "situation": "", "level": None, "level_won": None, "usage": result.usage}
+        return {"scene": None, "situation": "", "level": None, "level_won": None, "counted": None, "measures": [],
+                "usage": result.usage}
     situation = answer["situation"][:300] if isinstance(answer.get("situation"), str) else ""
-    level, won = answer.get("level"), answer.get("level_won")
-    return {"scene": kind(answer.get("scene")), "situation": situation,
-            "level": level if type(level) is int and level >= 1 else None,
-            "level_won": won if isinstance(won, bool) else None, "usage": result.usage}
+    level, won, counted = answer.get("level"), answer.get("level_won"), answer.get("counted")
+    level = level if type(level) is int and level >= 1 else None
+    return {"scene": kind(answer.get("scene")), "situation": situation, "level": level,
+            "level_won": won if isinstance(won, bool) else None,
+            "counted": counted.strip()[:MEASURE_NAME_MOST] if isinstance(counted, str) and counted.strip() and level else None,
+            "measures": measures(answer.get("measures")), "usage": result.usage}

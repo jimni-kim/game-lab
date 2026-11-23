@@ -302,7 +302,7 @@ async def test_levels_up_to_one_with_no_number_on_the_screen_stop_after_the_firs
     assert "(through ?)" in work.told(made["work"]) and len(named(model)) == 2
 
 
-async def test_a_lost_level_on_the_way_up_to_one_is_not_named(monkeypatch):
+async def test_a_lost_level_on_the_way_up_to_one_is_named_but_not_counted(monkeypatch):
     as_given(monkeypatch)
     fake = Levels([LOST_EARLY, WINNING, WINNING])
     model = Numbered(fake, first=9, uses=again)
@@ -310,6 +310,7 @@ async def test_a_lost_level_on_the_way_up_to_one_is_not_named(monkeypatch):
                                    goal=GoalSpec("until_level", 10, allowed_meta_actions=frozenset({"retry"})),
                                    budget=Budget(200, COMPUTE, 600))
     assert ending(played) == ("goal_reached", "until_level") and fake.ends == ["lost", "won", "won"]
-    # before the first part, and after each level won: none after the loss
-    assert named(model) == [9, 9, 10]
+    # before the first part and after each level played (PLAN §36, E5: for what the screen shows of it); the loss
+    # leaves the levels cleared as they were
+    assert named(model) == [9, 9, 9, 10]
     assert made["work"]["levels"] == {"wanted": 2, "won": 2, "lost": 1, "until": 10, "through": 10}

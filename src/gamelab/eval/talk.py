@@ -14,7 +14,7 @@ import base64
 import json
 from typing import Any
 
-from .. import resources
+from .. import resources, work
 from ..model import Model, Msg, TurnRequest
 
 GAME, QUESTION, STOP = "game", "question", "stop"
@@ -177,6 +177,16 @@ def _why(outcome: str, reason: str, ko: bool, detail: str = "") -> str:
         + (f": {detail[:200]}" if reason == "error" and detail else "") + ")"
 
 
+def _measured(measured: dict[str, Any], ko: bool) -> str:
+    """What the last screen showed of how play went (`work.play`'s `measured`), by the game's own labels."""
+    better = {"higher": (" (많을수록 좋음)", " (more is better)"), "lower": (" (적을수록 좋음)", " (fewer is better)")}
+    said = [f"{measured.get('counted') or ('레벨' if ko else 'level')} {measured['level']}"] \
+        if measured.get("level") is not None else []
+    said += [work.shown(measure) + better.get(measure.get("better"), ("", ""))[0 if ko else 1]
+             for measure in measured.get("measures") or ()]
+    return ", ".join(said)
+
+
 def handed_back(summary: dict[str, Any], ko: bool) -> str:
     """The end of a game in a few sentences, from what the work handed back (`work.play`) and the game's result:
     why it stopped, the levels won and lost, what it spent and used, where it stopped, how long until lives or an
@@ -219,6 +229,8 @@ def handed_back(summary: dict[str, Any], ko: bool) -> str:
             lines.append(f"게임은 {family} 계열로 두었습니다.")
         if stopped.get("screen") or stopped.get("situation"):
             lines.append("멈춘 화면: " + " — ".join(part for part in (stopped.get("screen"), stopped.get("situation")) if part).rstrip(".") + ".")
+        if work.get("measured"):
+            lines.append(f"화면의 숫자: {_measured(work['measured'], ko)}.")
         if lives:
             lines.append(f"다음 하트까지 약 {lives['minutes']:g}분입니다." if lives.get("minutes") is not None
                          else "다음 하트까지 남은 시간은 화면에 없었습니다.")
@@ -246,6 +258,8 @@ def handed_back(summary: dict[str, Any], ko: bool) -> str:
             lines.append(f"The game was played as {family}.")
         if stopped.get("screen") or stopped.get("situation"):
             lines.append("Stopped at: " + " — ".join(part for part in (stopped.get("screen"), stopped.get("situation")) if part).rstrip(".") + ".")
+        if work.get("measured"):
+            lines.append(f"The screen shows: {_measured(work['measured'], ko)}.")
         if lives:
             lines.append(f"The next life comes in about {lives['minutes']:g} min." if lives.get("minutes") is not None
                          else "The screen did not show when the next life comes.")

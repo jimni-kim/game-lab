@@ -17,10 +17,18 @@ it that says how many are played and what is handed back.
                  asked for, and the work gives up when no number can be read at all
     budget       one for the whole work: each part is given what the parts before it left of the inputs, the
                  seconds and the tokens
+    measures     how well play went, as the game shows it (PLAN §27, M9; §36, E5): the screen is named once after
+                 each level played and once where the work stops, and the values the model read off it (steps
+                 taken, health left, stars, a score: `scenes.measures`) are kept with the part and with the work.
+                 The model says which values the screen shows, by the game's own labels, and whether more is
+                 better; nothing here knows a game's
+    counting     levels up to one in a game whose levels do not end on a screen of their own (a floor, a day):
+                 the part played by a model's own inputs is told the number the screen stood at, and ends once
+                 the model reads a greater one (`agent.Agent.counting`); the screen is then named as after a level
     hand back    the work's own account (`handback`): why it stopped, the levels won and lost, what it spent
-                 (inputs, moves, what was used beyond the board, tokens), and where it stopped (the kind of
-                 screen, `scenes`, and what it shows, asked of a model once when levels were played), for the
-                 next request to go on from (`Scope.CURRENT_GAME`)
+                 (inputs, moves, what was used beyond the board, tokens), where it stopped (the kind of screen,
+                 `scenes`, and what it shows, asked of a model once), and what it measured, for the next request
+                 to go on from (`Scope.CURRENT_GAME`)
 
 Nothing here reads the screen or sends an input: the parts do.
 """
@@ -122,9 +130,12 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     # is to clear (known once `through` is read before the first part), and the screen's naming last asked for with
     # the parts played before it
     through: int | None = None
+    counted: str | None = None
     wanted: int | None = goal.target_value if levels and not until else None
     read: dict[str, Any] | None = None
     read_after = -1
+    # the screen as named after each part that played a level, by the part's number (its measures are the part's)
+    after: dict[int, dict[str, Any]] = {}
 
     def tokens_left() -> bool:
         return budget.max_input_tokens is None or tokens_in < budget.max_input_tokens
@@ -141,6 +152,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             tokens_in, tokens_out = tokens_in + read["usage"].input_tokens, tokens_out + read["usage"].output_tokens
             questions += 1
             through = _through(read)
+            counted = read.get("counted")
         if through is not None:
             wanted = max(goal.target_value - through, 0)
             if through >= goal.target_value:
@@ -171,6 +183,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
                                         watch=_Numbered(watch, used) if watch is not None and parts else watch,
                                         fresh=fresh and not parts, onward=levels,
                                         anew=goal.scope == Scope.NEW_GAME and not parts,
+                                        counting=through + 1 if until and through is not None else None,
                                         **{**options, "notes": notes, "book": book})
         parts.append((run, adapted))
         lasted.append(round(time.monotonic() - began, 1))
@@ -200,32 +213,38 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             empty += 1
             if empty > EMPTY_MOST:
                 ended = (str(Outcome.GAVE_UP), "no_level_started", detail)
-        elif outcome == Outcome.GOAL_REACHED:
-            won, empty = won + 1, 0
-            if until:
-                # the level won counted by the number the screen shows now; one more than the last when it shows none
-                seen = None
-                if tokens_left():
-                    read, read_after = await _named(model, surface), len(parts)
-                    if read is not None:
-                        tokens_in, tokens_out = tokens_in + read["usage"].input_tokens, tokens_out + read["usage"].output_tokens
-                        questions += 1
-                        seen = _through(read)
-                if seen is not None:
-                    through = seen
-                elif through is not None:
-                    through += 1
-                elif tokens_left():
-                    # (with the tokens spent the work ends on them instead, before the next part)
-                    ended = (str(Outcome.GAVE_UP), LEVEL_UNREAD, "the level number could not be read from the screen")
-                if through is not None and through >= goal.target_value:
-                    ended = (str(Outcome.GOAL_REACHED), UNTIL, "")
-            elif won >= goal.target_value:
-                ended = (str(Outcome.GOAL_REACHED), LEVELS, "")
         else:
-            lost, empty, again = lost + 1, 0, True
-            if LOST in goal.stop_conditions or "retry" not in goal.allowed_meta_actions:
-                ended = (str(Outcome.GAME_OVER), "level_lost", detail)
+            # a level played to its end: the screen it ended on is named once, for what it shows of how the level
+            # went (`measures`) and, for levels up to one, for the number it shows
+            empty, seen = 0, None
+            if tokens_left():
+                read, read_after = await _named(model, surface), len(parts)
+                if read is not None:
+                    tokens_in, tokens_out = tokens_in + read["usage"].input_tokens, tokens_out + read["usage"].output_tokens
+                    questions += 1
+                    after[len(parts)] = read
+                    counted = read.get("counted") or counted
+                    seen = _through(read)
+            if outcome == Outcome.GOAL_REACHED:
+                won += 1
+                if until:
+                    # the level won counted by the number the screen shows now; one more than the last when it
+                    # shows none
+                    if seen is not None:
+                        through = seen
+                    elif through is not None:
+                        through += 1
+                    elif tokens_left():
+                        # (with the tokens spent the work ends on them instead, before the next part)
+                        ended = (str(Outcome.GAVE_UP), LEVEL_UNREAD, "the level number could not be read from the screen")
+                    if through is not None and through >= goal.target_value:
+                        ended = (str(Outcome.GOAL_REACHED), UNTIL, "")
+                elif won >= goal.target_value:
+                    ended = (str(Outcome.GOAL_REACHED), LEVELS, "")
+            else:
+                lost, again = lost + 1, True
+                if LOST in goal.stop_conditions or "retry" not in goal.allowed_meta_actions:
+                    ended = (str(Outcome.GAME_OVER), "level_lost", detail)
         agent.progress(watch, "part", number=len(parts), outcome=outcome, reason=reason, family=record.get("family"),
                        inputs=used, **({"won": won, "lost": lost, "wanted": wanted_now()} if levels else {}),
                        **({"until": goal.target_value, "through": through} if until else {}))
@@ -238,24 +257,25 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             _added(account[kind], (adapted.get("account") or {}).get(kind))
     site = await surface.address()
     stopped = {"screen": last.get("screen"), "situation": last.get("situation") or ""}
-    # where the levels left the game: the screen after the last of them is named once, for the person, unless it was
-    # named after the last part already (levels up to one)
-    named = read if until and read is not None and read_after == len(parts) else None
-    if named is None and levels and tokens_left():
-        try:
-            named = await scenes.name(model, await surface.capture())
+    # where the work left the game: the screen it stopped on is named once, for the person and for what it shows of
+    # how play went, unless it was named after the last part already. One game that sent nothing (an errand not due
+    # yet, handed back with no question asked) played nothing to measure
+    named = read if read is not None and read_after == len(parts) else None
+    if named is None and parts and (levels or used) and tokens_left():
+        named = await _named(model, surface)
+        if named is not None:
             tokens_in, tokens_out = tokens_in + named["usage"].input_tokens, tokens_out + named["usage"].output_tokens
             questions += 1
-        except Exception as error:
-            log.info("the last screen could not be named: %s", error)
     if named is not None and (named["scene"] or named["situation"]):
         stopped = {"screen": named["scene"], "situation": named["situation"]}
     profiles = [made for _, adapted in parts for made in adapted.get("profiles") or ()]
     handback = {
         "goal": goal.to_json(), "outcome": outcome, "reason": reason, "detail": detail,
         "levels": None if not levels else {"wanted": wanted_now(), "won": won, "lost": lost,
-                                            **({"until": goal.target_value, "through": through} if until else {})},
-        "parts": [_part(run, adapted, seconds) for (run, adapted), seconds in zip(parts, lasted)],
+                                            **({"until": goal.target_value, "through": through} if until else {}),
+                                            **({"counted": counted} if until and counted else {})},
+        "parts": [{**_part(run, adapted, seconds), **_measured(after.get(number))}
+                  for number, ((run, adapted), seconds) in enumerate(zip(parts, lasted), 1)],
         "spent": {"inputs": used, "moves": confirmed, "used": account["used"], "refused": account["refused"],
                   "tokens": {"input": tokens_in, "output": tokens_out}, "questions": questions,
                   "seconds": round(time.monotonic() - started, 1)},
@@ -276,6 +296,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         # the errand was told done although everything the game holds read as before it: to be looked at before
         # it is believed (`world.World.unmoved`)
         **({"unmoved": last["unmoved"]} if last.get("unmoved") else {}),
+        # how play went as the screen the work stopped on shows it (PLAN §27, M9)
+        **({"measured": _measured(named)} if _measured(named) else {}),
         # names and profiles the game would not go on without, and what they were made as (C2-5)
         **({"profiles": profiles} if profiles else {}),
         # what the game's routines did in this work: the steps kept, sent by code, failed and learned (PLAN §28)
@@ -293,6 +315,16 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
               screens=[{**kept, "part": number} for number, (run, _) in enumerate(parts, 1) for kept in run.screens])
     return run, {**last, "tokens": {"input": tokens_in, "output": tokens_out}, "questions": questions,
                  "seconds": round(sum(adapted["seconds"] for _, adapted in parts), 1), "account": account, "work": handback}
+
+
+def _measured(named: dict[str, Any] | None) -> dict[str, Any]:
+    """What a named screen showed of how play went: the number the game counts its progress by, what it counts,
+    and the values read off it (`scenes.measures`); empty when it showed none."""
+    if named is None:
+        return {}
+    return {**({"level": named["level"]} if named.get("level") is not None else {}),
+            **({"counted": named["counted"]} if named.get("counted") else {}),
+            **({"measures": named["measures"]} if named.get("measures") else {})}
 
 
 def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
@@ -321,6 +353,8 @@ def _part(run: Run, adapted: dict[str, Any], seconds: float) -> dict[str, Any]:
             # how the level's end was told: what a model said, on which kind of screen, whether that was no result
             # screen (`inferred`), and what the family still counted of the goals (`agent.Agent._ended`)
             **({"end": adapted["end"]} if adapted.get("end") else {}),
+            # the level counted on by the number the game showed rather than by a result screen (`agent.COUNTED`)
+            **({"counted_on": adapted["counted"]} if adapted.get("counted") else {}),
             **{name: kit[name] for name in ("goals_seen", "ways", "picks") if kit.get(name)},
             **({"resumes": adapted["resumes"][-RESUMES_TOLD:]} if adapted.get("resumes") else {}),
             **({"let_go": adapted["let_go"][-RESUMES_TOLD:]} if adapted.get("let_go") else {}),
@@ -343,11 +377,28 @@ def _beside(move: dict[str, Any]) -> bool:
                                                   and move.get("scene") not in (None, scenes.BOARD))
 
 
+def shown(measure: dict[str, Any]) -> str:
+    """One value read off a screen in a few words: `steps 46`, `health 32/70`."""
+    value = f"{measure['value']:g}" + (f"/{measure['most']:g}" if measure.get("most") is not None else "")
+    return f"{measure['name']} {value}"
+
+
+def measured_text(measured: dict[str, Any] | None) -> str:
+    """What the last screen showed of how play went, in a few words (empty when nothing): the number counted and
+    the values with which way is better."""
+    if not measured:
+        return ""
+    said = [f"{measured.get('counted') or 'level'} {measured['level']}"] if measured.get("level") is not None else []
+    said += [shown(measure) + {"higher": " (more is better)", "lower": " (fewer is better)"}.get(measure.get("better"), "")
+             for measure in measured.get("measures") or ()]
+    return ", ".join(said)
+
+
 def told(handback: dict[str, Any]) -> str:
     """The handback in a few words for a person: why it stopped, what was done and spent, where it stands."""
     spent, levels, stopped = handback["spent"], handback["levels"], handback["stopped_at"]
     done = "" if not levels else (
-        f"levels won {levels['won']} up to level {levels['until']} (through "
+        f"levels won {levels['won']} up to {levels.get('counted') or 'level'} {levels['until']} (through "
         f"{levels['through'] if levels.get('through') is not None else '?'}), lost {levels['lost']}; "
         if levels.get("until") is not None else f"levels won {levels['won']} of {levels['wanted']}, lost {levels['lost']}; ")
     used = ", ".join(f"{name} {count}" for name, count in sorted(spent["used"].items())) or "nothing beside the board"
@@ -361,6 +412,8 @@ def told(handback: dict[str, Any]) -> str:
             f"{name} {count:g}" for name, count in handback["unmoved"].items()) + ")"
     names = "; ".join(f"a name or profile window came up and was passed as {made['made']!r}"
                       for made in handback.get("profiles") or ())
+    if handback.get("measured"):
+        waits += "; the screen shows " + measured_text(handback["measured"])
     return (f"{handback['outcome']} ({handback['reason']}): {done}{spent['inputs']} inputs, {spent['moves']} moves, "
             f"used {used}; stopped at {stopped['where']}" + (f" ({stopped['screen']})" if stopped.get("screen") else "")
             + (f": {stopped['situation']}" if stopped["situation"] else "") + waits + (f"; {names}" if names else ""))

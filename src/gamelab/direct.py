@@ -544,8 +544,8 @@ class Direct:
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
                   been_here: dict[str, Any] | None = None, anew: bool = False,
-                  errand: str | None = None, began: bytes | None = None, outline: Any = None
-                  ) -> dict[str, Any] | None:
+                  errand: str | None = None, began: bytes | None = None, outline: Any = None,
+                  counting: int | None = None) -> dict[str, Any] | None:
         """The model's answer for the screen as it is: `{"action", "expect", "uses", "scene", "guided"}` with the
         action in the screen's pixels, or None when it gave none the surface can be given or one that uses what
         `goal` does not allow. `moving`: where something kept moving over the screen, left out of the picture.
@@ -557,7 +557,10 @@ class Direct:
         and it ends when it is done. `began`: the screen as the work found it, shown beside this one for the
         model to tell what the work itself did from what stood there before (an errand's end has no other check).
         `outline`: what the page under the picture says stands in view (`Surface.outline`), when it can be read:
-        given as text (`lines`) with the picture shown smaller, until the model asks for it whole (`LOOK`)."""
+        given as text (`lines`) with the picture shown smaller, until the model asks for it whole (`LOOK`).
+        `counting`: the work counts levels up to one by the number the game shows, and this part began where it
+        showed this one (`work`, `until_level`): the model is asked for the number the screen shows (`progress`),
+        given back with the answer (PLAN §36, E5)."""
         read = lines(outline) is not None
         # the board's cells as the code reads them, where the model described a grid and it stands on this screen
         known = len(self.lattice.kinds) if self.lattice is not None else 0
@@ -587,6 +590,8 @@ class Direct:
                  "keys": sorted(KEYS), "accept_consent": self.accept_consent, "meta_actions": META_ACTIONS,
                  "scenes": scenes.KINDS,
                  **({"onward": True} if onward else {}),
+                 **({"counting": {"at": counting, "what": "the number the game counts its progress by: a level, "
+                                  "stage, floor or day"}} if counting is not None else {}),
                  **({"anew": True} if anew else {}),
                  **({"errand": errand} if errand else {}),
                  **({"began": "second image"} if began else {}),
@@ -600,7 +605,8 @@ class Direct:
                                               "data": base64.b64encode(recovery.view(began)[0]).decode("ascii")}}] if began else []
         flags = set(offered) | {name for name, on in (
             ("onward", onward), ("levels", goal.get("objective") == "levels"), ("anew", anew), ("errand", errand),
-            ("elements", read), ("cells", rows is not None), ("grid", gridded), ("board_read", plain)) if on}
+            ("elements", read), ("cells", rows is not None), ("grid", gridded), ("board_read", plain),
+            ("counting", counting is not None)) if on}
         self.questions += 1
         result = await self.model.complete(TurnRequest(
             system_stable=prompt(flags), name="play_direct", max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
@@ -658,7 +664,9 @@ class Direct:
         because = answer["action"].get("because") if action["kind"] == STOP else None
         made = recovery.profile(answer["action"]) if action["kind"] in (TAP, TEXT, KEY, SEQUENCE) else None
         chosen = _choice(answer.get("choice")) if action["kind"] in NEEDS or action["kind"] == STOP else None
-        return {**({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
+        progress = answer.get("progress")
+        return {**({"progress": progress} if type(progress) is int and progress >= 1 else {}),
+                **({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {}),
                 **({"profile": made} if made is not None else {})}

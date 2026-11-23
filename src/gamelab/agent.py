@@ -183,6 +183,9 @@ NOT_YET = "not_yet"
 # why the work is handed back where a story asks for a choice that cannot be taken back and the person did not say
 # how such choices are to be made (PLAN §27, session T)
 CHOICE = "choice"
+# why a level of levels counted up to one ended without a result screen: the model read a number past the one the
+# part began at (a floor, a day; `Agent.counting`)
+COUNTED = "counted_on"
 # how long a story's line that changed nothing is waited on before the screen is looked at once more
 LINE_WAIT_S = 1.0
 # when the person asked for the errand's time to be waited out with the game open: how often in one game, how
@@ -299,7 +302,8 @@ class Agent:
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                  notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-                 task: str | None = None, wait: bool = False, way: str | None = None) -> None:
+                 task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None
+                 ) -> None:
         # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
         # (`adaptation.keyed`)
         self.game_name = game
@@ -320,6 +324,10 @@ class Agent:
         self.stretch: dict[str, Any] = {}
         # more levels follow this one (`work`): a level shown ended before any move here is passed for the next
         self.onward = onward
+        # levels up to one counted by the number the game shows, and the one it showed when this part began (`work`):
+        # a model playing by its own inputs is asked for that number, and the part ends once it reads a greater one
+        # (a floor or a day passed, which no result screen ends; PLAN §36, E5)
+        self.counting = counting
         # the person asked for a game from its start, not one to go on with (`Scope.NEW_GAME`, `work`): a game the
         # first screen shows already ended, or already at the goal, was played before the work and is not its own
         # (2026-11-19, session Q: a finished Mines game and a 2048 game holding 1024 were each handed back as the
@@ -2796,7 +2804,8 @@ class Agent:
                                                        onward=between, been_here=been,
                                                        anew=self._before_own() and not self._errand(),
                                                        errand=self.errand if self._errand() else None,
-                                                       began=found if self._errand() and found is not before else None))
+                                                       began=found if self._errand() and found is not before else None,
+                                                       counting=self.counting))
             except Exception as error:
                 log.info("the model could not be asked for a move: %s", error)
                 self.failures.append({"reason": "model_failed", "detail": f"{type(error).__name__}: {error}"[:500]})
@@ -2809,6 +2818,10 @@ class Agent:
                 continue
             silent = 0
             action, scene = answer["action"], answer["scene"]
+            if self.counting is not None and answer.get("progress", 0) > self.counting:
+                # the game shows a number past the one this part began at: the work counts it (`work`)
+                self.found["counted"] = {"from": self.counting, "to": answer["progress"]}
+                raise _End(Outcome.GOAL_REACHED, COUNTED, player.situation)
             if action["kind"] == direct.LOOK:
                 # nothing is sent: the model is shown the same screen at full size (`direct.Direct.sharp`)
                 self.found["looked_whole_at"] = self.used
@@ -3419,8 +3432,8 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-               task: str | None = None, wait: bool = False, way: str | None = None, **ignored: Any
-               ) -> tuple[Run, dict[str, Any]]:
+               task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
+               **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
@@ -3428,4 +3441,4 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
                        direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
-                       task=task, wait=wait, way=way).run()
+                       task=task, wait=wait, way=way, counting=counting).run()
