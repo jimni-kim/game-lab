@@ -248,3 +248,26 @@ async def test_a_game_of_a_family_costs_the_one_question_outside(tmp_path, looke
     assert model.outside == 1 and fake.helped == 0 and model.recovered
     assert all("look_first" not in asked and "look_first" not in asked["prompt"] for asked in model.recovered)
     assert all("research" in asked for asked in model.identified)
+
+
+async def test_a_notice_passed_before_the_game_is_no_question_of_looking(tmp_path, looked_up):
+    fake = Lamps()
+    fake.screen = "notice"
+    model = MenuFirst(fake)
+    real = Lamps.tap
+
+    async def tap(self, x, y, duration_ms):
+        if self.screen == "notice":
+            self.screen = "menu"
+        else:
+            await real(self, x, y, duration_ms)
+
+    Lamps.tap = tap
+    try:
+        played, made = await work.play(fake, model, None, goal=GoalSpec("actions", 2), budget=Budget(30, 1, 120),
+                                       store=Store(tmp_path), research=True)
+    finally:
+        Lamps.tap = real
+    # the notice's question (no help offered on it, nothing found) is not counted as looking; the menu's two are
+    assert fake.helped == 1 and made["research"]["looked"]["questions"] == 2
+    assert made["research"]["aside_tokens"] == OUTSIDE_TOKENS + 2 * PLAY_TOKENS

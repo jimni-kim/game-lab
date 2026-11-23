@@ -335,7 +335,6 @@ class Recovery:
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                               "data": base64.b64encode(png).decode("ascii")}}
         self.questions += 1
-        result = None
         try:
             async with asyncio.timeout(timeout):
                 result = await self.model.complete(TurnRequest(
@@ -345,12 +344,15 @@ class Recovery:
         except Exception as error:
             entry["situation"] = f"no answer: {type(error).__name__}"
             return None
-        finally:
-            if looking:
-                self.looked["questions"] += 1
-                self.looked["tokens"] += result.usage.input_tokens if result is not None else 0
         if not isinstance(answer, dict):
             return None
+        if looking and (research.parts(answer.get("found")) or answer.get("research_done") is True
+                        or isinstance(answer.get("action"), dict) and answer["action"].get("research") is True):
+            # only a question the model used for looking is one of looking: one that got past a consent or a notice
+            # would have been asked all the same (2026-11-23: five such were counted so on Sudoku.com, and spent
+            # looking's questions with no help opened)
+            self.looked["questions"] += 1
+            self.looked["tokens"] += result.usage.input_tokens
         marked = looking and research.looked_at(answer, self.found, self.looked, scenes.kind(answer.get("scene")) == scenes.BOARD)
         if isinstance(answer.get("situation"), str):
             entry["situation"] = answer["situation"][:300]
