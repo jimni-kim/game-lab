@@ -8,6 +8,7 @@
 
 ARMY 게임 플러그인(`codex/game-adaptive-perception` `92ccefe5f`)에서 분리했다.
 
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: 요청에서 종료까지의 구조도, 경로 선택 순서, 한 수 루프, 모듈별 역할과 지원 범위(2026-11-23)
 - **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z·Z2, 2026-11-21. R1·P2·D2를 합친 뒤 고침, 2026-11-23)
 - [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§35)
 - [docs/PLAN-archive.md](docs/PLAN-archive.md): 분리 계획과 그 전의 기록(§1~§23)
@@ -51,7 +52,7 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 └─ serve.py, serve.html     데모 페이지: 게임 화면과 대화창 (POST /say, 루프의 진행 알림 agent.progress)
 ```
 
-경로마다 하는 일과 파일은 [STATUS.md §1](docs/STATUS.md)의 표에 있다.
+경로마다 하는 일과 파일은 [STATUS.md §1](docs/STATUS.md)의 표에, 요청에서 종료까지의 흐름과 모듈별 지원 범위는 [ARCHITECTURE.md](docs/ARCHITECTURE.md)에 있다.
 
 안전 장치(승인, 입력 직전 픽셀 재검사, 영수증)는 없다. 화면은 믿고 입력을 보내며, 결과만 규칙 모델로 확인한다. 광고·결제·로그인·외부 링크, 게임의 힌트·자동 버튼, 진행 중인 판을 버리는 새 게임은 누르지 않는다.
 
@@ -91,7 +92,7 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 .venv/bin/python -m gamelab.eval web --ask "adarkroom.doublespeakgames.com 게임에서 나무 모으기를 한 번 해줘" --identify --compute 200 --out out/web/errand
 ```
 
-Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 잡혀 있으면 기다리지 않고 거절한다. 웹은 실행마다 브라우저가 따로라 잠그지 않는다.
+Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마다. 체크아웃마다가 아니라 사용자의 것이라 작업 트리의 세션과 데모가 서로를 본다. `GAMELAB_LOCKS`로 바꿈). 잡혀 있으면 기다리지 않고 거절한다. 웹은 실행마다 브라우저가 따로라 잠그지 않는다.
 앱 이름은 APK의 `application-label`을 한 번 읽어 `out/apps/`에 둔다. 잘못 읽히거나 판마다 데이터를 지워야 하는 앱(`pm clear`)은
 `src/gamelab/eval/apps.json`에 손으로 적는다(`{"PKG": {"label": "부르는 이름", "clear": true}}`).
 
@@ -116,8 +117,15 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 대화창에 말한다. 판이 도는 중이나 끝난 뒤에 "어디까지 했어?", "왜 멈췄어?"를 물으면 마지막 화면과 코드가 센 진행으로
 모델이 답한다(판은 멈추지 않는다). 도는 중의 새 게임 요청은 시작하지 않고, "멈춰"는 중지와 같다. 대화는 판 사이에도 남고
 (200줄, 서버를 다시 켜면 비어 있음) 늦게 들어온 사람도 받는다. 수와 화면 수는 접히는 "활동"에 있다.
-주소가 있으면 웹(Chromium), 없으면 설치된 앱 가운데서 고른다. 에뮬레이터가 꺼져 있으면 `game-lab`을 켜고(여러 대가 켜져 있으면 `--serial`로 정한다)(스냅샷·GPU 옵션은 그대로),
-서버가 켠 것이면 서버를 내릴 때 끈다.
+주소가 있으면 웹(Chromium), 없으면 설치된 앱 가운데서 고른다.
+
+데모의 기기는 AVD `game-lab`의 에뮬레이터다(`--avd`). 세션의 실측도 같은 기기에서 한다: 게임과 진행 기록이 거기에 있다. 한쪽이 판을 돌리는 동안 다른 쪽은 기기 잠금으로 거절되고, 데모는 그동안 쉬는 화면도 찍지 않는다. 번호(`emulator-5554` 등)는
+켜진 순서로 정해지므로, 붙어 있는 에뮬레이터마다 `adb -s 번호 emu avd name`으로 AVD 이름을 읽어 고른다. 다른 AVD와
+실기기는 쓰지 않고, 그것들이 켜져 있어도 `game-lab`이 없으면 켠다. `--serial`은 번호로 정할 때만 쓴다(그 번호만 씀).
+판이 돌지 않을 때 보는 사람이 있으면 1초마다 기기를 보아, 켜져 있으면 그 화면을 보이고 꺼져 있으면 "에뮬레이터 켜기"
+버튼을 보인다(`POST /emulator`). 꺼진 채로 앱 요청이 오면 서버가 켠다. 켤 때 스냅샷·GPU 옵션은 그대로이고, 서버가 켠
+것이면 서버를 내릴 때 끈다. 설치된 앱 가운데 `eval/apps.json`에서 `"hide": true`인 앱(`ai.agentic.army`)은 요청을 읽는
+모델에게 주는 앱 목록에서 빠진다.
 
 ```sh
 .venv/bin/python -m gamelab.eval serve --compute 200
@@ -132,7 +140,7 @@ Android 기기 하나는 한 실행만 움직인다(`out/.lock`, 기기마다). 
 - 접근 토큰은 켤 때마다 새로 만든다. 고정 주소로 열 때는 `--token` 또는 `.env`의 `GAMELAB_DEMO_TOKEN`으로 정한다
   (24자 이상, `A-Z a-z 0-9 _ -`만. 예: `python -c 'import secrets; print(secrets.token_urlsafe(32))'`).
 - 끝점: `GET /`, `GET /ws`(이벤트와 화면), `POST /say`(대화창: 게임 요청·질문·중지로 가름), `POST /ask`(게임 요청만,
-  모델로 가르지 않음), `POST /stop`(중지 버튼). 모두 토큰 쿠키가 필요하고, `/ws`와 `POST`는 Origin을 검사한다.
+  모델로 가르지 않음), `POST /stop`(중지 버튼), `POST /emulator`(켜기 버튼: 켜기 시작하면 202, 이미 켜져 있거나 켜는 중이면 아무것도 하지 않고 200, `--web-only`면 409). 모두 토큰 쿠키가 필요하고, `/ws`와 `POST`는 Origin을 검사한다.
 - 결과는 `out/serve/`에 `eval web`·`eval android`와 같은 형식으로 남는다(`web-날짜-시각-01.json`, `app-날짜-시각-01.json`).
 - 요청의 주소는 공개 IP로만 풀릴 때 열고, 그 페이지가 여는 연결(리다이렉트, 하위 프레임, WebSocket)은 모두 서버 안의
   프록시가 연결마다 이름을 다시 풀어 확인한다.
@@ -148,6 +156,6 @@ cloudflared tunnel --url http://127.0.0.1:8765    # 빠른 터널: 출력에 try
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 738개, 약 14분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 754개, 약 15분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```

@@ -14,8 +14,12 @@ time, the inputs, the game's progress as the loop tells it (`agent.progress`) an
 the loop or capturing the screen for it. The chat is kept across games (`CHAT_KEPT` lines) and sent to whoever
 comes in; what the loop did (the inputs, the looks) is a log under it. A request is read by one model
 question (`request.understand`): one that gives a page is played in Chromium, one that means an installed
-app on the Android device, which is started first when none is attached (`emulator`). The game is the one
-`eval web` and `eval android` play (`play_one`), with its files written under `--out` as theirs are.
+app on the Android device, the emulator running the AVD `--avd` (`game-lab`), found by its name and started
+first when it is not running (`emulator`). The game is the one `eval web` and `eval android` play (`play_one`),
+with its files written under `--out` as theirs are.
+
+While no game is played and someone watches, the device is looked at once a second: its screen is shown when it
+is on, and the page offers to start it when it is off (`POST /emulator`); a request for an app starts it too.
 
 One game at a time: a request while one is played is refused, never queued, and so is one past the day's
 `--games-a-day`; what is typed past the day's `--chats-a-day` is not answered. Each game has a budget of inputs, seconds and model tokens. Stopping ends the game at its
@@ -61,6 +65,9 @@ WORDS_MOST = 2000
 # captured once a second more only while nothing else has captured it for IDLE_S (a model being asked)
 WEB_WIDTH, ANDROID_WIDTH, JPEG_QUALITY = 1280, 540, 70
 IDLE_S, IDLE_EVERY_S = 2.0, 1.0
+# the demo's device: the AVD `game-lab`, the one a session measures on too (the games and their progress are there,
+# PLAN §35; the device's lock keeps the two apart), looked at this often while no game is played and someone watches
+DEMO_AVD, DEVICE_EVERY_S = AVD, 1.0
 # a game told to stop ends at its next input; one that has not ended this long after is cut short
 STOP_GRACE_S = 30.0
 # what of an input is shown in the log
@@ -289,6 +296,15 @@ class Demo:
         self.recent: deque[dict[str, Any]] = deque(maxlen=RECENT_TOLD)
         self.inputs = 0
         self.answering = asyncio.Lock()
+        # the device as last looked at (`on`, `starting`, `off`; `none` for pages only), the work that looks at it
+        # while no game is played, the one starting it from the button, and the last screen shown (what a question
+        # is answered from, kept when the live screen is cleared for a device that is off)
+        self.device_state = "none" if args.web_only else "off"
+        self.watcher: asyncio.Task | None = None
+        self.powering: asyncio.Task | None = None
+        self.idle_pictures: Pictures | None = None
+        self.idle_surface: tuple[str, Any] | None = None
+        self.last: bytes | None = None
 
     # ── what everyone watching is sent ─────────────────────────────────
 
@@ -312,7 +328,7 @@ class Demo:
             viewer.wake.set()
 
     def show(self, frame: bytes) -> None:
-        self.frame = frame
+        self.frame = self.last = frame
         for viewer in self.viewers:
             viewer.frame = frame
             viewer.wake.set()
@@ -333,7 +349,7 @@ class Demo:
     def status(self) -> dict[str, Any]:
         return {"kind": "status", "state": "playing" if self.playing else "idle",
                 "left_today": max(0, self.args.games_a_day - self._played_today()),
-                "left_chats": max(0, self.args.chats_a_day - self._chatted_today())}
+                "left_chats": max(0, self.args.chats_a_day - self._chatted_today()), "device": self.device_state}
 
     @property
     def playing(self) -> bool:
@@ -393,7 +409,7 @@ class Demo:
         async with self.answering:
             context = self.context(words)
             try:
-                text, usage = await talk.reply(self.chat, context, self.frame)
+                text, usage = await talk.reply(self.chat, context, self.last)
             except Exception as error:
                 self.say_back(talk.said("no_answer", ko), "question", detail=f"{type(error).__name__}"[:200])
                 return
@@ -548,7 +564,7 @@ class Demo:
             label = None
             if asked["url"] is None:
                 # no page: an app on the device, which is asked about again with the apps installed there
-                serial = await self.emulator.ensure(lambda: self.tell({"kind": "opening", "where": "emulator"}))
+                serial = await self.switched_on(lambda: self.tell({"kind": "opening", "where": "emulator"}))
                 surface = self.device(serial)
                 installed = await self.apps(surface)
                 asked = await request.understand(self.model, words, installed)
@@ -621,8 +637,99 @@ class Demo:
             finally:
                 idle.cancel()
 
+    # ── the device while no game is played ────────────────────────────
+
+    def device_is(self, state: str) -> None:
+        """The device's state as last looked at, told to everyone watching when it changed (and not kept among the
+        game's events: whoever comes in is sent the status as it stands)."""
+        if state != self.device_state:
+            self.device_state = state
+            event = {**self.status(), "at": round(time.time(), 2)}
+            for viewer in self.viewers:
+                viewer.events.append(event)
+                viewer.wake.set()
+
+    async def switched_on(self, starting: Callable[[], None] | None = None) -> str:
+        """The device's serial once it has booted, started first when it is not running (`starting` told then),
+        its state told as it goes."""
+        def told() -> None:
+            self.device_is("starting")
+            if starting is not None:
+                starting()
+        try:
+            serial = await self.emulator.ensure(told)
+        except Exception:
+            self.device_is("off")
+            raise
+        self.device_is("on")
+        return serial
+
+    def switch_on(self) -> str:
+        """The device started in the background (the page's button); its state, as it stands or `starting`."""
+        if self.device_state in ("on", "starting") or (self.powering is not None and not self.powering.done()):
+            return self.device_state
+        self.device_is("starting")
+        self.powering = asyncio.get_running_loop().create_task(self._power())
+        return "starting"
+
+    async def _power(self) -> None:
+        try:
+            await self.switched_on()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.tell({"kind": "error", "detail": f"emulator: {type(error).__name__}: {error}"[:500]})
+
+    async def look_at_device(self) -> None:
+        """Once: the device's state, and its screen shown when it is on; nothing while a game is played (its own
+        captures are shown) or nobody watches, nor for pages only."""
+        if self.args.web_only or self.playing or not self.viewers:
+            return
+        state, serial = await self.emulator.look()
+        if serial is None:
+            starting = self.powering is not None and not self.powering.done()
+            self.device_is("starting" if starting else state)
+            if self.frame is not None:
+                # the screen of a device that is off is not shown as if it were on
+                self.frame = None
+                for viewer in self.viewers:
+                    viewer.frame = None
+            return
+        self.device_is("on")
+        if measure.held(f"android-{serial}"):
+            # another run moves the device (a session measuring on it): its screen is not captured over that run's
+            # own captures, and the last one shown stays
+            return
+        if self.idle_surface is None or self.idle_surface[0] != serial:
+            self.idle_surface = (serial, self.device(serial))
+        if self.idle_pictures is None:
+            self.idle_pictures = Pictures(ANDROID_WIDTH, self.show)
+        png = await self.idle_surface[1].capture()
+        if not self.playing:
+            self.idle_pictures.offer(png)
+
+    async def watch_device(self, every_s: float | None = None) -> None:
+        """Until cancelled: the device looked at each `every_s` (`look_at_device`), a failure taken as nothing seen."""
+        while True:
+            try:
+                await self.look_at_device()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(DEVICE_EVERY_S if every_s is None else every_s)
+
+    def watch(self) -> None:
+        """The device's watcher started (once, while the server runs), unless the device is not this demo's."""
+        if not self.args.web_only and (self.watcher is None or self.watcher.done()):
+            self.watcher = asyncio.get_running_loop().create_task(self.watch_device())
+
     async def close(self) -> None:
         """The game stopped and waited for, and the emulator shut down if this server started it."""
+        for task in (self.watcher, self.powering):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         if self.playing:
             game = self.game
             self.cancel.set()
@@ -674,11 +781,20 @@ class Demo:
             connection = http.WebSocketResponse(heartbeat=30)
             await connection.prepare(req)
             viewer = Viewer()
+            if not self.args.web_only and not self.playing:
+                # the device as it is now, so the page does not first offer to start one that is on
+                try:
+                    async with asyncio.timeout(5):
+                        self.device_is("starting" if self.powering is not None and not self.powering.done()
+                                       else await self.emulator.state())
+                except (TimeoutError, RuntimeError, OSError):
+                    pass
             # the chat first, then this game's own events
             viewer.events.extend([*self.chat_log, *self.events, self.status()])
             viewer.frame = self.frame
             viewer.wake.set()
             self.viewers.add(viewer)
+            self.watch()
             sending = asyncio.get_running_loop().create_task(viewer.send(connection))
             try:
                 async for _ in connection:
@@ -716,6 +832,20 @@ class Demo:
             return http.json_response({"stopping": True}, status=202) if self.stop() else \
                 http.json_response({"refused": "idle"}, status=409)
 
+        async def emulator(req: Any) -> Any:
+            # the page's button: the device started in the background; one on or starting is left as it is
+            if self.args.web_only:
+                return http.json_response({"refused": "web_only", "device": "none"}, status=409)
+            if not self.playing and self.device_state == "off":
+                try:
+                    async with asyncio.timeout(5):
+                        self.device_is(await self.emulator.state())
+                except (TimeoutError, RuntimeError, OSError):
+                    pass
+            if self.device_state in ("on", "starting") or (self.powering is not None and not self.powering.done()):
+                return http.json_response({"device": self.device_state}, status=200)
+            return http.json_response({"device": self.switch_on()}, status=202)
+
         async def closing(app: Any) -> None:
             await self.close()
 
@@ -727,6 +857,7 @@ class Demo:
         # game asked for in so many words and the stop button need no model question and no chat of the day)
         app.router.add_post("/say", say)
         app.router.add_post("/stop", stop)
+        app.router.add_post("/emulator", emulator)
         app.on_cleanup.append(closing)
         return app
 
@@ -784,10 +915,13 @@ def configure(parser: argparse.ArgumentParser) -> None:
                                         f"{TOKEN_SHORTEST} letters at least")
     parser.add_argument("--accept-consent", action="store_true",
                         help="agree to a site's terms when it offers no refusal (else the game stops there)")
-    parser.add_argument("--serial", help="the device to play apps on when several are attached (adb -s)")
+    parser.add_argument("--serial", help="the device to play apps on, by its serial (adb -s), whatever its AVD; "
+                                         "else the emulator running --avd, found by its name")
     parser.add_argument("--adapter-store", type=Path, default=measure.ROOT / "out" / "serve" / "adapters",
                         help="where generated adapters are kept by site and app and reused")
-    parser.add_argument("--avd", default=AVD, help="the emulator started when no device is attached")
+    parser.add_argument("--avd", default=DEMO_AVD,
+                        help=f"the AVD the demo plays apps on, found by its name and started when it is not running "
+                             f"({DEMO_AVD}, where a session measures too: the device's lock keeps them apart)")
     parser.add_argument("--headed", action="store_true", help="show the browser window too")
     parser.add_argument("--web-only", action="store_true",
                         help="play pages only: a request for an app is refused and the device is never touched")

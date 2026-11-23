@@ -21,6 +21,10 @@
   .screen { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-height: 240px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .screen img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
   .screen p { color: var(--muted); }
+  .screen [hidden] { display: none; }
+  .device { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; text-align: center; }
+  .device p { margin: 0; }
+  .device button { padding: 10px 18px; }
   details { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; }
   summary { cursor: pointer; padding: 8px 12px; color: var(--muted); }
   ol { list-style: none; margin: 0; padding: 0 12px 8px; max-height: 30vh; overflow: auto; }
@@ -57,7 +61,9 @@
 <main>
   <header><h1>게임 에이전트 데모</h1><span id="state">연결 중</span></header>
   <section class="game">
-    <div class="screen"><img id="screen" alt="게임 화면" hidden><p id="empty">아직 화면이 없습니다</p></div>
+    <div class="screen"><img id="screen" alt="게임 화면" hidden><p id="empty">아직 화면이 없습니다</p>
+      <div class="device" id="off" hidden><p>에뮬레이터가 꺼져 있습니다</p><button id="power" type="button">에뮬레이터 켜기</button></div>
+      <p id="starting" hidden>에뮬레이터를 켜는 중입니다(1분쯤 걸립니다)</p></div>
     <details id="activity"><summary>활동 <span id="count"></span></summary><ol id="log"></ol></details>
   </section>
   <section class="chat">
@@ -74,7 +80,7 @@
   const $ = (id) => document.getElementById(id);
   const log = $("log"), talk = $("talk"), state = $("state"), screen = $("screen");
   const hint = $("hint");
-  let shown = null, playing = false, logged = 0, waiting = null;
+  let shown = null, playing = false, logged = 0, waiting = null, device = "none", framed = false;
 
   const clock = (at) => new Date((at || Date.now() / 1000) * 1000).toLocaleTimeString();
   const say = (text, kind, at) => {
@@ -119,8 +125,20 @@
     : e.what;
   let last = null;
 
+  // the screen's place: a game's frames while one is played (a page's are the browser's), else the device as it is
+  const render = () => {
+    const idle = !playing && (device === "off" || device === "starting");
+    screen.hidden = idle || !framed;
+    $("empty").hidden = idle || framed;
+    $("off").hidden = !(idle && device === "off");
+    $("starting").hidden = !(idle && device === "starting");
+  };
+
   const setState = (event) => {
     playing = event.state === "playing";
+    if (event.device) device = event.device;
+    if (!playing && (device === "off" || device === "starting")) framed = false;
+    render();
     state.textContent = playing ? "도는 중" : `대기 · 오늘 ${event.left_today}판 남음`;
     state.className = playing ? "playing" : "";
     $("stop").disabled = !playing;
@@ -160,8 +178,8 @@
     const url = URL.createObjectURL(blob);
     screen.onload = () => { if (shown) URL.revokeObjectURL(shown); shown = url; };
     screen.src = url;
-    screen.hidden = false;
-    $("empty").hidden = true;
+    framed = true;
+    render();
   };
 
   const connect = () => {
@@ -191,6 +209,7 @@
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("ask").requestSubmit(); }
   });
   $("stop").addEventListener("click", () => post("/stop"));
+  $("power").addEventListener("click", () => { $("power").disabled = true; post("/emulator").finally(() => { $("power").disabled = false; }); });
   connect();
 })();
 </script>

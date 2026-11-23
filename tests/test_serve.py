@@ -47,14 +47,33 @@ class Asked:
 
 
 class Running:
-    """The emulator as a fake: a device already booted."""
+    """The emulator as a fake: off until a game or the button asks for it (or `on` from the start), then a device
+    booted at once; `boot` held, when given, until it is set."""
 
-    def __init__(self):
-        self.ensured = self.stopped = 0
+    def __init__(self, on=False, boot=None):
+        self.ensured = self.stopped = self.looked = 0
+        self.on, self.boot, self.booting = on, boot, False
 
     async def ensure(self, starting=None):
         self.ensured += 1
+        if not self.on:
+            self.booting = True
+            if starting is not None:
+                starting()
+            if self.boot is not None:
+                await self.boot.wait()
+            self.booting, self.on = False, True
         return "emulator-5554"
+
+    async def look(self):
+        self.looked += 1
+        return ("on", "emulator-5554") if self.on else ("starting" if self.booting else "off", None)
+
+    async def find(self):
+        return (await self.look())[1]
+
+    async def state(self):
+        return (await self.look())[0]
 
     async def stop(self):
         self.stopped += 1
@@ -122,7 +141,7 @@ def android_demo(tmp_path, answer, device):
 
     async def installed(surface):
         return [{"package": "com.example.game", "label": "Merge Tiles"}]
-    return serve.Demo(options(tmp_path), model, token=TOKEN, emulator=Running(),
+    return serve.Demo(options(tmp_path), model, token=TOKEN, emulator=Running(on=True),
                       device=lambda serial: AndroidSurface(device.adb), apps=installed)
 
 
@@ -465,7 +484,7 @@ def chatting(tmp_path, answer, device, *more, chat=None):
 
     async def installed(surface):
         return [{"package": "com.example.game", "label": "Merge Tiles"}]
-    return serve.Demo(options(tmp_path, *more), model, token=TOKEN, emulator=Running(), chat=chat or Talker(),
+    return serve.Demo(options(tmp_path, *more), model, token=TOKEN, emulator=Running(on=True), chat=chat or Talker(),
                       device=lambda serial: AndroidSurface(device.adb), apps=installed)
 
 
@@ -712,3 +731,238 @@ def test_a_part_that_ended_no_level_is_not_said_as_a_level(tmp_path):
     assert not demo.chat_log and demo.counted()["levels"] == {"won": 0, "lost": 0, "wanted": 2}
     demo.progressed({"what": "part", "number": 2, "outcome": "goal_reached", "reason": "won", "won": 1, "lost": 0, "wanted": 2})
     assert [line["text"] for line in demo.chat_log] == ["레벨 하나를 깼습니다: 1/2개 깸, 0개 짐."]
+
+
+# ── the demo's device while no game is played (PLAN §35: game-lab, the button that starts it) ──
+
+
+def png(colour=(30, 90, 200)):
+    out = BytesIO()
+    Image.new("RGB", (360, 640), colour).save(out, format="PNG")
+    return out.getvalue()
+
+
+class Phone:
+    """The device's surface as a fake: its whole captures counted, the first `failing` of them failing."""
+
+    def __init__(self, failing=0):
+        self.captured, self.failing = 0, failing
+
+    async def capture(self, region=None):
+        self.captured += 1
+        if self.captured <= self.failing:
+            raise ValueError("capture_failed")
+        return png()
+
+
+async def statuses(socket, wanted, limit_s=10):
+    """The device states the live connection tells until `wanted`, and the frames sent on the way."""
+    seen, frames = [], []
+    async with asyncio.timeout(limit_s):
+        async for message in socket:
+            if message.type == WSMsgType.BINARY:
+                frames.append(message.data)
+                continue
+            event = json.loads(message.data)
+            if event["kind"] == "status":
+                seen.append(event["device"])
+                if event["device"] == wanted:
+                    return seen, frames
+    raise AssertionError(seen)
+
+
+@pytest.fixture
+def often(monkeypatch):
+    monkeypatch.setattr(serve, "DEVICE_EVERY_S", 0.02)
+
+
+def test_the_demo_plays_apps_on_game_lab_unless_told_otherwise(tmp_path):
+    assert options(tmp_path).avd == "game-lab" and options(tmp_path).serial is None
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN)
+    assert (demo.emulator.avd, demo.emulator.prefer) == ("game-lab", None)
+    assert serve.Demo(options(tmp_path, "--avd", "army-game"), Recorded(Asked({})), token=TOKEN).emulator.avd == "army-game"
+    assert serve.Demo(options(tmp_path, "--serial", "emulator-5556"), Recorded(Asked({})), token=TOKEN).emulator.prefer == "emulator-5556"
+
+
+async def test_while_no_game_is_played_the_device_that_is_on_is_shown_to_whoever_watches(tmp_path, often):
+    phone = Phone(failing=2)
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Running(on=True), device=lambda serial: phone)
+    client = await started(demo)
+    try:
+        await asyncio.sleep(0.1)
+        # nobody watching: the device is not touched
+        assert phone.captured == 0 and demo.emulator.looked == 0
+        await admitted(client)
+        socket = await client.ws_connect("/ws", headers={"Origin": origin(client)})
+        first = json.loads((await socket.receive(timeout=5)).data)
+        assert first["kind"] == "status" and first["state"] == "idle" and first["device"] == "on"
+        # the captures that failed did not stop it: the screen comes as JPEGs no wider than the device's live screen
+        message = await socket.receive(timeout=5)
+        assert message.type == WSMsgType.BINARY and phone.captured >= 3
+        with Image.open(BytesIO(message.data)) as shown:
+            assert shown.format == "JPEG" and shown.size[0] <= serve.ANDROID_WIDTH
+        await socket.close()
+        await asyncio.sleep(0.1)
+        quiet = phone.captured
+        await asyncio.sleep(0.1)
+        assert phone.captured == quiet
+    finally:
+        await client.close()
+    # the server let down ends the looking
+    assert demo.watcher.done()
+
+
+async def test_a_device_that_is_off_is_shown_as_off_with_no_frame_and_the_button_starts_it(tmp_path, often):
+    phone, boot = Phone(), asyncio.Event()
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Running(boot=boot), device=lambda serial: phone)
+    # a frame shown earlier (a page's) is not shown as the device's
+    demo.show(b"an earlier frame")
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        first = json.loads((await socket.receive(timeout=5)).data)
+        assert first["device"] == "off"
+        await asyncio.sleep(0.1)
+        assert demo.frame is None and phone.captured == 0
+        # another page may not start it
+        assert (await client.post("/emulator", headers={"Origin": "https://evil.example"})).status == 403
+        assert demo.emulator.ensured == 0
+        answer = await client.post("/emulator", headers=mine)
+        assert answer.status == 202 and await answer.json() == {"device": "starting"}
+        again = await client.post("/emulator", headers=mine)
+        assert again.status == 200 and await again.json() == {"device": "starting"}
+        seen, frames = await statuses(socket, "starting")
+        assert not frames and phone.captured == 0
+        boot.set()
+        seen, frames = await statuses(socket, "on")
+        assert demo.emulator.ensured == 1
+        # once it is on, its screen comes
+        message = await socket.receive(timeout=5)
+        while message.type != WSMsgType.BINARY:
+            message = await socket.receive(timeout=5)
+        assert phone.captured >= 1
+        on = await client.post("/emulator", headers=mine)
+        assert on.status == 200 and await on.json() == {"device": "on"} and demo.emulator.ensured == 1
+    finally:
+        await client.close()
+
+
+async def test_a_device_that_does_not_boot_is_told_as_an_error_and_off(tmp_path, often):
+    class Broken(Running):
+        async def ensure(self, starting=None):
+            self.ensured += 1
+            starting()
+            raise RuntimeError("no Android device booted within 180 s")
+
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Broken(), device=lambda serial: Phone())
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/emulator", headers=mine)).status == 202
+        events = []
+        async with asyncio.timeout(10):
+            while not any(event["kind"] == "error" for event in events):
+                message = await socket.receive()
+                if message.type == WSMsgType.TEXT:
+                    events.append(json.loads(message.data))
+        assert [event["device"] for event in events if event["kind"] == "status"][-2:] == ["starting", "off"]
+        assert "booted" in next(event for event in events if event["kind"] == "error")["detail"]
+        assert demo.device_state == "off"
+    finally:
+        await client.close()
+
+
+async def test_a_request_for_an_app_with_the_device_off_starts_it_and_its_state_is_told(tmp_path):
+    held = asyncio.Event()
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({"url": None, "app": None, "game": "2048"}, wait=held)), token=TOKEN,
+                      emulator=Running(), apps=lambda surface: asyncio.sleep(0, []), device=lambda serial: Phone())
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/ask", json={"words": "2048 앱에서 30수"}, headers=mine)).status == 202
+        held.set()
+        events, _ = await until(socket, "refused")
+        devices = [event["device"] for event in events if event["kind"] == "status"]
+        assert devices[0] == "off" and devices[-2:] == ["starting", "on"] and demo.emulator.ensured == 1
+        assert [event["where"] for event in events if event["kind"] == "opening"] == ["emulator"]
+    finally:
+        await client.close()
+
+
+async def test_while_a_game_is_played_the_device_is_not_looked_at_for_the_idle_screen(tmp_path, often):
+    held, phone = asyncio.Event(), Phone()
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({"url": None, "app": None}, wait=held)), token=TOKEN,
+                      emulator=Running(on=True), device=lambda serial: phone, apps=lambda surface: asyncio.sleep(0, []))
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        assert (await client.post("/ask", json={"words": "play something"}, headers=mine)).status == 202
+        await asyncio.sleep(0.05)
+        looked, captured = demo.emulator.looked, phone.captured
+        await asyncio.sleep(0.2)
+        assert demo.playing and (demo.emulator.looked, phone.captured) == (looked, captured)
+        held.set()
+        await until(socket, "refused")
+        await asyncio.sleep(0.2)
+        assert phone.captured > captured
+    finally:
+        await client.close()
+
+
+async def test_while_another_run_holds_the_device_its_screen_is_not_captured_for_the_idle_screen(tmp_path, often):
+    """The demo's device is the one a session measures on (PLAN §35): while that run holds the device's lock, the
+    idle screen takes no capture of its own, and takes them again once the run lets go."""
+    phone, emulator = Phone(), Running(on=True)
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=emulator, device=lambda serial: phone)
+    client = await started(demo)
+    try:
+        await admitted(client)
+        with measure.lock("android-emulator-5554"):
+            socket = await client.ws_connect("/ws", headers={"Origin": origin(client)})
+            first = json.loads((await socket.receive(timeout=5)).data)
+            assert first["kind"] == "status" and first["device"] == "on"
+            await asyncio.sleep(0.15)
+            # the device is looked at (it is on) and not captured
+            assert emulator.looked >= 2 and phone.captured == 0
+        message = await socket.receive(timeout=5)
+        assert message.type == WSMsgType.BINARY and phone.captured >= 1
+        await socket.close()
+    finally:
+        await client.close()
+
+
+def test_the_devices_locks_are_kept_outside_any_one_checkout(tmp_path):
+    """A worktree's run and the main checkout's hold the same lock: it is the person's, not under a checkout's out/."""
+    from pathlib import Path
+    kept = measure.locks_in({})
+    assert kept == Path.home() / ".gamelab" / "lock" and measure.ROOT not in kept.parents
+    assert measure.locks_in({"GAMELAB_LOCKS": str(tmp_path / "locks")}) == tmp_path / "locks"
+    with measure.lock("android-x"):
+        assert measure.held("android-x")
+    assert not measure.held("android-x")
+
+
+async def test_a_demo_for_pages_only_says_it_has_no_device_and_refuses_to_start_one(tmp_path, often):
+    demo = serve.Demo(options(tmp_path, "--web-only"), Recorded(Asked({})), token=TOKEN, emulator=Running(),
+                      device=lambda serial: Phone())
+    client = await started(demo)
+    try:
+        await admitted(client)
+        mine = {"Origin": origin(client)}
+        socket = await client.ws_connect("/ws", headers=mine)
+        first = json.loads((await socket.receive(timeout=5)).data)
+        assert first["device"] == "none"
+        answer = await client.post("/emulator", headers=mine)
+        assert answer.status == 409 and await answer.json() == {"refused": "web_only", "device": "none"}
+        await asyncio.sleep(0.1)
+        assert demo.emulator.looked == demo.emulator.ensured == 0 and demo.watcher is None
+    finally:
+        await client.close()

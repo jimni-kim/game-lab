@@ -130,7 +130,7 @@ async def label(run: Run, package: str, version: str | None, *, read: Callable[[
 async def installed(run: Run, *, read: Callable[[list[str]], Awaitable[bytes]] = aapt, kept: Path | None = None,
                     named: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """The apps a person installed that can be opened from the launcher, each `{"package", "label"}`: the
-    label `apps.json` gives, else the APK's, else the package's own name."""
+    label `apps.json` gives, else the APK's, else the package's own name. One `apps.json` hides is left out."""
     named = chosen() if named is None else named
     listed = _PACKAGE.findall((await run(["shell", "pm", "list", "packages", "-3", "--show-versioncode"])).decode(errors="replace"))
     launchers = (await run(["shell", "cmd", "package", "query-activities", "--brief", "-a", "android.intent.action.MAIN",
@@ -138,7 +138,7 @@ async def installed(run: Run, *, read: Callable[[list[str]], Awaitable[bytes]] =
     opened = {token.split("/")[0] for token in launchers.split() if "/" in token}
     apps = []
     for package, version in sorted(listed):
-        if package in opened:
+        if package in opened and not named.get(package, {}).get("hide"):
             given = named.get(package, {}).get("label")
             apps.append({"package": package, "label": given or await label(run, package, version or None, read=read, kept=kept) or package})
     return apps

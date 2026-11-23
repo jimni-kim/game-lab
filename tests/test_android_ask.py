@@ -81,6 +81,16 @@ async def test_an_apk_that_cannot_be_read_names_its_app_by_its_package_and_a_nam
                     {"package": "name.boyle.chris.sgtpuzzles", "label": "퍼즐 모음"}]
 
 
+async def test_an_app_apps_json_hides_is_not_among_those_a_request_is_read_against(tmp_path):
+    aapt = Aapt()
+    apps = await android.installed(Device(), read=aapt, kept=tmp_path, named={"com.example.game": {"hide": True}})
+    assert apps == [{"package": "name.boyle.chris.sgtpuzzles", "label": "Puzzles"}]
+    # its APK is not even read for a name
+    assert aapt.read == ["name.boyle.chris.sgtpuzzles"]
+    # the app on the demo's device that is not a game is hidden in the file itself
+    assert android.chosen()["ai.agentic.army"] == {"hide": True}
+
+
 async def test_a_requested_apps_game_starts_with_it_stopped_and_started_again_its_data_cleared_only_when_asked():
     assert android.prepared("com.example.game", {}) == [{"force_stop": "com.example.game"}, {"launch": "com.example.game"},
                                                        {"wait_ms": android.LAUNCH_WAIT_MS}]

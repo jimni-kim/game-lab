@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 import fcntl
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -22,8 +23,17 @@ from ..run import Run
 ROOT = Path(__file__).resolve().parents[3]
 # the light model asked about single cells unless a run names another (PLAN §20, X1)
 LIGHT_MODEL = "gpt-6-luna"
-# one file a browser or device, held by the run that moves it (`lock`)
-LOCKS = ROOT / "out" / ".lock"
+
+
+def locks_in(environ: Any) -> Path:
+    """Where the devices' locks are kept, one file a device, held by the run that moves it (`lock`): GAMELAB_LOCKS,
+    else a folder of the person's own. Not a checkout's: a session measuring from another worktree and the demo
+    served from this one play on the same emulator (PLAN §35), and a lock kept under each checkout's own out/ let
+    both move it at once."""
+    return Path(environ.get("GAMELAB_LOCKS") or Path.home() / ".gamelab" / "lock")
+
+
+LOCKS = locks_in(os.environ)
 # a progress line every this many inputs, so a long game can be followed while it runs
 PROGRESS_EVERY = 25
 
@@ -303,3 +313,13 @@ def lock(name: str):
     finally:
         fcntl.flock(handle, fcntl.LOCK_UN)
         handle.close()
+
+
+def held(name: str) -> bool:
+    """Whether a run holds `name` now (this process's own game among them): asked by what only looks at the
+    device and so takes no lock of its own, to keep out of that run's way."""
+    try:
+        with lock(name):
+            return False
+    except Busy:
+        return True

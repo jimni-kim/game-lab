@@ -1,5 +1,8 @@
 {
-  "_comment": "Apps named by hand for requests in words (eval android --ask, eval serve): by package, the name a person calls it (label, in place of the one its APK gives) and whether each game starts from no data (clear: pm clear, which also forgets progress and sign-ins).",
+  "_comment": "Apps named by hand for requests in words (eval android --ask, eval serve): by package, the name a person calls it (label, in place of the one its APK gives) and whether each game starts from no data (clear: pm clear, which also forgets progress and sign-ins). hide: an app installed on the demo's device that is not a game, left out of the apps a request is read against, so nobody who comes in by the link can choose it.",
+  "ai.agentic.army": {
+    "hide": true
+  },
   "com.mocacorp.block": {
     "label": "Block Game"
   },
