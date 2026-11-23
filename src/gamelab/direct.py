@@ -84,7 +84,7 @@ import re
 import time
 from typing import Any
 
-from . import carry, frames, motion, recovery, research, resources, scenes, world
+from . import carry, fight, frames, motion, recovery, research, resources, scenes, world
 from .lattice import Lattice
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
@@ -554,6 +554,8 @@ class Direct:
         # inputs not sent because they used what the person did not allow, by what they would have used (the
         # game's own account when it gives one)
         self.refused: dict[str, int] = refused if refused is not None else {}
+        # the rules of the game's cards and the turn of a fight read and searched by code (PLAN §27 M10, §36 E7)
+        self.fight = fight.Fight(notes.get("card_rules") if isinstance(notes, dict) else None)
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
@@ -688,7 +690,8 @@ class Direct:
         chosen = _choice(answer.get("choice")) if action["kind"] in NEEDS or action["kind"] == STOP else None
         progress = answer.get("progress")
         self.looked["inputs"] += researched
-        return {**({"research": True} if researched else {}), **({"progress": progress} if type(progress) is int and progress >= 1 else {}),
+        return {**({"fight": True} if answer.get("fight_turn") is True and self.scene == scenes.BOARD else {}),
+                **({"research": True} if researched else {}), **({"progress": progress} if type(progress) is int and progress >= 1 else {}),
                 **({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {}),
@@ -791,6 +794,7 @@ class Direct:
             return {}
         return {**{part: text for part, text in self.memory.items() if part != PLAN},
                 **({"known": dict(self.known)} if self.known else {}),
+                **({"card_rules": self.fight.kept()} if self.fight.rules else {}),
                 **({"grid": self.lattice.kept()} if self.lattice is not None and self.lattice.names else {})}
 
     def replayed(self, told: dict[str, Any], scene: str | None, changed: bool) -> None:
@@ -807,4 +811,5 @@ class Direct:
                    if self.lattice is not None else {}),
                 "situation": self.situation, "scene": self.scene,
                 **({"refused": dict(self.refused)} if self.refused else {}),
-                **({"looked": dict(self.looked)} if self.looked["questions"] else {})}
+                **({"looked": dict(self.looked)} if self.looked["questions"] else {}),
+                **({"fight": self.fight.summary()} if self.fight.account["reads"] else {})}

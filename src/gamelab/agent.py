@@ -36,7 +36,7 @@ import logging
 import time
 from typing import Any, Protocol
 
-from . import adaptation, carry, catalog, direct, kits, made, realtime, recovery as recovering, routine, samples, scenes
+from . import adaptation, carry, catalog, direct, fight, kits, made, realtime, recovery as recovering, routine, samples, scenes
 from .adaptation import (EXPLORE_MOVES, HELD_BACK, MAX_GENERATIONS, MAX_RELEARNS, AdaptationFailed, Adaptation, Look, Made,
                          Store, Trace, _agrees, _board, _shape, adopt, explorable, identify, keyed)
 from .adapters.generated import GeneratedAdapter
@@ -451,6 +451,8 @@ class Agent:
         # and whether the reading just made was such a one (`_turn` does not hold it to the move before it)
         # times the game was asked about again from the model's own play (`_play_direct`)
         self.reasked = 0
+        # whether a turn of a card fight the model names is read once and searched by code (PLAN §27 M10, §36 E7)
+        self.searching = True
         # where the last move's time went (`_remember`), and what its result's reading by code took (`_read_code`)
         self.timing: dict[str, Any] | None = None
         self.timing_from = 0.0
@@ -2868,6 +2870,8 @@ class Agent:
             if did == AGAIN:
                 continue
             self._afford()
+            if self.searching and player.fight.on and not player.fight.paused and await self._fight_turn(before, moving, looked):
+                continue
             # what the page under the picture says stands in view, where there is a page (PLAN §27, M2)
             outline = await self._outline()
             try:
@@ -2898,6 +2902,11 @@ class Agent:
                 # nothing is sent: the model is shown the same screen at full size (`direct.Direct.sharp`)
                 self.found["looked_whole_at"] = self.used
                 continue
+            if answer.get("fight") and self.searching and not player.fight.on:
+                # the model says a turn of a card fight stands here: from now on the code plays such turns
+                player.fight.on = True
+                if await self._fight_turn(before, moving, looked):
+                    continue
             if self._errand() and scene in (None, scenes.BOARD):
                 # an errand has no board of its own: the screen it is done on is the game's own ground, whatever
                 # the model called it, and an input on it is a step of the errand, not a move of a level
@@ -2998,6 +3007,9 @@ class Agent:
             # how long the screen may take to come to rest after the last input of this answer, when the model
             # said the input hands the turn over (PLAN §36, E3)
             rest = action.pop("then_wait_ms", None)
+            if rest:
+                # the model handed the turn over: a fight's next turn is read and searched again
+                player.fight.paused = False
             if scene == scenes.BOARD and not answer["guided"] and self.resumable is not None \
                     and self.resumes < RESUMES_MOST and action["kind"] not in (direct.WAIT, direct.RELAUNCH) \
                     and (self.unread_at is None or self.used - self.unread_at >= RESUME_EVERY):
@@ -3175,6 +3187,112 @@ class Agent:
             # moves on
             if scene is None and changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
+
+    async def _fight_turn(self, before: bytes, moving: list[list[int]], looked: float) -> bool:
+        """A turn of a card fight (PLAN §27 M10, §36 E7): read by the model in one question (`fight.Fight.read`),
+        its cards chosen by the search (`fight.search`) and sent, each found again where it is drawn after the
+        ones before (`fight.locate`), then the turn ended and waited out. False when nothing was sent: the screen is
+        no such turn, or the turn is the model's to play (a card with no rule, rules the screen did not bear out).
+        A card whose input changed nothing loses its rule and the rest of the turn is the model's."""
+        player = self.player
+        fighting = player.fight
+        self._afford()
+        given = research.told(self.researched) if self.researched else None
+        history = [{key: value for key, value in entry.items() if key in ("action", "sent_by", "screen_changed", "fight")}
+                   for entry in player.history[-4:]]
+        try:
+            read = await self._asking(fighting.read(self.model, before, known=player.known,
+                                                    memory={key: value for key, value in player.memory.items() if key in ("rules", "run")},
+                                                    research=given, history=history))
+        except Exception as error:
+            log.info("the model could not be asked to read the turn: %s", error)
+            fighting.on = False
+            return False
+        self.found["direct"] = player.summary()
+        if read is None and fighting.on:
+            # no turn yet, though a fight was seen: the other side may still be acting. The screen is waited for
+            # and read once more before the fight is taken for over
+            await self._rested(fight.MISS_WAIT_MS)
+            return True
+        if read is None:
+            return False
+        plan = fighting.plan(read)
+        if plan is None:
+            player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program", "fight": (
+                f"the program read this turn and leaves it to you ({', '.join(fighting.account['fell_back'])}); "
+                "play it, and end the turn with then_wait_ms")})
+            return False
+        fighting.account["turns"] += 1
+        names = [read["hand"][index]["name"] for index, _ in plan["steps"]]
+        now, played, stopped = before, [], None
+        for number, (index, target) in enumerate(plan["steps"]):
+            card = read["hand"][index]
+            at = card["at"] if number == 0 else fight.locate(before, card["box"], now) if "box" in card else None
+            if at is None:
+                stopped = "card_not_found"
+                break
+            if self.used >= self.budget.max_actions:
+                stopped = "budget"
+                break
+            self._check_stops()
+            sent = fight.action(read, at, target)
+            if sent["kind"] == direct.DRAG:
+                sent["hold_ms"] = max(sent["hold_ms"], player.hold_ms)
+            changed = await self._fight_send(sent, now, moving, looked, f"{card['name']} on "
+                                             f"{read['enemies'][target]['name'] if target is not None else 'no one'}")
+            if not changed[0]:
+                fighting.drop(card["name"], "playing it changed nothing")
+                stopped = "no_change"
+                break
+            now = changed[1]
+            played.append(card["name"])
+        fighting.account["cards"] += len(played)
+        ended = stopped is None and not plan["leave"] and self.used < self.budget.max_actions
+        if ended:
+            changed, now = await self._fight_send({"kind": direct.TAP, "at": read["end_turn"]}, now, moving, looked,
+                                                  "end of turn", rest=direct.REST_MS_RANGE[1])
+            ended = changed
+        fighting.account["ended"] += ended
+        fighting.predicted = plan["predicted"] if ended else None
+        if not ended:
+            fighting.paused = True
+        player.history.append({"action": {"kind": direct.SEQUENCE, "inputs": len(played) + ended}, "sent_by": "program",
+                               "fight": {"read": read["situation"], "planned": names, "played": played,
+                                         "ended_turn": ended, **({"stopped": stopped} if stopped else {}),
+                                         **({"left_to_you": "cards the program has no rule for may still be played: "
+                                             "the rest of this turn is yours, end it with then_wait_ms"}
+                                            if plan["leave"] and stopped is None else {}),
+                                         "foreseen": {"own_hp": plan["predicted"]["hp"],
+                                                      "enemies_hp": [max(0, e["hp"]) for e in plan["predicted"]["enemies"]]}},
+                               "screen_changed": bool(played) or ended})
+        self.found["direct"] = player.summary()
+        return bool(played) or ended
+
+    async def _fight_send(self, action: dict[str, Any], before: bytes, moving: list[list[int]], looked: float,
+                          what: str, rest: int | None = None) -> tuple[bool, bytes]:
+        """One input of a searched turn sent and recorded as a move of the level; whether it changed the screen,
+        and the screen after it (waited out until it rests when `rest`)."""
+        if self.watch is not None:
+            await self.watch.sending(self.used + 1, action, None, action, looked)
+        await self._sent(action, before)
+        self.used += 1
+        if self.watch is not None:
+            await self.watch.sent()
+        after = await (self._rested(rest) if rest else self._settled())
+        changed = bool(motion.outside(carry_boxes(before, after), motion.joined(moving + self.seen.moving)))
+        if rest:
+            turns = self.found.setdefault("handed_over", {"times": 0, "seconds": 0.0})
+            turns["times"] += 1
+        self.levels[L0] += 1
+        self.moves.append({"action_id": f"a{self.used}", "kind": action["kind"], "action": action, "level": L0,
+                           "read_after_by": L0, "delivery": "delivered", "effect": "confirmed" if changed else "absent",
+                           "expected": what, "by": "search", "at_s": round(time.monotonic() - self.started, 2),
+                           "scene": scenes.BOARD})
+        self.confirmed += changed
+        if changed:
+            self.level_moves += 1
+            self.trail.clear()
+        return changed, after
 
     async def _sent(self, action: dict[str, Any], before: bytes) -> dict[str, Any] | None:
         """An input of the model's own play carried out (`direct.send`), or the game ended where the surface does
