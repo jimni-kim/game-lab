@@ -104,7 +104,7 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 옛 명령의 `--generate`는 받기만 한다(이제 늘 어댑터를 쓴다). `--profile`, `--unregistered`, `--loop`는 없앴다.
 
 - 사이트 설정과 정답키: `src/gamelab/eval/sites.json`. 옵션 설명은 각 명령의 `--help`.
-- 범위(PLAN §25): `--objective levels --target N`은 레벨 N개를 같은 화면에서 잇고, `--stop`(`lost` 또는 말), `--allow`(`boosters`, `currency`, `continue`, `retry`, 기본은 없음), `--resume`(앱을 다시 띄우지 않고 지금 화면에서)을 받는다. 말로 한 요청은 이것을 말에서 읽는다.
+- 범위(PLAN §25): `--objective levels --target N`은 레벨 N개를 같은 화면에서 잇고, `--objective until_level --target N`은 화면에 보이는 레벨 번호로 세어 레벨 N까지 깬다(시작 전과 레벨을 깰 때마다 모델이 화면의 번호를 읽고, 이미 지났으면 두지 않음). `--stop`(`lost` 또는 말), `--allow`(`boosters`, `currency`, `continue`, `retry`, 기본은 없음), `--resume`(앱을 다시 띄우지 않고 지금 화면에서)을 받는다. 말로 한 요청은 이것을 말에서 읽는다.
 - 그 밖에: `--task NAME`(이름 붙인 작업), `--game NAME`(한 앱의 여러 게임 가운데 하나), `--choices WORDS`(이야기 선택지의 방침), `--way direct|made`(방법끼리 견주기). 말로 한 요청은 앞의 셋도 말에서 읽는다.
 - `--games` 2 이상이면 결과의 `model_tokens`는 실행 전체의 누적이다. 판마다의 숫자는 `work.spent`를 본다.
 - 결과: 판마다 `NAME-NN.json`과 `NAME-NN-final.png`, 실행마다 `summary.json`. 결과의 `work`는 돌려주기(끝난 까닭, 깬 레벨, 쓴 것, 멈춘 곳)이고 `told`는 그 한 줄이다. `out/`은 git에 넣지 않는다.
@@ -118,6 +118,8 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 모델이 답한다(판은 멈추지 않는다). 도는 중의 새 게임 요청은 시작하지 않고, "멈춰"는 중지와 같다. 대화는 판 사이에도 남고
 (200줄, 서버를 다시 켜면 비어 있음) 늦게 들어온 사람도 받는다. 수와 화면 수는 접히는 "활동"에 있다.
 주소가 있으면 웹(Chromium), 없으면 설치된 앱 가운데서 고른다.
+게임 이름이 없어도 앞 판을 이어 하라는 말("10단계까지 깨줘", "3판 더")은 앞 판의 앱·주소로 시작한다(호스트가 앱 목록과 주소를 다시 확인함).
+어디까지 할지를 셀 수 없는 말("다리까지")이나 어느 게임인지 모를 요청은 시작하지 않고 한 번 되묻고(`about: "clarify"`), 다음 답을 원래 요청과 합쳐 다시 묻지 않고 시작한다.
 
 데모의 기기는 AVD `game-lab`의 에뮬레이터다(`--avd`). 세션의 실측도 같은 기기에서 한다: 게임과 진행 기록이 거기에 있다. 한쪽이 판을 돌리는 동안 다른 쪽은 기기 잠금으로 거절되고, 데모는 그동안 쉬는 화면도 찍지 않는다. 번호(`emulator-5554` 등)는
 켜진 순서로 정해지므로, 붙어 있는 에뮬레이터마다 `adb -s 번호 emu avd name`으로 AVD 이름을 읽어 고른다. 다른 AVD와
@@ -163,6 +165,6 @@ cloudflared tunnel --url http://127.0.0.1:8765    # 빠른 터널: 출력에 try
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 761개, 약 15분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 775개, 약 18분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```

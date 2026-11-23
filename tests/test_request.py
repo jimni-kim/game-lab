@@ -21,7 +21,8 @@ async def test_a_request_gives_the_page_the_goal_and_what_it_says_of_the_game():
     asked = await request.understand(model, words)
     assert asked["url"] == "https://ovolve.github.io/2048-AI/" and asked["hint"] == "2048"
     assert (asked["goal"].objective, asked["goal"].target_value) == ("reach_value", 512)
-    assert model.asked[0]["request"] == words and model.asked[0]["objectives"] == ["play_until_end", "reach_value", "actions", "levels"]
+    assert model.asked[0]["request"] == words and model.asked[0]["objectives"] == ["play_until_end", "reach_value", "actions", "levels",
+                                                                                                "until_level"]
     assert set(model.asked[0]["meta_actions"]) == {"boosters", "currency", "continue", "retry"}
     # nothing said of where to start, when to stop or what may be spent: the game started again, nothing allowed
     goal = asked["goal"]
@@ -95,3 +96,64 @@ async def test_an_errand_beside_the_levels_is_taken_by_a_plain_name_and_nothing_
     assert await task("next_level") is None and await task("New Game") is None
     assert await task(3) is None and await task("") is None and await task("보상") is None and await task("x" * 25) is None
     assert await task(None) is None and await task(...) is None
+
+
+async def test_levels_up_to_one_and_a_number_of_levels_are_taken_as_the_model_tells_them_apart():
+    asked = await request.understand(Says({"objective": "until_level", "target_value": 10, "game": "candy"}), "캔디 10단계까지 깨줘")
+    assert (asked["goal"].objective, asked["goal"].target_value) == ("until_level", 10)
+    asked = await request.understand(Says({"objective": "levels", "target_value": 3}), "레벨 3개 깨줘")
+    assert (asked["goal"].objective, asked["goal"].target_value) == ("levels", 3)
+    # up to a level with no number is not taken
+    asked = await request.understand(Says({"objective": "until_level", "target_value": None}), "다리까지 깨줘")
+    assert (asked["goal"].objective, asked["goal"].target_value) == ("play_until_end", None)
+
+
+LAST = {"words": "캔디크러스사가 다리까지 레벨 깨줭", "url": None, "app": "com.king.candycrushsaga", "label": "Candy Crush Saga",
+        "game": None, "within": None, "goal": {"objective": "play_until_end"},
+        "stopped": {"screen": "popup", "situation": "Level 9 start dialog", "level": 9}}
+CANDY = [*APPS, {"package": "com.king.candycrushsaga", "label": "Candy Crush Saga"}]
+
+
+async def test_a_request_that_goes_on_with_the_last_game_takes_its_app_and_name_when_the_host_still_has_them():
+    model = Says({"same": True, "app": None, "objective": "until_level", "target_value": 10, "scope": "current_game"})
+    asked = await request.understand(model, "10단계까지 깨줘", CANDY, last=LAST)
+    assert asked["same"] and asked["app"] == "com.king.candycrushsaga" and asked["hint"] == "Candy Crush Saga"
+    assert (asked["goal"].objective, asked["goal"].target_value, asked["goal"].scope) == ("until_level", 10, "current_game")
+    # the model is shown the last game, where it stopped included
+    shown = model.asked[0]["last"]
+    assert shown["app"] == "com.king.candycrushsaga" and shown["stopped"]["level"] == 9 and shown["request"] == LAST["words"]
+    # its own words about the game and its within are kept over the last game's
+    asked = await request.understand(Says({"same": True, "game": "candy", "within": "fifteen"}), "candy 더 해줘", CANDY,
+                                     last={**LAST, "game": "old", "within": "other"})
+    assert (asked["hint"], asked["within"]) == ("candy", "fifteen")
+    asked = await request.understand(Says({"same": True}), "더 해줘", CANDY, last={**LAST, "game": "old", "within": "other"})
+    assert (asked["hint"], asked["within"]) == ("old", "other")
+    # the last game's app no longer installed is not taken; before the apps are shown neither (the hint is)
+    asked = await request.understand(Says({"same": True}), "10단계까지 깨줘", APPS, last=LAST)
+    assert asked["app"] is None and asked["same"]
+    asked = await request.understand(Says({"same": True}), "10단계까지 깨줘", last=LAST)
+    assert asked["app"] is None and asked["hint"] == "Candy Crush Saga"
+
+
+async def test_the_last_games_address_is_taken_only_when_it_is_the_same_address():
+    last = {**LAST, "app": None, "label": None, "url": "https://mines.example/play", "game": "mines"}
+    asked = await request.understand(Says({"same": True, "url": "https://mines.example/play"}), "한 판 더", last=last)
+    assert asked["url"] == "https://mines.example/play" and asked["hint"] == "mines"
+    # another address the words do not carry is not taken, same or not
+    asked = await request.understand(Says({"same": True, "url": "https://elsewhere.example/"}), "한 판 더", last=last)
+    assert asked["url"] is None
+    # not going on with the last game: its address is one the words do not carry
+    asked = await request.understand(Says({"same": False, "url": "https://mines.example/play"}), "한 판 더", last=last)
+    assert asked["url"] is None and not asked["same"] and asked["hint"] is None
+
+
+async def test_with_no_last_game_nothing_is_the_same_and_a_question_to_ask_back_is_taken_cut_short():
+    asked = await request.understand(Says({"same": True, "app": "com.tpcstld.twozerogame", "objective": "play_until_end"}),
+                                     "10단계까지 깨줘", APPS)
+    assert not asked["same"] and asked["hint"] is None and asked["app"] == "com.tpcstld.twozerogame"
+    model = Says({"objective": "play_until_end", "unclear": "  '다리까지'는 몇 단계까지인가요?  "})
+    asked = await request.understand(model, "캔디크러스사가 다리까지 레벨 깨줭")
+    assert asked["unclear"] == "'다리까지'는 몇 단계까지인가요?" and "last" not in model.asked[0]
+    assert (await request.understand(Says({"unclear": "x" * 500}), "?"))["unclear"] == "x" * request.UNCLEAR_MOST
+    for none in ("", "   ", None, 3, ["?"]):
+        assert (await request.understand(Says({"unclear": none}), "play 2048"))["unclear"] is None

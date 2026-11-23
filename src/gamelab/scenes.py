@@ -89,8 +89,11 @@ class Trail:
 
 
 async def name(model: Model, png: bytes) -> dict[str, Any]:
-    """What kind of screen this is and what it shows, as a model names it: `{"scene", "situation"}` (None and ""
-    when it gave no such answer). Asked where the work is handed back and no model looked at its last screen."""
+    """What kind of screen this is and what it shows, as a model names it: `{"scene", "situation", "level",
+    "level_won"}` (None, "", None and None when it gave no such answer): the number of the level the screen is
+    about (played, about to be opened, just ended) as the game shows it, and whether the screen shows that level
+    just won. Asked where the work is handed back and no model looked at its last screen, and while levels are
+    played up to one (`work`, `until_level`) to count them by the game's own numbers."""
     shown, _ = recovery.view(png)
     prompt = (resources.FRAGMENT / "prompts" / "name_screen.md").read_text(encoding="utf-8")
     image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -103,6 +106,9 @@ async def name(model: Model, png: bytes) -> dict[str, Any]:
     except ValueError:
         answer = None
     if not isinstance(answer, dict):
-        return {"scene": None, "situation": "", "usage": result.usage}
+        return {"scene": None, "situation": "", "level": None, "level_won": None, "usage": result.usage}
     situation = answer["situation"][:300] if isinstance(answer.get("situation"), str) else ""
-    return {"scene": kind(answer.get("scene")), "situation": situation, "usage": result.usage}
+    level, won = answer.get("level"), answer.get("level_won")
+    return {"scene": kind(answer.get("scene")), "situation": situation,
+            "level": level if type(level) is int and level >= 1 else None,
+            "level_won": won if isinstance(won, bool) else None, "usage": result.usage}

@@ -282,11 +282,13 @@ async def main(args: argparse.Namespace) -> int:
         raise SystemExit("a game is played with a model: name one with --vision-model")
     args.asked = None
     if args.ask:
-        # the app is the request's to say, among those installed; what to play for too
+        # the app is the request's to say, among those installed; what to play for too. Nobody is here to be asked
+        # back: a question the request leaves open is only told (`unclear`), and the game is played as read
         args.asked = await request.understand(model, args.ask, await installed(surface.run))
         print(json.dumps({"asked": {"url": args.asked["url"], "app": args.asked["app"],
                                     "goal": measure.goal_and_budget(args)[0].to_json(), "hint": args.asked["hint"],
-                                    "within": args.asked["within"], "task": args.asked["task"]}},
+                                    "within": args.asked["within"], "task": args.asked["task"],
+                                    **({"unclear": args.asked["unclear"]} if args.asked.get("unclear") else {})}},
                          ensure_ascii=False), flush=True)
         if args.asked["url"] is not None:
             raise SystemExit("the request names a page: play it with eval web --ask")

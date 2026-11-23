@@ -48,16 +48,20 @@ def _json(text: str | None) -> dict[str, Any]:
     return said if isinstance(said, dict) else {}
 
 
-async def sort(model: Model, words: str, playing: bool) -> str:
-    """Whether the words ask for a game, a stop or are a question: one question of `model`. When it cannot say,
-    words while a game is played are a question (nothing is started or stopped on a guess), and words with none
-    played are a game asked for, which the request's own reading then takes or refuses (`no_game`)."""
+async def sort(model: Model, words: str, playing: bool, last: dict[str, Any] | None = None,
+               chat: list[dict[str, Any]] | None = None, pending: str | None = None) -> str:
+    """Whether the words ask for a game, a stop or are a question: one question of `model`, told the game played
+    last (`last`, for words that go on with it and name no game), the chat's last lines (`chat`, each `{"who",
+    "text"}`) and the question the agent asked back and is waiting on (`pending`). When it cannot say, words while
+    a game is played are a question (nothing is started or stopped on a guess), and words with none played are a
+    game asked for, which the request's own reading then takes or refuses (`no_game`)."""
     fallback = QUESTION if playing else GAME
+    context = {"words": words, "playing": playing, **({"last": last} if last else {}),
+               **({"chat": chat} if chat else {}), **({"pending": pending} if pending else {})}
     try:
         result = await model.complete(TurnRequest(
             system_stable=_prompt("chat_sort"), max_tokens=SORT_TOKENS, timeout_s=SORT_TIMEOUT_S, name="chat_sort",
-            messages=[Msg("user", [{"type": "text", "text": json.dumps({"words": words, "playing": playing},
-                                                                        ensure_ascii=False)}])]))
+            messages=[Msg("user", [{"type": "text", "text": json.dumps(context, ensure_ascii=False, default=str)}])]))
     except Exception:
         return fallback
     kind = _json(result.text).get("kind")
@@ -91,7 +95,11 @@ def _goal(goal: dict[str, Any], ko: bool) -> str:
                 else f"play until the game's count (a score, a tile, lines cleared) reaches {target}")
     if objective == "actions":
         return f"{target}수를 두겠습니다" if ko else f"make {target} moves"
-    return "게임이 끝날 때까지 두겠습니다" if ko else "play until the game ends"
+    if objective == "until_level":
+        return (f"레벨 {target}까지 깨겠습니다(화면의 레벨 번호로 셉니다)" if ko
+                else f"clear levels up to level {target} (counted by the level number on the screen)")
+    return ("지금 판이 끝날 때까지 두겠습니다(레벨이 있는 게임이면 지금 레벨 하나)" if ko
+            else "play the game on the screen to its end (in a game of levels, the level now on it)")
 
 
 def promise(asked: dict[str, Any], limits: dict[str, Any], ko: bool) -> str:
@@ -110,9 +118,14 @@ def promise(asked: dict[str, Any], limits: dict[str, Any], ko: bool) -> str:
                  + (f"'{task}' 작업을 하겠습니다" + (" (아직 때가 아니면 게임을 연 채 기다렸다가)" if asked.get("wait") else "")
                     if task else _goal(goal, ko)) + "."]
         lines.append("지금 화면에서 이어서 합니다." if goal.get("scope") == "current_game" else "게임을 새로 띄워서 시작합니다.")
-        stops = ["레벨이나 판을 지면" if stop == "lost" else f"'{stop}'" for stop in goal.get("stop_conditions") or ()]
-        if stops:
-            lines.append(", ".join(stops) + " 거기서 멈춥니다.")
+        stops = list(goal.get("stop_conditions") or ())
+        if "lost" in stops:
+            lines.append("레벨이나 판을 지면 거기서 멈춥니다.")
+        worded = [f"'{stop}'" for stop in stops if stop != "lost"]
+        if worded:
+            # a condition in words is the models' to see: none looks at the screen while code plays
+            lines.append(", ".join(worded) + "가 화면에 보이면 멈춥니다. 이런 조건은 모델이 화면을 볼 때만 확인되고, "
+                                             "코드가 두는 동안에는 확인되지 않습니다.")
         allowed = [META[name][0] for name in goal.get("allowed_meta_actions") or () if name in META]
         lines.append(f"허락하신 것: {', '.join(allowed)}." if allowed else "부스터·재화·이어하기·다시 하기는 쓰지 않습니다.")
         lines.append(f"이야기 선택지는 '{goal['choices']}'대로 고릅니다." if goal.get("choices")
@@ -124,9 +137,13 @@ def promise(asked: dict[str, Any], limits: dict[str, Any], ko: bool) -> str:
                     if task else _goal(goal, ko)) + "."]
         lines.append("I go on from the screen as it is now." if goal.get("scope") == "current_game"
                      else "I start the game again first.")
-        stops = ["a level or game is lost" if stop == "lost" else f"'{stop}'" for stop in goal.get("stop_conditions") or ()]
-        if stops:
-            lines.append("I stop short when " + " or ".join(stops) + ".")
+        stops = list(goal.get("stop_conditions") or ())
+        if "lost" in stops:
+            lines.append("I stop short when a level or game is lost.")
+        worded = [f"'{stop}'" for stop in stops if stop != "lost"]
+        if worded:
+            lines.append("I stop when " + " or ".join(worded) + " shows on the screen. Such a condition is checked only "
+                         "when a model looks at the screen, not while code plays.")
         allowed = [META[name][1] for name in goal.get("allowed_meta_actions") or () if name in META]
         lines.append(f"You allowed: {', '.join(allowed)}." if allowed
                      else "I use no boosters, currency, continues or retries.")
@@ -148,6 +165,8 @@ WHY = {
     ("stopped", "choice"): ("이야기 선택지에서 멈췄습니다", "it stopped at a story's choice"),
     ("stopped", None): ("말씀하신 멈춤 조건에서 멈췄습니다", "a condition you gave for stopping was met"),
     ("gave_up", "error"): ("오류로 멈췄습니다", "it stopped on an error"),
+    ("gave_up", "level_unread"): ("화면에서 레벨 번호를 읽지 못해 더 세지 못하고 멈췄습니다",
+                                  "the level number could not be read from the screen, so the levels could not be counted"),
     ("gave_up", None): ("더 할 수 있는 것을 찾지 못해 멈췄습니다", "it found nothing more it could do"),
 }
 
@@ -176,16 +195,20 @@ def handed_back(summary: dict[str, Any], ko: bool) -> str:
     goal = work.get("goal") or {}
     target, objective = goal.get("target_value"), goal.get("objective")
     # how far the goal the request counted got (the levels are said below)
-    reached = None if target is None or objective == "levels" else \
+    counted = objective in ("levels", "until_level")
+    reached = None if target is None or counted else \
         falling.get("lines") if objective == "reach_value" and falling.get("pieces") is not None else \
         falling.get("pieces") if objective == "actions" and falling.get("pieces") is not None else \
         moves if objective == "actions" else None
     if ko:
         lines = [f"끝났습니다: {_why(outcome, reason, ko, work.get('detail') or '')}."]
-        if target is not None and objective != "levels":
+        if target is not None and not counted:
             lines.append(f"목표 {target} 가운데 {reached if reached is not None else '?'}에 닿았습니다."
                          if reached is not None or objective == "reach_value" else "")
-        if levels:
+        if levels and levels.get("until") is not None:
+            lines.append(f"레벨 {levels['until']}까지: {levels['won']}개 깼고 {levels['lost']}개 졌습니다."
+                         + (f" 화면으로 본 마지막 깬 레벨은 {levels['through']}입니다." if levels.get("through") is not None else ""))
+        elif levels:
             lines.append(f"레벨 {levels['wanted']}개 가운데 {levels['won']}개를 깼고 {levels['lost']}개를 졌습니다.")
         if falling.get("pieces") is not None:
             lines.append(("마지막 레벨에서 " if levels else "") + f"조각 {falling['pieces']}개를 놓아 줄 {falling.get('lines', 0)}개를 지웠습니다.")
@@ -206,9 +229,13 @@ def handed_back(summary: dict[str, Any], ko: bool) -> str:
                          "되돌릴 수 없는 선택이라 고르지 않았습니다.")
     else:
         lines = [f"Done: {_why(outcome, reason, ko, work.get('detail') or '')}."]
-        if target is not None and objective != "levels":
+        if target is not None and not counted:
             lines.append(f"Reached {reached if reached is not None else '?'} of the goal's {target}.")
-        if levels:
+        if levels and levels.get("until") is not None:
+            lines.append(f"Up to level {levels['until']}: won {levels['won']}, lost {levels['lost']}."
+                         + (f" The last level the screen showed cleared is {levels['through']}."
+                            if levels.get("through") is not None else ""))
+        elif levels:
             lines.append(f"Levels won {levels['won']} of {levels['wanted']}, lost {levels['lost']}.")
         if falling.get("pieces") is not None:
             lines.append(("In the last level: " if levels else "") + f"{falling['pieces']} pieces placed, {falling.get('lines', 0)} lines cleared.")

@@ -11,7 +11,10 @@ with what will be done, made by code from the goal the host checked (`talk.promi
 handed back (`talk.handed_back`); a question, while a game is played or after, is answered by a model of its own
 (`--vision-model`, asked apart from the game's questions and budget) from the last screen shown, the goal, the
 time, the inputs, the game's progress as the loop tells it (`agent.progress`) and its handback, never stopping
-the loop or capturing the screen for it. The chat is kept across games (`CHAT_KEPT` lines) and sent to whoever
+the loop or capturing the screen for it. Words that go on with the game played last and name no game ("10단계까지
+깨줘") are sorted and read with that game (`previous`, `request.understand`'s `last`); a request that cannot be
+started without a guess ("다리까지") is asked back once (`about: "clarify"`), nothing started, and the answer read
+together with it. The chat is kept across games (`CHAT_KEPT` lines) and sent to whoever
 comes in; what the loop did (the inputs, the looks) is a log under it. A request is read by one model
 question (`request.understand`): one that gives a page is played in Chromium, one that means an installed
 app on the Android device, the emulator running the AVD `--avd` (`game-lab`), found by its name and started
@@ -305,6 +308,13 @@ def touch_from(body: Any) -> dict[str, Any] | None:
     return None
 
 
+def merged(pending: dict[str, str], answer: str) -> str:
+    """A request asked back about and the person's answer, read as one request."""
+    if talk.korean(pending["words"]):
+        return f"{pending['words']}\n(물음: {pending['question']}) 답: {answer}"
+    return f"{pending['words']}\n(asked: {pending['question']}) answer: {answer}"
+
+
 def _brief(event: dict[str, Any]) -> dict[str, Any]:
     """A progress event as it is shown and kept: its words cut short."""
     return {key: value[:SITUATION_MOST] if isinstance(value, str) else value for key, value in event.items()}
@@ -340,6 +350,13 @@ class Demo:
         # read, when it started and ended, its progress, its last inputs and what it handed back
         self.chat_log: deque[dict[str, Any]] = deque(maxlen=CHAT_KEPT)
         self.current: dict[str, Any] | None = None
+        # the game played last as a request may go on with it (`request.understand`'s `last`): kept apart from
+        # `current`, which the next request takes over; and the question asked back about a request, waiting for the
+        # person's answer (`{"words", "question"}`)
+        self.previous: dict[str, Any] | None = None
+        self.pending: dict[str, str] | None = None
+        # what `ask` took over from the game before, given back when the request is asked back instead of played
+        self.before: dict[str, Any] | None = None
         self.progress: list[dict[str, Any]] = []
         self.recent: deque[dict[str, Any]] = deque(maxlen=RECENT_TOLD)
         self.inputs = 0
@@ -452,19 +469,29 @@ class Demo:
             self.say_back(talk.said("no_answer", ko), "question", detail=f"{type(error).__name__}"[:200])
 
     async def _talk(self, words: str, ko: bool) -> None:
-        kind = await talk.sort(self.sorter, words, self.playing) if self.sorter is not None else \
+        kind = await talk.sort(self.sorter, words, self.playing, last=self.previous, chat=self.chat_before(),
+                               pending=(self.pending or {}).get("question")) if self.sorter is not None else \
             talk.QUESTION if self.playing else talk.GAME
         self.tell({"kind": "sorted", "as": kind})
         if kind == talk.STOP:
+            self.pending = None
             self.say_back(talk.said("stopping" if self.stop() else "idle", ko), "stop")
         elif kind == talk.GAME:
             # a game is never started while one is played: the person is told to ask again after it
             if self.playing:
                 self.say_back(talk.said("busy", ko), "refused", reason="busy")
+            elif self.pending is not None:
+                # the answer to the question asked back: the request and the answer read as one, never asked back again
+                self.ask(merged(self.pending, words), said=False, clarified=True)
             else:
                 self.ask(words, said=False)
         else:
             await self.answer(words, ko)
+
+    def chat_before(self) -> list[dict[str, Any]]:
+        """The chat's last lines before the words just typed (the last line kept), oldest first."""
+        return [{"who": "person" if line["kind"] == "said" else "agent", "text": line.get("words") or line.get("text")}
+                for line in list(self.chat_log)[:-1][-CHAT_TOLD:]]
 
     async def answer(self, words: str, ko: bool) -> None:
         """A question answered by the chat's model from the game as it stands, while it is played too: nothing of
@@ -494,9 +521,9 @@ class Demo:
                     "goal": goal.to_json() if hasattr(goal, "to_json") else None,
                     "seconds": round((current.get("ended") or time.monotonic()) - current["started"], 1),
                     "inputs": self.inputs}
-        before = [line for line in self.chat_log][:-1][-CHAT_TOLD:]
         summary = (current or {}).get("summary")
         return {"words": words, "playing": self.playing, "game": game, "known": self.counted(),
+                **({"last": self.previous} if self.previous is not None else {}),
                 "progress": [{key: value for key, value in event.items() if key not in ("kind", "at")}
                              for event in self.progress[-PROGRESS_TOLD:]],
                 "recent": list(self.recent),
@@ -505,8 +532,7 @@ class Demo:
                     **{key: (summary.get("work") or {}).get(key) for key in ("levels", "stopped_at", "out_of_lives", "not_yet")
                        if (summary.get("work") or {}).get(key)},
                     **({"choice": summary["adaptation"]["choice"]} if (summary.get("adaptation") or {}).get("choice") else {})},
-                "chat": [{"who": "person" if line["kind"] == "said" else "agent", "text": line.get("words") or line.get("text")}
-                         for line in before]}
+                "chat": self.chat_before()}
 
     def counted(self) -> dict[str, Any]:
         """What the code counted of the game: the levels, the family it was taken as, a falling game's lines and
@@ -515,7 +541,7 @@ class Demo:
         for event in self.progress:
             what = event.get("what")
             if what == "part" and "won" in event:
-                known["levels"] = {"won": event["won"], "lost": event["lost"], "wanted": event["wanted"]}
+                known["levels"] = {name: event[name] for name in ("won", "lost", "wanted", "until", "through") if name in event}
             elif what == "taken":
                 known["family"] = event.get("family")
             elif what == "let_go":
@@ -556,15 +582,22 @@ class Demo:
         elif what == "part" and "won" in event and event.get("outcome") in ("goal_reached", "game_over"):
             # (a part that ended any other way ended no level: the end says why)
             won = event.get("outcome") == "goal_reached"
-            self.say_back((f"레벨 하나를 {'깼' if won else '졌'}습니다: {event['won']}/{event['wanted']}개 깸, {event['lost']}개 짐."
-                           if ko else f"A level {'won' if won else 'lost'}: {event['won']} of {event['wanted']} won, {event['lost']} lost."),
-                          "progress")
+            # (levels up to one whose number was not read yet: how many are left is not known)
+            wanted, until = event.get("wanted"), event.get("until")
+            if ko:
+                count = f"{event['won']}/{wanted}개 깸" if wanted is not None else f"레벨 {until}까지, 지금까지 {event['won']}개 깸"
+                said = f"레벨 하나를 {'깼' if won else '졌'}습니다: {count}, {event['lost']}개 짐."
+            else:
+                count = f"{event['won']} of {wanted} won" if wanted is not None else f"up to level {until}, {event['won']} won so far"
+                said = f"A level {'won' if won else 'lost'}: {count}, {event['lost']} lost."
+            self.say_back(said, "progress")
 
     # ── a game ────────────────────────────────────────────────────────
 
-    def ask(self, words: str, said: bool = True) -> str | None:
+    def ask(self, words: str, said: bool = True, clarified: bool = False) -> str | None:
         """Start a game for the words; why not, when it is not started (and said so in the chat). `said`: the words
-        are put in the chat too (they came by `/ask`, not typed into it)."""
+        are put in the chat too (they came by `/ask`, not typed into it). `clarified`: the words hold the answer to
+        a question asked back about them, and are not asked back again."""
         ko = talk.korean(words)
         if said:
             self.tell({"kind": "said", "words": words})
@@ -573,13 +606,31 @@ class Demo:
             self.say_back(talk.said(why, ko), "refused", reason=why)
             return why
         self.today += 1
+        # (given back when the request is asked back instead: a question then is still about the game before)
+        self.before = {"current": self.current, "events": self.events, "progress": self.progress,
+                       "inputs": self.inputs, "recent": list(self.recent)}
         self.events = []
         self.current = {"words": words, "ko": ko, "started": time.monotonic()}
         self.progress, self.inputs = [], 0
         self.recent.clear()
         self.cancel = asyncio.Event()
-        self.game = asyncio.get_running_loop().create_task(self.play(words, self.cancel))
+        self.game = asyncio.get_running_loop().create_task(self.play(words, self.cancel, clarified))
         return None
+
+    def clarify(self, asked: dict[str, Any], words: str, clarified: bool) -> bool:
+        """Whether the request is asked back rather than played (`request.understand`'s `unclear`, once a request):
+        the question said in the chat and kept for the answer, the day's game and the game before given back."""
+        if clarified or not asked.get("unclear"):
+            return False
+        self.pending = {"words": words, "question": asked["unclear"]}
+        self.today = max(self.today - 1, 0)
+        before = self.before or {}
+        self.current, self.events = before.get("current"), before.get("events") or []
+        self.progress, self.inputs = before.get("progress") or [], before.get("inputs") or 0
+        self.recent.clear()
+        self.recent.extend(before.get("recent") or ())
+        self.say_back(asked["unclear"], "clarify")
+        return True
 
     def stop(self) -> bool:
         if not self.playing:
@@ -611,13 +662,16 @@ class Demo:
         self.tell({"kind": "refused", "reason": reason, **({"detail": detail} if detail else {})})
         self.say_back(talk.said(reason, (self.current or {}).get("ko", True)), "refused", reason=reason)
 
-    async def play(self, words: str, cancel: asyncio.Event) -> None:
+    async def play(self, words: str, cancel: asyncio.Event, clarified: bool = False) -> None:
         self.tell({"kind": "asked", "words": words})
         self.tell(self.status())
         stamp = time.strftime("%Y%m%d-%H%M%S")
         ko = talk.korean(words)
         try:
-            asked = await request.understand(self.model, words)
+            asked = await request.understand(self.model, words, last=self.previous)
+            if self.clarify(asked, words, clarified):
+                # asked back before anything is started (the emulator neither)
+                return
             surface = serial = None
             if asked["url"] is None and asked["hint"] is None:
                 # words that name no page and say nothing of a game do not start the emulator
@@ -633,14 +687,22 @@ class Demo:
                 serial = await self.switched_on(lambda: self.tell({"kind": "opening", "where": "emulator"}))
                 surface = self.device(serial)
                 installed = await self.apps(surface)
-                asked = await request.understand(self.model, words, installed)
+                asked = await request.understand(self.model, words, installed, last=self.previous)
                 label = next((app.get("label") for app in installed if app["package"] == asked["app"]), None)
+                if self.clarify(asked, words, clarified):
+                    return
+            # the question asked back, if any, is answered or passed by this request
+            self.pending = None
             self.current["asked"] = asked
             self.tell({"kind": "understood", "url": asked["url"], "app": asked["app"], "goal": asked["goal"].to_json(),
-                       "hint": asked["hint"]})
+                       "hint": asked["hint"], **({"same": True} if asked.get("same") else {})})
             if asked["url"] is None and asked["app"] is None:
                 self.refuse("no_game")
                 return
+            # the game a next request may go on with, and where it stopped once it is over
+            previous = {"words": words, "url": asked["url"], "app": asked["app"], "label": label, "game": asked["hint"],
+                        "within": asked.get("within"), "goal": asked["goal"].to_json()}
+            self.previous = previous
             self.say_back(talk.promise({**asked, "app": label or asked["app"]},
                                        {"inputs": self.args.max_actions, "seconds": self.args.max_seconds}, ko), "start")
             if asked["url"] is not None:
@@ -648,6 +710,12 @@ class Demo:
             else:
                 summary = await self.android_game(asked, f"app-{stamp}", serial, surface, cancel)
             self.current["summary"] = summary
+            handback = summary.get("work") or {}
+            stopped = handback.get("stopped_at") or {}
+            previous["stopped"] = {"screen": stopped.get("screen"), "situation": stopped.get("situation"),
+                                   "level": stopped.get("level")}
+            if handback.get("levels"):
+                previous["levels"] = handback["levels"]
             adapted = summary.get("adaptation") or {}
             self.tell({"kind": "result", "outcome": summary["outcome"], "reason": summary["reason"],
                        "actions": summary["actions_used"], "confirmed": summary["confirmed_actions"],
@@ -668,7 +736,8 @@ class Demo:
             self.say_back(talk.said("error", ko, f"{type(error).__name__}"), "end")
         finally:
             self.game = None
-            if self.current is not None:
+            # (a request asked back gave the game before back, which ended already)
+            if self.current is not None and "ended" not in self.current:
                 self.current["ended"] = time.monotonic()
             self.tell(self.status())
 

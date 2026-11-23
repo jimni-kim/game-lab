@@ -220,3 +220,96 @@ def test_a_permission_the_harness_does_not_know_is_no_goal():
     with pytest.raises(ValueError):
         GoalSpec("levels", 3, allowed_meta_actions=frozenset({"buy_gems"}))
     assert GoalSpec("levels", 3).scope == Scope.CURRENT_GAME
+
+
+class Numbered(Passing):
+    """The model, which names a screen with the level number the game shows (`first` for the level open at the
+    start, one more for each level won) and whether that level was just won; none at all when not `shown`."""
+
+    def __init__(self, fake, first, shown=True, **options):
+        super().__init__(fake, **options)
+        self.first, self.shown = first, shown
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if not context.get("name_screen"):
+            return await super().complete(request)
+        just_won = self.fake.covered and self.fake.ended == "won"
+        level = self.first + self.fake.ends.count("won") - just_won
+        self.asked.append(("name", context, level))
+        return TurnResult(text=json.dumps({"scene": "result" if self.fake.covered else "board", "situation": f"level {level}",
+                                           "level": level if self.shown else None,
+                                           "level_won": just_won if self.shown else None}))
+
+
+def named(model):
+    return [level for kind, _, level in model.asked if kind == "name"]
+
+
+async def test_levels_up_to_one_are_counted_by_the_number_the_screen_shows():
+    from gamelab.eval import measure
+
+    class Told(measure.Recorder):
+        def __init__(self):
+            super().__init__("told")
+            self.told = []
+
+        def progress(self, event):
+            self.told.append(event)
+
+    fake, told = Levels([WINNING] * 3), Told()
+    model = Numbered(fake, first=9)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("until_level", 10),
+                                   budget=Budget(200, COMPUTE, 600), watch=told)
+    # level 9 open at the start (8 cleared): levels 9 and 10 played, the screen named before them and after each
+    assert ending(played) == ("goal_reached", "until_level"), (played.record, made["work"])
+    assert fake.ends == ["won", "won"] and named(model) == [9, 9, 10]
+    handback = made["work"]
+    assert handback["levels"] == {"wanted": 2, "won": 2, "lost": 0, "until": 10, "through": 10}
+    # the screen named after the last level is where it stopped: not asked again; every naming is counted
+    assert handback["stopped_at"]["situation"] == "level 10" and handback["stopped_at"]["level"] == 10
+    assert handback["spent"]["questions"] >= 3 and made["questions"] == handback["spent"]["questions"]
+    assert "levels won 2 up to level 10 (through 10)" in work.told(handback)
+    parts = [(event["won"], event["wanted"], event["until"], event["through"]) for event in told.told if event["what"] == "part"]
+    assert parts == [(1, 2, 10, 9), (2, 2, 10, 10)]
+
+
+async def test_levels_up_to_one_the_screen_is_past_already_play_nothing():
+    fake = Levels([WINNING] * 2)
+    model = Numbered(fake, first=12)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("until_level", 10), budget=Budget(200, COMPUTE, 600))
+    assert ending(played) == ("goal_reached", "until_level") and played.record["detail"] == "level 12"
+    assert fake.taps == [] and played.record["actions_used"] == 0 and played.record["parts"] == 0
+    assert played.moves == [] and played.record["family"] is None and played.record["levels"] == {}
+    handback = made["work"]
+    assert handback["parts"] == [] and handback["levels"] == {"wanted": 0, "won": 0, "lost": 0, "until": 10, "through": 11}
+    assert handback["spent"]["inputs"] == 0 and handback["spent"]["questions"] == 1 and named(model) == [12]
+    assert handback["stopped_at"]["situation"] == "level 12" and "(through 11)" in work.told(handback)
+    # what eval web and eval android make of it
+    from gamelab.eval import measure
+
+    result = measure.result("x", played, measure.Recorder("x"), None, seconds=0.1, **measure.handed(made))
+    assert (result["outcome"], result["actions_used"], result["moves"]["recorded"]) == ("goal_reached", 0, 0)
+    assert result["told"].startswith("goal_reached (until_level)")
+
+
+async def test_levels_up_to_one_with_no_number_on_the_screen_stop_after_the_first_won():
+    fake = Levels([WINNING] * 3)
+    model = Numbered(fake, first=9, shown=False)
+    played, made = await work.play(fake, model, "minesweeper", goal=GoalSpec("until_level", 10), budget=Budget(200, COMPUTE, 600))
+    assert ending(played) == ("gave_up", "level_unread") and fake.ends == ["won"]
+    assert made["work"]["levels"] == {"wanted": None, "won": 1, "lost": 0, "until": 10, "through": None}
+    assert "(through ?)" in work.told(made["work"]) and len(named(model)) == 2
+
+
+async def test_a_lost_level_on_the_way_up_to_one_is_not_named(monkeypatch):
+    as_given(monkeypatch)
+    fake = Levels([LOST_EARLY, WINNING, WINNING])
+    model = Numbered(fake, first=9, uses=again)
+    played, made = await work.play(fake, model, "minesweeper",
+                                   goal=GoalSpec("until_level", 10, allowed_meta_actions=frozenset({"retry"})),
+                                   budget=Budget(200, COMPUTE, 600))
+    assert ending(played) == ("goal_reached", "until_level") and fake.ends == ["lost", "won", "won"]
+    # before the first part, and after each level won: none after the loss
+    assert named(model) == [9, 9, 10]
+    assert made["work"]["levels"] == {"wanted": 2, "won": 2, "lost": 1, "until": 10, "through": 10}

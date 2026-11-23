@@ -33,8 +33,9 @@ class Scope(StrEnum):
 
 
 # what the person may ask for: the game on the screen to its end, a score or tile the family reads, a number of
-# confirmed moves, or a number of levels cleared one after another (PLAN §25, R1)
-OBJECTIVES = ("play_until_end", "reach_value", "actions", "levels")
+# confirmed moves, a number of levels cleared one after another (PLAN §25, R1), or levels cleared up to one of them
+# (`until_level`: target_value is the number of the last level to clear, as the game shows it on the screen)
+OBJECTIVES = ("play_until_end", "reach_value", "actions", "levels", "until_level")
 # the things beside the board that cost or use up something of the player's, each done only when the person allowed
 # it by name (PLAN §25, R2). Nothing that costs real money is among them: that is never done
 META_ACTIONS = {
@@ -94,7 +95,8 @@ class NeedObservation:
 @dataclass(frozen=True)
 class GoalSpec:
     # play_until_end: the game on the screen until it ends; reach_value: a score or tile the family can read;
-    # actions: a number of confirmed moves (one move is target_value 1); levels: that many levels cleared
+    # actions: a number of confirmed moves (one move is target_value 1); levels: that many levels cleared;
+    # until_level: levels cleared up to the one the game numbers target_value on its screen
     objective: str
     target_value: int | None = None
     scope: Scope | str = Scope.CURRENT_GAME

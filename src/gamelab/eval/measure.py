@@ -51,7 +51,8 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     """The arguments every screen evaluation takes: what to play for, with what budget and which model."""
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--objective", choices=OBJECTIVES, default="play_until_end",
-                        help="levels: --target levels cleared one after another, with nothing started again between them")
+                        help="levels: --target levels cleared one after another, with nothing started again between them; "
+                             "until_level: levels cleared up to the one the game numbers --target on its screen")
     parser.add_argument("--target", type=int)
     parser.add_argument("--stop", action="append", default=[], metavar="CONDITION",
                         help="stop and hand the work back when this is met (repeatable): 'lost' at a level or game lost, "

@@ -385,10 +385,12 @@ async def main(args: argparse.Namespace) -> int:
         raise SystemExit("a game is played with a model: name one with --vision-model")
     args.asked = None
     if args.ask:
-        # what to play for is the request's to say; the page too, unless --site names it
+        # what to play for is the request's to say; the page too, unless --site names it. Nobody is here to be asked
+        # back: a question the request leaves open is only told (`unclear`), and the game is played as read
         args.asked = await request.understand(model, args.ask)
         print(json.dumps({"asked": {"url": args.asked["url"], "goal": measure.goal_and_budget(args)[0].to_json(),
-                                    "hint": args.asked["hint"]}},
+                                    "hint": args.asked["hint"],
+                                    **({"unclear": args.asked["unclear"]} if args.asked.get("unclear") else {})}},
                          ensure_ascii=False), flush=True)
     args.site, site = site_for(args, args.asked)
     # with --identify nobody says which game the page shows: the harness finds out from the screen
