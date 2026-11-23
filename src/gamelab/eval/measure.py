@@ -76,6 +76,9 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
                              "direct: no family is looked for, the model plays with its own inputs; made: no registered "
                              "family, and a family is made from the model's description even when it says the game is "
                              "not one for written rules. The harness's own choice unless given")
+    parser.add_argument("--no-research", action="store_true",
+                        help="do not look a game no family is known for up before its first move (PLAN §27 M8): no "
+                             "store page, encyclopedia or help screens; for measuring with and without it (E4)")
     parser.add_argument("--policy")
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
@@ -128,6 +131,11 @@ def task_named(args: argparse.Namespace) -> str | None:
 def way_named(args: argparse.Namespace) -> str | None:
     """The one way of playing a measurement holds the harness to (`--way`), else none: its own choice."""
     return getattr(args, "way", None)
+
+
+def researched(args: argparse.Namespace) -> bool:
+    """Whether a game no family is known for is looked up before its first move (`research`)."""
+    return not getattr(args, "no_research", False)
 
 
 def task_waits(args: argparse.Namespace) -> bool:

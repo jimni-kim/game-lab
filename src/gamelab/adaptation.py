@@ -1295,6 +1295,21 @@ class Store:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "memory.json").write_text(json.dumps(memory, ensure_ascii=False) + "\n", encoding="utf-8")
 
+    def research(self, site: str) -> dict[str, Any] | None:
+        """What was found out of this game before it was played (`research`, PLAN §27 M8): from outside it and
+        from its own help screens."""
+        path = self._site(site) / "research.json"
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except ValueError:
+            return None
+        return kept if isinstance(kept, dict) else None
+
+    def save_research(self, site: str, record: dict[str, Any]) -> None:
+        folder = self._site(site)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "research.json").write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
     def unfamiliar(self, site: str) -> dict[str, Any] | None:
         """That a model, shown this game in play, named none of the families for it, with the families there
         were to name then (PLAN §36, E3): while there are no others the game is not asked about again."""

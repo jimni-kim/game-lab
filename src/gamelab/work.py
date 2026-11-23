@@ -123,7 +123,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     parts: list[tuple[Run, dict[str, Any]]] = []
     # each part's own seconds, from its start to its end (between-level screens before its level included)
     lasted: list[float] = []
-    used = confirmed = tokens_in = tokens_out = questions = 0
+    used = confirmed = tokens_in = tokens_out = questions = aside = 0
     won = lost = empty = 0
     ended: tuple[str, str, str] | None = None
     # levels up to one: the last level cleared as the screen numbers it (None: not read yet), the levels this work
@@ -138,7 +138,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     after: dict[int, dict[str, Any]] = {}
 
     def tokens_left() -> bool:
-        return budget.max_input_tokens is None or tokens_in < budget.max_input_tokens
+        return budget.max_input_tokens is None or tokens_in - aside < budget.max_input_tokens
 
     def wanted_now() -> int | None:
         if wanted is not None or not until or through is None:
@@ -166,7 +166,7 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
     again = False
     while ended is None:
         # (the screen named before the first part spent tokens of the budget too)
-        left, spent = _left(budget, used, started, tokens_in) if parts or tokens_in else (budget, None)
+        left, spent = _left(budget, used, started, tokens_in - aside) if parts or tokens_in else (budget, None)
         if spent is not None:
             ended = (str(Outcome.BUDGET_EXHAUSTED), spent, "")
             break
@@ -195,6 +195,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
             spent_here["retry"] = 1
         again = again and not record.get("level_moves")
         used, confirmed = used + record["actions_used"], confirmed + record["confirmed_actions"]
+        # (what looking the game up before play spent is not of the board's budget: PLAN §27 M8)
+        aside += (adapted.get("research") or {}).get("aside_tokens", 0)
         tokens_in, tokens_out = tokens_in + adapted["tokens"]["input"], tokens_out + adapted["tokens"]["output"]
         questions += adapted["questions"]
         notes = (adapted.get("direct") or {}).get("memory") or notes

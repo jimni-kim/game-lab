@@ -47,7 +47,7 @@ from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
 from .model import Model, Msg, TurnRequest, TurnResult
-from . import motion, world
+from . import motion, research, world
 from .rules import DETERMINISTIC
 from .carry import _boxes as carry_boxes
 from .motion import Steady
@@ -302,8 +302,13 @@ class Agent:
                  watch: Watch | None = None, cancel: asyncio.Event | None = None, accept_consent: bool = False,
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                  notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
-                 task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None
-                 ) -> None:
+                 task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
+                 research: bool = False) -> None:
+        # whether a game no family is known for is looked up before its first move (PLAN §27 M8, `research`); what
+        # was found of it, and the tokens the look outside it spent (kept apart from the board's budget)
+        self.researching = research
+        self.researched: dict[str, Any] | None = None
+        self.outside_tokens = 0
         # the one game of several the site or app holds, as the person named it: what is kept is kept by it too
         # (`adaptation.keyed`)
         self.game_name = game
@@ -542,6 +547,7 @@ class Agent:
                 self.found["made"] = self.game.summary()
                 self._keep_made()
             self._keep_looks()
+            self._keep_research()
             if self.errand:
                 self.found["world"] = self.world.summary(time.time())
             record = {"version": RECORD_VERSION, "family": self.family_id, "phase": "ended", "outcome": str(outcome),
@@ -606,6 +612,7 @@ class Agent:
 
     def close(self) -> None:
         self._keep_profile()
+        self._keep_research()
         if self.adapter is not None:
             self.adapter.close()
             self.adapter = None
@@ -1447,9 +1454,48 @@ class Agent:
         return None if self.budget.max_seconds is None else self.budget.max_seconds - (time.monotonic() - self.started)
 
     def _affordable(self, cost: int = 0) -> bool:
-        """Whether a question of about `cost` input tokens still fits the game's budget of them."""
-        return self.budget.max_input_tokens is None or self.model.input + cost <= self.budget.max_input_tokens \
-            and self.model.input < self.budget.max_input_tokens
+        """Whether a question of about `cost` input tokens still fits the game's budget of them (what looking the
+        game up spent is not of it, `aside`)."""
+        spent = self.model.input - self.aside()
+        return self.budget.max_input_tokens is None or spent + cost <= self.budget.max_input_tokens \
+            and spent < self.budget.max_input_tokens
+
+    def aside(self) -> int:
+        """The input tokens spent on looking the game up before play, up to `research.TOKENS_MOST`: not counted
+        against the board's budget (PLAN §27 M8)."""
+        looked = self.player.looked["tokens"] if self.player is not None else 0
+        return min(research.TOKENS_MOST, self.outside_tokens + looked)
+
+    async def _research(self) -> tuple[dict[str, Any], bool]:
+        """What is known of the game from looking it up, looked up outside it now when it never was, and whether
+        the model is still to look at the game's own help before its first move (PLAN §27 M8)."""
+        kept = (self.store.research(self.site) if self.store is not None and self.site and not self.fresh else None) or {}
+        if "outside" not in kept:
+            before = self.model.input
+            try:
+                gathered = await research.gather(await self.surface.address(), self.hint)
+                kept["gathered"] = sorted(gathered)
+                kept["outside"] = await self._asking(research.outside(self.model, await self.surface.address(),
+                                                                      self.hint, gathered))
+            except Exception as error:
+                log.info("the game could not be looked up: %s", error)
+                kept["outside"] = {}
+            self.outside_tokens = self.model.input - before
+        return kept, not kept.get("looked")
+
+    def _keep_research(self) -> None:
+        if self.researched is None or self.player is None:
+            return
+        record = {**self.researched, **{key: value for key, value in self.player.found.items() if key == "inside"}}
+        if self.player.looked["done"]:
+            record["looked"] = self.player.looked["done"]
+        self.found["research"] = {"outside_parts": sorted(record.get("outside") or {}),
+                                  "inside_parts": sorted(record.get("inside") or {}), "sources":
+                                  (record.get("outside") or {}).get("sources", []), "gathered": record.get("gathered", []),
+                                  "outside_tokens": self.outside_tokens, "looked": dict(self.player.looked),
+                                  "aside_tokens": self.aside()}
+        if self.store is not None and self.site:
+            self.store.save_research(self.site, record)
 
     def _afford(self) -> None:
         """Before a model is asked anything: a game whose questions used up their tokens ends there."""
@@ -2752,8 +2798,10 @@ class Agent:
             self.adapter.close()
         self.adapter, self.family_id, self.policy = None, None, "model"
         if self.player is None:
+            found, looking = await self._research() if self.researching else (None, False)
+            self.researched = found
             self.player = direct.Direct(self.model, hint=self.hint, accept_consent=self.accept_consent,
-                                        refused=self.account["refused"], notes=self.notes)
+                                        refused=self.account["refused"], notes=self.notes, found=found, looking=looking)
         player = self.player
         if self.falling.get("note"):
             player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program",
@@ -3043,7 +3091,8 @@ class Agent:
                 # the screen stays one, and a choice is the model's to look at each time (a line kept as a step
                 # was sent again on the choice's screen, which looked like it, 2026-11-21)
                 self.stretch.update(by_code=False, until=0.0)
-            elif not level:
+            elif not level and not answer.get("research"):
+                # (an input that opened or closed the game's own help before play is no step of the way: PLAN §27 M8)
                 self._learn(answer, screens, changed)
             if carried and carried.get("picked") and not changed:
                 self.carrier.doubt()
@@ -3056,7 +3105,8 @@ class Agent:
             if changed or action["kind"] == direct.WAIT:
                 # of a sequence of moves whose last changed nothing, the earlier ones still count
                 last = tail if moves else changed
-                self.confirmed, idle = self.confirmed + (action["kind"] != direct.WAIT and last) + more, 0
+                self.confirmed = self.confirmed + (action["kind"] != direct.WAIT and last and not answer.get("research")) + more
+                idle = 0
                 if level and changed and action["kind"] != direct.WAIT:
                     if self._task() is not None:
                         # the model's own move on a level's board: the stretch that led here got there
@@ -3433,7 +3483,7 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
                task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
-               **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               research: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
@@ -3441,4 +3491,4 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
                        direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
-                       task=task, wait=wait, way=way, counting=counting).run()
+                       task=task, wait=wait, way=way, counting=counting, research=research).run()

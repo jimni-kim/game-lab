@@ -797,9 +797,9 @@ def often(monkeypatch):
 
 
 def test_the_demo_plays_apps_on_game_lab_unless_told_otherwise(tmp_path):
-    assert options(tmp_path).avd == "game-lab" and options(tmp_path).serial is None
+    assert options(tmp_path).avd == "game-lab2" and options(tmp_path).serial is None
     demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN)
-    assert (demo.emulator.avd, demo.emulator.prefer) == ("game-lab", None)
+    assert (demo.emulator.avd, demo.emulator.prefer) == ("game-lab2", None)
     assert serve.Demo(options(tmp_path, "--avd", "army-game"), Recorded(Asked({})), token=TOKEN).emulator.avd == "army-game"
     assert serve.Demo(options(tmp_path, "--serial", "emulator-5556"), Recorded(Asked({})), token=TOKEN).emulator.prefer == "emulator-5556"
 

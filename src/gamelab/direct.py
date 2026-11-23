@@ -67,6 +67,13 @@ the next question on it is given the board's rows as letters, one for each kind 
 (`cells`), names each letter once (`names`), and may aim a press at a cell by its row and column. The picture is
 then shown smaller, as beside a page's text, and while the board stands exactly as it was told (every cell a kind
 named before) the instructions leave out what only other screens need (`board_read`).
+
+A game looked up before it was played (PLAN §27 M8, §36 E6; `research`) has what was found given with every
+question (`research`): from outside the game as not confirmed, from its own help screens as read there. While the
+game was not yet looked at from inside (`looking`), the model is asked to open and read what the game itself tells
+of how it is played before the first move of a level, and to say so (`research_done`) when it did or there is
+none; what it reads there it gives as `found`. The questions asked so and their tokens are counted apart
+(`looked`), for the board's budget not to bear them.
 """
 from __future__ import annotations
 
@@ -77,7 +84,7 @@ import re
 import time
 from typing import Any
 
-from . import carry, frames, motion, recovery, resources, scenes, world
+from . import carry, frames, motion, recovery, research, resources, scenes, world
 from .lattice import Lattice
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
@@ -503,8 +510,14 @@ class Direct:
     """One game played by a model's own inputs."""
 
     def __init__(self, model: Model, *, hint: str | None = None, accept_consent: bool = False,
-                 refused: dict[str, int] | None = None, notes: Any = "") -> None:
+                 refused: dict[str, int] | None = None, notes: Any = "", found: dict[str, Any] | None = None,
+                 looking: bool = False) -> None:
         self.model, self.hint, self.accept_consent = model, hint, accept_consent
+        # what was found out of the game before it was played (`research`), whether the model is still to look at
+        # the game's own help before the first move, and the questions and tokens spent so (`research.QUESTIONS_MOST`)
+        self.found: dict[str, Any] = dict(found or {})
+        self.looking = looking
+        self.looked = {"questions": 0, "tokens": 0, "inputs": 0, "done": None}
         # what the model wants kept from one question to the next (`MEMORY`; a plain text is its plan), and what
         # it last said the screen shows
         self.memory: dict[str, str] = {}
@@ -579,6 +592,8 @@ class Direct:
         gridded = rows is None and not read and can(TAP, kinds)
         refused, self.grid_refused = self.grid_refused, False
         self.texted, self.plain = self.texted + (rows is not None), self.plain + plain
+        looking = self.looking and self.looked["questions"] < research.QUESTIONS_MOST
+        given = research.told(self.found)
         told_moving = [[round(part * scale) for part in box] for box in moving or []]
         asked = {"play": True, "goal": goal, "left": left, "screen": list(size),
                  **({"moving": told_moving} if told_moving else {}),
@@ -597,6 +612,10 @@ class Direct:
                  **({"began": "second image"} if began else {}),
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
                  **({"known": self.known} if self.known else {}),
+                 **({"research": given} if given else {}),
+                 **({"look_first": {"parts": {**research.PARTS, research.TERMS: "the game's own words with what each "
+                                              "means"}, "questions_left": research.QUESTIONS_MOST - self.looked["questions"]}}
+                    if looking else {}),
                  **({"run_from_earlier_work": True} if self.earlier and not self.history else {}),
                  "history": self.history[-HISTORY_KEPT:], **({"hint": self.hint} if self.hint else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -606,17 +625,21 @@ class Direct:
         flags = set(offered) | {name for name, on in (
             ("onward", onward), ("levels", goal.get("objective") == "levels"), ("anew", anew), ("errand", errand),
             ("elements", read), ("cells", rows is not None), ("grid", gridded), ("board_read", plain),
-            ("counting", counting is not None)) if on}
+            ("counting", counting is not None), ("research", given is not None), ("looking", looking)) if on}
         self.questions += 1
         result = await self.model.complete(TurnRequest(
             system_stable=prompt(flags), name="play_direct", max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
             messages=[Msg("user", [{"type": "text", "text": json.dumps(asked)}, image, *first])]))
+        if looking:
+            self.looked["questions"] += 1
+            self.looked["tokens"] += result.usage.input_tokens
         try:
             answer = json.loads(result.text or "")
         except ValueError:
             return None
         if not isinstance(answer, dict):
             return None
+        researched = looking and self._looked(answer)
         if isinstance(answer.get("situation"), str):
             self.situation = answer["situation"][:300]
         if isinstance(answer.get("memory"), dict):
@@ -665,7 +688,8 @@ class Direct:
         made = recovery.profile(answer["action"]) if action["kind"] in (TAP, TEXT, KEY, SEQUENCE) else None
         chosen = _choice(answer.get("choice")) if action["kind"] in NEEDS or action["kind"] == STOP else None
         progress = answer.get("progress")
-        return {**({"progress": progress} if type(progress) is int and progress >= 1 else {}),
+        self.looked["inputs"] += researched
+        return {**({"research": True} if researched else {}), **({"progress": progress} if type(progress) is int and progress >= 1 else {}),
                 **({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {}),
@@ -731,6 +755,22 @@ class Direct:
             return {**action, "at": at}
         return action
 
+    def _looked(self, answer: dict[str, Any]) -> bool:
+        """What the model read of the game's own help is kept with what was found before; whether its input is
+        one of looking (`"research": true` in the action) rather than of play. Looking ends when it says it is
+        done, when it plays a move on a board, or when its questions are spent."""
+        read = research.parts(answer.get("found"))
+        if read:
+            self.found["inside"] = research.merged(self.found.get("inside") or {}, read)
+        action = answer.get("action")
+        marked = isinstance(action, dict) and action.get("research") is True
+        why = "said_done" if answer.get("research_done") is True else \
+            "played" if not marked and scenes.kind(answer.get("scene")) == scenes.BOARD else \
+            "spent" if self.looked["questions"] >= research.QUESTIONS_MOST else None
+        if why is not None:
+            self.looking, self.looked["done"] = False, why
+        return marked and why != "played"
+
     def _remember(self, said: dict[str, Any]) -> None:
         """The parts of the memory the model gave take the place of what they held; a part it left out stays."""
         for part in MEMORY:
@@ -776,4 +816,5 @@ class Direct:
                 **({"lattice": {**self.lattice.summary(), "told": self.texted, "plain": self.plain}}
                    if self.lattice is not None else {}),
                 "situation": self.situation, "scene": self.scene,
-                **({"refused": dict(self.refused)} if self.refused else {})}
+                **({"refused": dict(self.refused)} if self.refused else {}),
+                **({"looked": dict(self.looked)} if self.looked["questions"] else {})}

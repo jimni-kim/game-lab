@@ -1,5 +1,5 @@
 """The Android emulator a demo plays on (PLAN §14, D4): the one running the AVD it is given (`army-game` for
-the demo, `game-lab` for a session's measuring), found by its AVD's name, else started for it and shut down
+the demo, `game-lab2` for a session's measuring), found by its AVD's name, else started for it and shut down
 again afterwards.
 
 A device is this demo's when it is an emulator whose console names the AVD (`adb -s SERIAL emu avd name`):
@@ -23,7 +23,7 @@ from typing import Any, Callable, Literal
 from ..environments.android import SDK, Run, command
 from . import measure
 
-AVD = "game-lab"
+AVD = "game-lab2"
 EMULATOR = SDK / "emulator" / "emulator"
 # a cold boot of the AVD takes about a minute on this Mac; past this it is taken not to have started
 BOOT_LIMIT_S, BOOT_POLL_S = 180.0, 2.0
