@@ -127,14 +127,16 @@ PATH_MOST, DRAG_MS, DRAG_MS_RANGE, HOLD_MS, HOLD_MS_MOST = 16, 600, (100, 5000),
 DOUBLE_TAP_GAP_MS = 120
 LONG_PRESS_MS, LONG_PRESS_RANGE = 800, (400, 3000)
 SCROLL_MOST = 10
-# a sequence: at most this many inputs, this far apart (a selection drawn before the next tap lands)
-SEQUENCE_MOST, SEQUENCE_GAP_S = 6, 0.3
+# a sequence: at most this many inputs, this far apart (a selection drawn before the next tap lands). The limits are
+# generous (2026-11-24, the person: "없애거나 넉넉하게"): what keeps a sequence from running onto a screen the model
+# did not see is that each input is sent only while the one before changed a little of the screen
+SEQUENCE_MOST, SEQUENCE_GAP_S = 30, 0.3
 # on a level's board a sequence is moves one after another (PLAN §27, M1): at most this many inputs, and the share
 # of the screen one of them may change and still be followed by the next (a move changes more of a board than a
 # tap changes of a notice; more than this is a result or another screen)
-MOVES_MOST, MOVE_SHARE = 12, 0.5
+MOVES_MOST, MOVE_SHARE = 40, 0.5
 # on a board the model is given as text (`lattice`) it sees every cell exactly and may give this many
-CELL_MOVES_MOST = 24
+CELL_MOVES_MOST = 80
 # the page's own account of the screen given as text (PLAN §27, M2): only when little of the view is under what
 # the page cannot be read through, it names at least this many things and its lines are no longer than this in
 # all (about twice what the whole picture costs: what is told is exact, which a picture's reading is not). The

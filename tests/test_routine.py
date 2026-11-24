@@ -210,10 +210,11 @@ async def test_the_inputs_of_a_sequence_off_the_board_are_sent_only_while_each_c
     assert story["repeated"] == {"sent": LINES, "of": LINES + 1, "stopped": "scene_changed"} and fake.shopped == 0
     told = next(context for context in plays(model) if context["history"] and context["history"][-1].get("repeated"))
     assert told["history"][-1]["repeated"]["stopped"] == "scene_changed"
-    # six inputs at most, none of them a wait or typed text
+    # SEQUENCE_MOST inputs at most, none of them a wait or typed text
     tap = {"kind": "tap", "at": [5, 5]}
-    assert direct.check({"kind": "sequence", "inputs": [tap] * 6}, SIZE, fake.kinds) is not None
-    assert len(direct.check({"kind": "sequence", "inputs": [tap] * 7}, SIZE, fake.kinds)["inputs"]) == 6
+    most = direct.SEQUENCE_MOST
+    assert direct.check({"kind": "sequence", "inputs": [tap] * most}, SIZE, fake.kinds) is not None
+    assert len(direct.check({"kind": "sequence", "inputs": [tap] * (most + 1)}, SIZE, fake.kinds)["inputs"]) == most
     assert direct.check({"kind": "sequence", "inputs": [tap, {"kind": "wait", "ms": 100}]}, SIZE, fake.kinds) is None
 
 

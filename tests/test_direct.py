@@ -292,12 +292,13 @@ async def test_moves_given_at_once_on_a_board_are_sent_one_by_one_while_each_cha
     told = model.asked[1]["history"][-1]
     assert told["repeated"] == {"sent": 4, "of": 5, "stopped": "no_change", "last_changed": False}
     assert told["screen_changed"] and played.moves[0]["repeated"]["sent"] == 4
-    # a board takes up to twelve inputs at one answer, any other screen six
+    # a board takes up to MOVES_MOST inputs at one answer, any other screen SEQUENCE_MOST
     size, tap = SIZE, {"kind": "tap", "at": [5, 5]}
-    assert direct.check({"kind": "sequence", "inputs": [tap] * 12}, size, ALL, direct.MOVES_MOST) is not None
+    most, other = direct.MOVES_MOST, direct.SEQUENCE_MOST
+    assert direct.check({"kind": "sequence", "inputs": [tap] * most}, size, ALL, most) is not None
     # a longer one is sent as far as it may be, not dropped
-    assert len(direct.check({"kind": "sequence", "inputs": [tap] * 13}, size, ALL, direct.MOVES_MOST)["inputs"]) == 12
-    assert len(direct.check({"kind": "sequence", "inputs": [tap] * 7}, size, ALL)["inputs"]) == 6
+    assert len(direct.check({"kind": "sequence", "inputs": [tap] * (most + 1)}, size, ALL, most)["inputs"]) == most
+    assert len(direct.check({"kind": "sequence", "inputs": [tap] * (other + 1)}, size, ALL)["inputs"]) == other
     # a count of inputs asked for is not gone past by the moves of one answer
     fake, model, played, made = await game([several], goal=GoalSpec("actions", 2))
     assert ending(played) == ("goal_reached", "actions") and fake.lit == 2
