@@ -79,6 +79,9 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-research", action="store_true",
                         help="do not look a game no family is known for up before its first move (PLAN §27 M8): no "
                              "store page, encyclopedia or help screens; for measuring with and without it (E4)")
+    parser.add_argument("--no-review", action="store_true",
+                        help="do not look back over a work the model played by its own inputs once it ends (PLAN §27 "
+                             "M11): no lessons are written for the next work")
     parser.add_argument("--policy")
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
@@ -136,6 +139,11 @@ def way_named(args: argparse.Namespace) -> str | None:
 def researched(args: argparse.Namespace) -> bool:
     """Whether a game no family is known for is looked up before its first move (`research`)."""
     return not getattr(args, "no_research", False)
+
+
+def reviewed(args: argparse.Namespace) -> bool:
+    """Whether a work the model played by its own inputs is looked back on once it ends (`review`)."""
+    return not getattr(args, "no_review", False)
 
 
 def task_waits(args: argparse.Namespace) -> bool:

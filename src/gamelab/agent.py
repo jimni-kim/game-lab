@@ -47,7 +47,7 @@ from .contracts import Budget, GoalSpec, NeedObservation, Observation, Outcome
 from .execution import TAP_MS
 from .families import state_id
 from .model import Model, Msg, TurnRequest, TurnResult
-from . import motion, research, world
+from . import motion, research, review, world
 from .research import fresh_looked
 from .rules import DETERMINISTIC
 from .carry import _boxes as carry_boxes
@@ -304,7 +304,11 @@ class Agent:
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                  notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
                  task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
-                 research: bool = False) -> None:
+                 research: bool = False, review: bool = False) -> None:
+        # whether a work the model played by its own inputs is looked back on once it ends (PLAN §27 M11,
+        # `review`), and the input tokens that spent (kept apart from the board's budget, as looking up is)
+        self.reviewing = review
+        self.review_tokens = 0
         # whether a game no family is known for is looked up before its first move (PLAN §27 M8, `research`); what
         # was found of it, and the tokens the look outside it spent (kept apart from the board's budget)
         self.researching = research
@@ -551,6 +555,8 @@ class Agent:
                 outcome, reason, detail = Outcome.GAVE_UP, "error", f"{type(error).__name__}: {error}"[:2000]
             if outcome in (Outcome.GOAL_REACHED, Outcome.GAME_OVER, Outcome.STOPPED):
                 await self._keep_for_next()
+            if reason not in ("error", "cancelled"):
+                await self._look_back(str(outcome), reason, detail)
             if self.game is not None:
                 self.found["made"] = self.game.summary()
                 self._keep_made()
@@ -1520,6 +1526,29 @@ class Agent:
                                   "aside_tokens": self.aside()}
         if self.store is not None and self.site:
             self.store.save_research(self.site, record)
+
+    async def _look_back(self, outcome: str, reason: str, detail: str) -> None:
+        """The work looked back on once it ended (PLAN §27 M11, `review`): when the model played enough of it by
+        its own inputs, one question over its record gives the game's lessons anew, kept with the model's memory of
+        the game for the next work. Its tokens are not of the board's budget."""
+        player = self.player
+        if not self.reviewing or player is None or player.questions < review.QUESTIONS_LEAST:
+            return
+        before = self.model.input
+        try:
+            answer = await self._asking(review.look_back(
+                self.model, review.told(player, self.goal.to_json(), outcome, reason, detail), self.last_png))
+        except Exception as error:
+            log.info("the work could not be looked back on: %s", error)
+            answer = None
+        self.review_tokens = min(review.TOKENS_MOST, self.model.input - before)
+        self.found["review"] = {"tokens": self.review_tokens, "lessons_before": len(player.lessons),
+                                "followed": {str(n): c for n, c in sorted(player.followed.items())},
+                                **(answer or {"lessons": None})}
+        if answer is not None:
+            player.lessons = answer["lessons"]
+            player.reviews = review.kept(player.reviews, answer, outcome, reason)
+            self.found["direct"] = player.summary()
 
     def _afford(self) -> None:
         """Before a model is asked anything: a game whose questions used up their tokens ends there."""
@@ -3625,7 +3654,7 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
                task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
-               research: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               research: bool = False, review: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
@@ -3633,4 +3662,5 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
     return await Agent(surface, model, family_id, goal=goal, budget=budget, store=store, policy=policy, fresh=fresh,
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
                        direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
-                       task=task, wait=wait, way=way, counting=counting, research=research).run()
+                       task=task, wait=wait, way=way, counting=counting, research=research,
+                       review=review).run()

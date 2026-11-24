@@ -197,6 +197,8 @@ async def play(surface: Any, model: Any, family_id: str | None, *, goal: GoalSpe
         used, confirmed = used + record["actions_used"], confirmed + record["confirmed_actions"]
         # (what looking the game up before play spent is not of the board's budget: PLAN §27 M8)
         aside += (adapted.get("research") or {}).get("aside_tokens", 0)
+        # (nor what looking back over it spent once it ended: PLAN §27 M11)
+        aside += (adapted.get("review") or {}).get("tokens", 0)
         tokens_in, tokens_out = tokens_in + adapted["tokens"]["input"], tokens_out + adapted["tokens"]["output"]
         questions += adapted["questions"]
         notes = (adapted.get("direct") or {}).get("memory") or notes

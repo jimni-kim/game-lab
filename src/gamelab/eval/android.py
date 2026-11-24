@@ -254,7 +254,7 @@ async def play_one(args: argparse.Namespace, number: int, surface: AndroidSurfac
                                     fresh=args.regenerate, cancel=cancel, watch=watching(recorder) if watching else recorder,
                                     accept_consent=args.accept_consent, writer=writer, hint=hint,
                                     game=measure.game_within(args),
-                                    task=measure.task_named(args), wait=measure.task_waits(args), way=measure.way_named(args), research=measure.researched(args),
+                                    task=measure.task_named(args), wait=measure.task_waits(args), way=measure.way_named(args), research=measure.researched(args), review=measure.reviewed(args),
                                     light=measure.light_model(args))
     result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, **measure.handed(adapted))
     request = {"family": args.family, "app": await surface.address(),

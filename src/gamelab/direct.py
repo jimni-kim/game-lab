@@ -84,7 +84,7 @@ import re
 import time
 from typing import Any
 
-from . import carry, fight, frames, motion, recovery, research, resources, scenes, world
+from . import carry, fight, frames, motion, recovery, research, resources, review, scenes, world
 from .lattice import Lattice
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
@@ -526,6 +526,13 @@ class Direct:
         # and how many of them were read in this work
         self.known: dict[str, str] = {}
         self.learned = 0
+        # what looking back over earlier works on this game taught (`review`, PLAN §27 M11), the reviews kept with
+        # them, and how many inputs of this work said they followed each lesson, by its number from 1
+        self.lessons: list[str] = review.lessons(notes.get("lessons")) if isinstance(notes, dict) else []
+        self.reviews: list[Any] = list(notes.get("reviews") or []) if isinstance(notes, dict) else []
+        self.followed: dict[int, int] = {}
+        # what the model said the screen shows, each time it said otherwise than before (for the review)
+        self.situations: list[str] = []
         self._remember(notes if isinstance(notes, dict) else {PLAN: notes} if isinstance(notes, str) else {})
         self._learn(notes.get("known") if isinstance(notes, dict) else None)
         # whether the memory given came from an earlier work (its `run` is then to be held against the screen)
@@ -615,6 +622,8 @@ class Direct:
                  **({"began": "second image"} if began else {}),
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
                  **({"known": self.known} if self.known else {}),
+                 **({"lessons": [{"number": number, "lesson": text} for number, text in enumerate(self.lessons, 1)]}
+                    if self.lessons else {}),
                  **({"research": given} if given else {}),
                  **({"look_first": research.look_first(self.looked)} if looking else {}),
                  **({"run_from_earlier_work": True} if self.earlier and not self.history else {}),
@@ -626,7 +635,8 @@ class Direct:
         flags = set(offered) | {name for name, on in (
             ("onward", onward), ("levels", goal.get("objective") == "levels"), ("anew", anew), ("errand", errand),
             ("elements", read), ("cells", rows is not None), ("grid", gridded), ("board_read", plain),
-            ("counting", counting is not None), ("research", given is not None), ("looking", looking)) if on}
+            ("counting", counting is not None), ("research", given is not None), ("looking", looking),
+            ("lessons", bool(self.lessons))) if on}
         self.questions += 1
         result = await self.model.complete(TurnRequest(
             system_stable=prompt(flags), name="play_direct", max_tokens=PLAY_TOKENS, timeout_s=PLAY_TIMEOUT_S,
@@ -643,6 +653,10 @@ class Direct:
         researched = looking and self._looked(answer)
         if isinstance(answer.get("situation"), str):
             self.situation = answer["situation"][:300]
+            if self.situation and (not self.situations or self.situations[-1] != self.situation):
+                self.situations.append(self.situation)
+                del self.situations[:-review.SITUATIONS_MOST]
+        followed = self._followed(answer.get("lesson"))
         if isinstance(answer.get("memory"), dict):
             self._remember(answer["memory"])
         elif isinstance(answer.get("notes"), str):
@@ -691,6 +705,7 @@ class Direct:
         progress = answer.get("progress")
         self.looked["inputs"] += researched
         return {**({"fight": True} if answer.get("fight_turn") is True and self.scene == scenes.BOARD else {}),
+                **({"lesson": followed} if followed else {}),
                 **({"research": True} if researched else {}), **({"progress": progress} if type(progress) is int and progress >= 1 else {}),
                 **({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
@@ -710,7 +725,8 @@ class Direct:
                  **({"scene": answer["scene"]} if answer.get("scene") else {}),
                  "screen_changed": bool(places),
                  "changed_at": [[round(part * scale) for part in box] for box in places],
-                 **({"repeated": repeated} if repeated else {})}
+                 **({"repeated": repeated} if repeated else {}),
+                 **({"lesson": answer["lesson"]} if answer.get("lesson") else {})}
         if self.lattice is not None and (cells := self.lattice.changed(before, after)) is not None:
             # the board stood either side of the input: what it changed is told by cells
             entry["cells_changed"] = cells
@@ -764,6 +780,14 @@ class Direct:
         self.looking = self.looked["done"] is None
         return marked
 
+    def _followed(self, said: Any) -> list[int]:
+        """The lessons an answer said its input follows (`lesson`: a number or a list of them), counted."""
+        numbers = said if isinstance(said, list) else [said]
+        followed = sorted({number for number in numbers if type(number) is int and 1 <= number <= len(self.lessons)})
+        for number in followed:
+            self.followed[number] = self.followed.get(number, 0) + 1
+        return followed
+
     def _remember(self, said: dict[str, Any]) -> None:
         """The parts of the memory the model gave take the place of what they held; a part it left out stays."""
         for part in MEMORY:
@@ -795,6 +819,8 @@ class Direct:
         return {**{part: text for part, text in self.memory.items() if part != PLAN},
                 **({"known": dict(self.known)} if self.known else {}),
                 **({"card_rules": self.fight.kept()} if self.fight.rules else {}),
+                **({"lessons": list(self.lessons)} if self.lessons else {}),
+                **({"reviews": list(self.reviews)} if self.reviews else {}),
                 **({"grid": self.lattice.kept()} if self.lattice is not None and self.lattice.names else {})}
 
     def replayed(self, told: dict[str, Any], scene: str | None, changed: bool) -> None:
@@ -805,8 +831,11 @@ class Direct:
 
     def summary(self) -> dict[str, Any]:
         return {"questions": self.questions, "score_first": self.first_score, "score_last": self.score,
-                "notes": self.notes, "memory": {**self.memory, **({"known": dict(self.known)} if self.known else {})},
+                "notes": self.notes, "memory": {**self.memory, **({"known": dict(self.known)} if self.known else {}),
+                           **({"lessons": list(self.lessons), "reviews": list(self.reviews)} if self.lessons else {})},
                 **({"learned": self.learned} if self.learned else {}),
+                **({"lessons": {"given": len(self.lessons), "followed": {str(n): c for n, c in sorted(self.followed.items())}}}
+                   if self.lessons else {}),
                 **({"lattice": {**self.lattice.summary(), "told": self.texted, "plain": self.plain}}
                    if self.lattice is not None else {}),
                 "situation": self.situation, "scene": self.scene,
