@@ -148,3 +148,21 @@ def test_options_given_as_plain_texts_are_a_reward_with_nothing_foreseen():
     assert direct._pick({"options": [{"name": "only one", "foresee": "x"}]}) is None
     assert direct._pick({"kind": "shop", "options": [{"name": "a potion", "foresee": "heals 10 for 30 coins"}, "leave"],
                          "picked": "leave"})["foreseen"] == ["heals 10 for 30 coins", ""]
+
+
+async def test_an_answer_that_is_no_input_is_told_with_the_next_question():
+    class Twice(Model):
+        async def complete(self, request):
+            context = json.loads(request.messages[0].content[0]["text"])
+            if context.get("play") and len(self.plays) == 0:
+                self.plays.append(context)
+                return TurnResult(text=json.dumps({"situation": "floor 0", "scene": "popup", "expect": "a floor up",
+                                                   "action": {"kind": "key", "key": "F13"}}))
+            return await super().complete(request)
+
+    game = Tower()
+    model = Twice(game)
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60))
+    assert played.record["outcome"] == "goal_reached"
+    told = model.plays[1]["history"][-1]
+    assert told["action"] == {"kind": "key"} and told["refused"].startswith("not sent") and told["screen_changed"] is False

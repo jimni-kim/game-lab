@@ -213,7 +213,7 @@ async def test_the_inputs_of_a_sequence_off_the_board_are_sent_only_while_each_c
     # six inputs at most, none of them a wait or typed text
     tap = {"kind": "tap", "at": [5, 5]}
     assert direct.check({"kind": "sequence", "inputs": [tap] * 6}, SIZE, fake.kinds) is not None
-    assert direct.check({"kind": "sequence", "inputs": [tap] * 7}, SIZE, fake.kinds) is None
+    assert len(direct.check({"kind": "sequence", "inputs": [tap] * 7}, SIZE, fake.kinds)["inputs"]) == 6
     assert direct.check({"kind": "sequence", "inputs": [tap, {"kind": "wait", "ms": 100}]}, SIZE, fake.kinds) is None
 
 

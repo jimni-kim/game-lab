@@ -382,9 +382,11 @@ def _check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int)
         return {"kind": kind, "at": at, "steps": action["steps"]}
     if kind in (BACK, RELAUNCH):
         return {"kind": kind}
-    if kind == SEQUENCE and isinstance(action.get("inputs"), list) and 2 <= len(action["inputs"]) <= most:
+    if kind == SEQUENCE and isinstance(action.get("inputs"), list) and len(action["inputs"]) >= 2:
+        # one longer than a sequence may be is sent as far as it may be: its first inputs are as good as given
+        # (2026-11-24: seven keys where six may be given were dropped whole, three times over, and the game given up)
         inputs = [_check(part, size, kinds, most) if isinstance(part, dict) and part.get("kind") in SEQUENCED else None
-                  for part in action["inputs"]]
+                  for part in action["inputs"][:most]]
         return {"kind": kind, "inputs": inputs} if None not in inputs else None
     if kind == KEY and (action.get("key") in KEYS or (isinstance(action.get("key"), str) and len(action["key"]) == 1
                                                       and action["key"] in TYPED)):
@@ -738,6 +740,13 @@ class Direct:
                        CELL_MOVES_MOST if rows is not None else MOVES_MOST)
         used = uses(answer.get("action"))
         if action is None or used is None or action["kind"] not in offered + [DONE, OUT_OF_LIVES, GIVE_UP, STOP]:
+            # not sent: the model is told so with its next question, or it gives the same answer again
+            said = answer.get("action")
+            self.history.append({"action": {"kind": str(said.get("kind"))[:20]} if isinstance(said, dict) else {"kind": None},
+                                 "expected": answer.get("expect") if isinstance(answer.get("expect"), str) else "",
+                                 "screen_changed": False,
+                                 "refused": "not sent: not an input as `action` describes them for this screen (its kind, "
+                                            "a field missing or out of its range, a key that is not one of `keys`)"})
             return None
         if action["kind"] == LOOK:
             self.sharp = True
