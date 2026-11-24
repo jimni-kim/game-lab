@@ -23,6 +23,8 @@ from ..run import Run
 ROOT = Path(__file__).resolve().parents[3]
 # the light model asked about single cells unless a run names another (PLAN §20, X1)
 LIGHT_MODEL = "gpt-6-luna"
+# who first judges whether the turn came back to the player in a game played in turns (`turns`)
+TURN_MODEL = "jev"
 
 
 def locks_in(environ: Any) -> Path:
@@ -104,6 +106,10 @@ def model_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--light-model", default=LIGHT_MODEL,
                         help="a light model that names single cells cut out of the screen when a family's reader and "
                              "the rules cannot (PLAN §20); 'none': such cells are the --vision-model's")
+    parser.add_argument("--turn-model", choices=("jev", "light", "none"), default=TURN_MODEL,
+                        help="who judges, after the model handed a turn over, whether the turn came back: Jev first and "
+                             "the --light-model when it is unsure ('jev'), the light model alone ('light'), or nobody "
+                             "('none': the screen is waited for to rest)")
     parser.add_argument("--model-base", default=model.api_base(),
                         help=f"an OpenAI-compatible API's base URL ({model.BASE_VARIABLE}, else {model.DEFAULT_BASE})")
 
@@ -172,7 +178,25 @@ def light_model(args: argparse.Namespace) -> Any:
     return args._light
 
 
+def turn_judges(args: argparse.Namespace) -> list[Any]:
+    """Who judges whether the turn came back to the player (`turns`), fastest first: Jev when its key is set and
+    `--turn-model` names it, then the light model; none with `--turn-model none`."""
+    if not hasattr(args, "_turn"):
+        name = getattr(args, "turn_model", TURN_MODEL)
+        judges: list[Any] = []
+        if name == "jev" and os.environ.get(checker.JEV_KEY, "").strip():
+            judges.append(checker.Jev())
+        if name != "none" and (light := light_model(args)) is not None:
+            judges.append(light)
+        args._turn = judges
+    return args._turn
+
+
 async def close_light(args: argparse.Namespace) -> None:
+    for judge in getattr(args, "_turn", None) or []:
+        if isinstance(judge, checker.Jev):
+            await judge.close()
+    args.__dict__.pop("_turn", None)
     if getattr(args, "_light", None) is not None:
         await args._light.close()
         args._light = None

@@ -91,7 +91,7 @@ import re
 import time
 from typing import Any
 
-from . import carry, fight, frames, motion, recovery, research, resources, review, scenes, world
+from . import carry, fight, frames, motion, recovery, research, resources, review, scenes, turns, world
 from .lattice import Lattice
 from .contracts import FORCED_FREE, META_ACTIONS
 from .execution import TAP_MS
@@ -337,6 +337,9 @@ def check(action: Any, size: tuple[int, int], kinds: frozenset[str], most: int =
     if checked is not None and (checked["kind"] in SEQUENCED or checked["kind"] == SEQUENCE) \
             and "repeat" not in checked and "advance" not in checked and type(action.get("then_wait_ms")) is int:
         checked["then_wait_ms"] = min(max(action["then_wait_ms"], REST_MS_RANGE[0]), REST_MS_RANGE[1])
+        # what the screen shows once the turn is the player's again, in the model's words (`turns`)
+        if (said := turns.cue(action.get("my_turn"))) is not None:
+            checked["my_turn"] = said
     return checked
 
 
@@ -617,6 +620,9 @@ class Direct:
         # inputs not sent because they used what the person did not allow, by what they would have used (the
         # game's own account when it gives one)
         self.refused: dict[str, int] = refused if refused is not None else {}
+        # what the screen shows at the player's turn in a game played in turns, in the model's words (`turns`), kept
+        # for the game
+        self.turn_cue: str | None = turns.cue(notes.get("turn_cue")) if isinstance(notes, dict) else None
         # the rules of the game's cards and the turn of a fight read and searched by code (PLAN §27 M10, §36 E7)
         self.fight = fight.Fight(*((notes.get("card_rules"), notes.get("card_looks"), notes.get("card_places"))
                                    if isinstance(notes, dict) else ()))
@@ -684,6 +690,7 @@ class Direct:
                  "memory_most": {part: memory_most(part) for part in MEMORY},
                  **({"person_said": self.person_said} if self.person_said else {}),
                  **({"memory_cut": dict(self.cut_last)} if self.cut_last else {}),
+                 **({"turn_looks_kept": self.turn_cue} if self.turn_cue else {}),
                  **({"known": self.known} if self.known else {}),
                  **({"lessons": [{"number": number, "lesson": text} for number, text in enumerate(self.lessons, 1)]}
                     if self.lessons else {}),
@@ -720,6 +727,10 @@ class Direct:
                 self.situations.append(self.situation)
                 del self.situations[:-review.SITUATIONS_MOST]
         followed = self._followed(answer.get("lesson"))
+        # how the screen looks at the player's turn: words, not a flag (`"my_turn": true` came, 2026-11-24)
+        said_turn = turns.cue(answer.get("turn_looks")) or turns.cue(answer.get("my_turn")) or (
+            turns.cue(answer["action"].get("my_turn")) if isinstance(answer.get("action"), dict) else None)
+        self.turn_cue = said_turn or self.turn_cue
         if isinstance(answer.get("memory"), dict):
             self._remember(answer["memory"])
         elif isinstance(answer.get("notes"), str):
@@ -901,6 +912,7 @@ class Direct:
                 **({"card_places": self.fight.kept_places()} if self.fight.places else {}),
                 **({"lessons": list(self.lessons)} if self.lessons else {}),
                 **({"reviews": list(self.reviews)} if self.reviews else {}),
+                **({"turn_cue": self.turn_cue} if self.turn_cue else {}),
                 **({"grid": self.lattice.kept()} if self.lattice is not None and self.lattice.names else {})}
 
     def replayed(self, told: dict[str, Any], scene: str | None, changed: bool) -> None:

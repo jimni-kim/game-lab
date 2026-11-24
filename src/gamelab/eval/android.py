@@ -255,7 +255,7 @@ async def play_one(args: argparse.Namespace, number: int, surface: AndroidSurfac
                                     accept_consent=args.accept_consent, writer=writer, hint=hint,
                                     game=measure.game_within(args),
                                     task=measure.task_named(args), wait=measure.task_waits(args), way=measure.way_named(args), research=measure.researched(args), review=measure.reviewed(args),
-                                    light=measure.light_model(args))
+                                    light=measure.light_model(args), turn=measure.turn_judges(args))
     result = measure.result(name, run, recorder, model, seconds=time.monotonic() - started, **measure.handed(adapted))
     request = {"family": args.family, "app": await surface.address(),
                "goal": goal.to_json(), "budget": budget.to_json(), "policy": args.policy}

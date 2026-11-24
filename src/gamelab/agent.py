@@ -48,6 +48,7 @@ from .execution import TAP_MS
 from .families import state_id
 from .model import Model, Msg, TurnRequest, TurnResult
 from . import motion, research, review, world
+from . import turns as turn_wait
 from .research import fresh_looked
 from .rules import DETERMINISTIC
 from .carry import _boxes as carry_boxes
@@ -311,7 +312,7 @@ class Agent:
                  writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                  notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
                  task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
-                 research: bool = False, review: bool = False) -> None:
+                 research: bool = False, review: bool = False, turn: Any = None) -> None:
         # whether a work the model played by its own inputs is looked back on once it ends (PLAN §27 M11,
         # `review`), and the input tokens that spent (kept apart from the board's budget, as looking up is)
         self.reviewing = review
@@ -387,6 +388,12 @@ class Agent:
         # what names a single cell cut out of the screen when the family's reader and the rules cannot (`checker`:
         # a light model); None: such a cell is the reading model's
         self.light = light
+        # who judges whether the turn came back to the player, fastest first (`turns`; none: the screen is waited
+        # for to rest), what they were asked, and whether the last wait ended on their yes (held against the
+        # model's next answer)
+        self.turn_judges: list[Any] = list(turn or [])
+        self.turn_account = turn_wait.fresh_account()
+        self.turn_said = False
         # the questions put to it, the cells its answers named, and the answers the rules did not take
         self.light_told = {"questions": 0, "named": 0, "refused": 0}
         # a reader by samples and the one result the rules say a move has (`_teach`): the screen's unread cells kept
@@ -2937,6 +2944,10 @@ class Agent:
                 continue
             silent = 0
             action, scene = answer["action"], answer["scene"]
+            if self.turn_said and action["kind"] == direct.WAIT:
+                # the judge said the turn had come back and the model only waits: that yes was wrong
+                self.turn_account["false_yes"] += 1
+            self.turn_said = False
             self._after_pick(answer.get("pick"))
             if self.counting is not None and answer.get("progress", 0) > self.counting:
                 # the game shows a number past the one this part began at: the work counts it (`work`)
@@ -3078,9 +3089,18 @@ class Agent:
             # how long the screen may take to come to rest after the last input of this answer, when the model
             # said the input hands the turn over (PLAN §36, E3)
             rest = action.pop("then_wait_ms", None)
+            turn_cue = action.pop("my_turn", None)
             if rest:
                 # the model handed the turn over: a fight's next turn is read and searched again
                 player.fight.paused = False
+            cue = turn_cue or player.turn_cue
+            if cue and self.turn_judges and level and action["kind"] not in (direct.LOOK, direct.RELAUNCH):
+                # a game played in turns whose turn the model described: after a move on its board, and in place
+                # of a wait there, the light judge says when the turn is the player's again (`turn_wait`)
+                if action["kind"] == direct.WAIT:
+                    rest, action["ms"] = max(rest or 0, action["ms"]), 1
+                else:
+                    rest = rest or direct.REST_MS_RANGE[1]
             if scene == scenes.BOARD and not answer["guided"] and self.resumable is not None \
                     and self.resumes < RESUMES_MOST and action["kind"] not in (direct.WAIT, direct.RELAUNCH) \
                     and (self.unread_at is None or self.used - self.unread_at >= RESUME_EVERY):
@@ -3178,7 +3198,16 @@ class Agent:
                 # until it rests, so that the model is asked at its next turn and not in the middle of the other
                 # side's (2026-11-23: of 20 questions of a card game's fights, four were only to wait)
                 waited = time.monotonic()
-                after = await self._rested(rest)
+                if cue and self.turn_judges:
+                    # the model said what its turn looks like: a light judge says when the screen shows it
+                    # (`turn_wait`), in place of waiting for a screen that may never rest
+                    yes = self.turn_account["yes"]
+                    after = await turn_wait.until_turn(self.seen.capture, self.turn_judges, cue, rest,
+                                                   lambda: self.seen.moving, self.turn_account)
+                    self.turn_said = self.turn_account["yes"] > yes
+                    self.found["turns"] = self.turn_account
+                else:
+                    after = await self._rested(rest)
                 moving = motion.joined(moving + self.seen.moving)
                 turns = self.found.setdefault("handed_over", {"times": 0, "seconds": 0.0})
                 turns["times"], turns["seconds"] = turns["times"] + 1, round(turns["seconds"] + time.monotonic() - waited, 1)
@@ -3748,7 +3777,7 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                writer: Model | None = None, direct: bool = True, light: Any = None, onward: bool = False,
                notes: Any = "", anew: bool = False, game: str | None = None, book: routine.Book | None = None,
                task: str | None = None, wait: bool = False, way: str | None = None, counting: int | None = None,
-               research: bool = False, review: bool = False, **ignored: Any) -> tuple[Run, dict[str, Any]]:
+               research: bool = False, review: bool = False, turn: Any = None, **ignored: Any) -> tuple[Run, dict[str, Any]]:
     """One game from its first screen to its end: the whole game as one `Run`, and how it was read (the
     adapter, the looks, the model's questions and what the game was found to be). `writer`, when given, is
     asked to write the adapters and `model` everything else; `light` (a `checker`), to name single cells a
@@ -3757,4 +3786,4 @@ async def play(surface: Any, model: Model, family_id: str | None, *, goal: GoalS
                        hint=hint, watch=watch, cancel=cancel, accept_consent=accept_consent, writer=writer,
                        direct=direct, light=light, onward=onward, notes=notes, anew=anew, game=game, book=book,
                        task=task, wait=wait, way=way, counting=counting, research=research,
-                       review=review).run()
+                       review=review, turn=turn).run()
