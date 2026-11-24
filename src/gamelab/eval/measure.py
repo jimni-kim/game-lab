@@ -89,8 +89,9 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compute", type=int, required=True, help="evaluated boards per decision")
     parser.add_argument("--max-actions", type=int, default=3000)
     parser.add_argument("--max-seconds", type=float, default=7200)
-    parser.add_argument("--max-input-tokens", type=int, default=3_000_000,
-                        help="the tokens one game's model questions may send together (0: no limit)")
+    parser.add_argument("--max-input-tokens", type=int, default=0,
+                        help="the input tokens one game's model questions may send together; 0 (the default): no "
+                             "limit (2026-11-24, the person)")
     parser.add_argument("--out", type=Path, required=True, help="results and screenshots (out/ is not tracked)")
     model_arguments(parser)
     parser.add_argument("--accept-consent", action="store_true",

@@ -124,7 +124,7 @@ async def test_the_model_is_asked_when_the_judge_sees_its_turn_back(monkeypatch)
     # every question came at the player's own turn: none was spent waiting
     assert all(model.plays) and len(model.plays) == 4
     waited = made["turns"]
-    assert waited["waits"] == 3 and waited["yes"] == 3 and waited["timed_out"] == 0 and waited["false_yes"] == 0
+    assert waited["waits"] == 3 and waited["yes"] == 3 and waited["noes_out"] == 0 and waited["false_yes"] == 0
     assert judge.asked == waited["asked"] >= 3 and waited["by"] == {"judge": waited["asked"]}
 
 
@@ -182,3 +182,20 @@ async def test_a_turn_described_once_is_kept_and_used_after_every_move_and_by_th
     played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 60), turn=[Judge()],
                               store=Store(tmp_path))
     assert played.record["outcome"] == "goal_reached" and all(model.plays) and made["turns"]["yes"] == 3
+
+
+async def test_judges_that_never_see_the_turn_hand_it_to_the_model_after_a_few_noes():
+    class Blind(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            return {"turn": {"p": 0.01}}
+
+    game, blind = Table(), Blind()
+    started = time.monotonic()
+    played, made = await play(game, Model(game, rounds=2), None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 60),
+                              turn=[blind])
+    waited = made["turns"]
+    assert played.record["outcome"] == "goal_reached"
+    # no time of its own: each wait ended on the noes, and the model played the turn the judge missed
+    assert waited["noes_out"] >= 1 and waited["yes"] == 0 and waited["false_no"] >= 1
+    assert blind.asked >= turns.NOES_MOST and time.monotonic() - started < 10

@@ -393,7 +393,7 @@ class Agent:
         # model's next answer)
         self.turn_judges: list[Any] = list(turn or [])
         self.turn_account = turn_wait.fresh_account()
-        self.turn_said = False
+        self.turn_said: bool | None = None
         # the questions put to it, the cells its answers named, and the answers the rules did not take
         self.light_told = {"questions": 0, "named": 0, "refused": 0}
         # a reader by samples and the one result the rules say a move has (`_teach`): the screen's unread cells kept
@@ -2944,10 +2944,13 @@ class Agent:
                 continue
             silent = 0
             action, scene = answer["action"], answer["scene"]
-            if self.turn_said and action["kind"] == direct.WAIT:
+            if self.turn_said is True and action["kind"] == direct.WAIT:
                 # the judge said the turn had come back and the model only waits: that yes was wrong
                 self.turn_account["false_yes"] += 1
-            self.turn_said = False
+            elif self.turn_said is False and scene in (None, scenes.BOARD) and action["kind"] != direct.WAIT:
+                # the judges kept saying no and the model played at once: the turn was there
+                self.turn_account["false_no"] += 1
+            self.turn_said = None
             self._after_pick(answer.get("pick"))
             if self.counting is not None and answer.get("progress", 0) > self.counting:
                 # the game shows a number past the one this part began at: the work counts it (`work`)
@@ -3202,8 +3205,8 @@ class Agent:
                     # the model said what its turn looks like: a light judge says when the screen shows it
                     # (`turn_wait`), in place of waiting for a screen that may never rest
                     yes = self.turn_account["yes"]
-                    after = await turn_wait.until_turn(self.seen.capture, self.turn_judges, cue, rest,
-                                                   lambda: self.seen.moving, self.turn_account)
+                    after = await turn_wait.until_turn(self.seen.capture, self.turn_judges, cue,
+                                                       lambda: self.seen.moving, self.turn_account)
                     self.turn_said = self.turn_account["yes"] > yes
                     self.found["turns"] = self.turn_account
                 else:

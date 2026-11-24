@@ -28,16 +28,18 @@ from typing import Any, Awaitable, Callable
 from . import carry, checker, motion, recovery
 
 # how often the screen is looked at while waiting, how soon after handing over the judge is first asked, and how
-# often it is asked at most (once a screen it said no to changed)
-LOOK_S, FIRST_S, ASK_EVERY_S = 0.4, 0.8, 1.0
+# often it is asked at most (a screen it said no to is asked again once it changed, or after `AGAIN_S` as it is)
+LOOK_S, FIRST_S, ASK_EVERY_S, AGAIN_S = 0.4, 0.8, 1.0, 3.0
 # a judge's probability of yes at or above this is a yes, at or below the other a no; between, the next judge is
 # asked
 SURE_YES, SURE_NO = 0.7, 0.3
 # the picture a judge is shown, its longer side at most; the words kept of the model's cue
 VIEW_SIDE, CUE_MOST = 768, 200
-# a wait judged so goes on no longer than the model's own (`then_wait_ms`, else `direct.REST_MS_RANGE`'s most): a
-# judge that did not see the turn come back must not outlast the game's turn timer (2026-11-24: waits stretched to
-# 30 s ran out twice and the game played those turns for the player)
+# the wait has no time of its own (2026-11-24, the person: a fixed limit is a number no game agrees on). It ends at
+# the judges' yes, and after this many noes in a row the main model is asked as before: if the judges were wrong it
+# plays its turn, if not it answers `wait` and the judges watch again. A judge that cannot see the turn costs a main
+# question every few noes, not the whole turn timer (UNO!, 2026-11-24: two waits of 30 s ran past it)
+NOES_MOST = 5
 CONTEXT = ("A game played in turns. The player handed the turn to the other side and is waiting for it to come back. "
            "Judge the picture of the game's screen as it is now.")
 QUESTION = ("{image} is the game's screen now. Is it the player's own turn now, so that the player can act? It is the "
@@ -51,32 +53,36 @@ def cue(said: Any) -> str | None:
 
 
 def fresh_account() -> dict[str, Any]:
-    return {"waits": 0, "asked": 0, "yes": 0, "timed_out": 0, "false_yes": 0, "seconds": 0.0, "by": {}}
+    # `noes_out`: waits that ended on `NOES_MOST` noes; of those, `false_no`: the main model played at once (the
+    # turn was there); `false_yes`: a yes the main model only waited at
+    return {"waits": 0, "asked": 0, "yes": 0, "noes_out": 0, "false_yes": 0, "false_no": 0, "seconds": 0.0, "by": {}}
 
 
-async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any], said: str, ms: int,
+async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any], said: str,
                      moving: Callable[[], list[list[int]]], account: dict[str, Any]) -> bytes:
-    """The screen once a judge said it is the player's turn as `said` describes it, or as it is when the wait
-    (`ms`) ran out. A screen is put to the judges only when it changed since the last they were shown (what keeps
-    moving left out), at most every `ASK_EVERY_S`. With GAMELAB_TURN_DUMP set, each picture judged is saved there
-    with what the judges said, for looking into a measured run."""
+    """The screen once a judge said it is the player's turn as `said` describes it, or as it is after `NOES_MOST`
+    noes in a row (the main model then looks). A screen is put to the judges once it changed since the last they
+    were shown (what keeps moving left out), or `AGAIN_S` after, at most every `ASK_EVERY_S`. With
+    GAMELAB_TURN_DUMP set, each picture judged is saved there with what the judges said."""
     started = time.monotonic()
-    deadline = started + ms / 1000
     account["waits"] += 1
     asked_on: bytes | None = None
     last_ask = started - ASK_EVERY_S + FIRST_S
+    noes = 0
     png = await capture()
     try:
         while True:
             now = time.monotonic()
-            if now >= deadline:
-                account["timed_out"] += 1
-                return png
-            changed = asked_on is None or bool(motion.outside(carry._boxes(asked_on, png), moving()))
+            changed = asked_on is None or now - last_ask >= AGAIN_S \
+                or bool(motion.outside(carry._boxes(asked_on, png), moving()))
             if changed and now - last_ask >= ASK_EVERY_S:
                 last_ask, asked_on = now, png
                 if await _judged(judges, png, said, account):
                     account["yes"] += 1
+                    return png
+                noes += 1
+                if noes >= NOES_MOST:
+                    account["noes_out"] += 1
                     return png
             await asyncio.sleep(LOOK_S)
             png = await capture()

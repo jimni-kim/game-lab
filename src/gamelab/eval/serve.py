@@ -1154,7 +1154,8 @@ def configure(parser: argparse.ArgumentParser) -> None:
                              "one (300 ended a request for five lines at four); the seconds and the tokens are what "
                              "bound a game")
     parser.add_argument("--max-seconds", type=float, default=900, help="one game's seconds at most")
-    parser.add_argument("--max-input-tokens", type=int, default=3_000_000, help="the tokens one game's model questions may send")
+    parser.add_argument("--max-input-tokens", type=int, default=0,
+                        help="the tokens one game's model questions may send; 0 (the default): no limit")
     parser.add_argument("--games-a-day", type=int, default=20, help="games played a day at most")
     parser.add_argument("--chats-a-day", type=int, default=200,
                         help="what may be typed into the chat a day at most (each is a model question or two)")
