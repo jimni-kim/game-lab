@@ -2290,7 +2290,7 @@ R1·P2·D2를 main에 합친 뒤, 세션 기록이 사용자에게 넘긴 것 �
 - **게임 안 조사는 여섯 판에서 한 번도 도움말을 열지 않았다.** 조사 있는 셋의 첫 화면에는 도움말이 없었다(동의·알림, 나이 확인, 타이틀). 모델은 없다고 말하고 넘어갔고(세븐데이즈!는 타이틀에서 바로) 판 위에서 시험 삼아 두지 않았다. 식별 앞으로 옮긴 것은 돌았다: 밖 조사 1질문(약 2천 토큰)이 식별 전에 오고, 식별·복구 질문이 그 답을 받았다(`early`, `looking_early`).
 - **헛입력**: 여섯 판 모두 식별 중 0. 판 위에서는 Sudoku.com 2(같은 칸 다시 누름).
 - 직접 두기가 격자 퍼즐 둘을 모두 깼다(Sudoku.com 9×9, Flow Free 5×5). 둘 다 만든 계열의 설명이 "맞다"고 했으나 Sudoku.com은 판독이 서지 않아 직접 두기로, Flow Free는 판독 질문 하나 뒤 직접 두기로 갔다. Tic Tac Toe는 만든 계열이 규칙 코드를 써서 풀었다(수 4, 질문은 판독마다 하나).
-- **PokéRogue(웹)**는 계정이 있어야 하므로 재지 않았다(사용자에게 넘김). E8 뒤: 사용자가 준 계정으로 로그인했으나 서버가 비밀번호가 맞지 않다고 함, 다시 사용자에게 넘김(세션 E8 기록 끝).
+- **PokéRogue(웹)**는 계정이 있어야 하므로 재지 않았다(사용자에게 넘김). E8 뒤: 사용자가 계정을 등록해 주어 로그인됨, 첫 안내("Welcome to PokéRogue!")에 섬(세션 E8 기록 끝).
 
 **세부로 넘긴 것.**
 
@@ -2385,7 +2385,7 @@ R1·P2·D2를 main에 합친 뒤, 세션 기록이 사용자에게 넘긴 것 �
 |---|---|---|---|
 | Pokémon TCG Pocket | `game-lab2`를 `-gpu host`, 이어 `-gpu swiftshader_indirect`로 켜서 엶(둘 다 `-no-snapshot-load -no-snapshot-save`) | **안 뜸.** host: 시작 몇 초 뒤 UnityMain 스레드가 SIGSEGV(Unity 6000.0.82f1, il2cpp)로 죽어 홈으로. swiftshader: E4와 같은 "Unable to initialize the Unity Engine Graphics API". 기본(lavapipe)은 E4에서 같은 오류. 실기기나 다른 이미지가 필요 | 앱은 닫힘. 기기는 평소 옵션으로 다시 켠 뒤 끔(lavapipe 확인) |
 | UNO! | 나이 구간과 로그인 방법을 사용자에게 받음. 나이 확인 넘김, Google로 로그인(기기에 로그인된 계정이 받은 주소와 같음, 첫 번째는 게임이 로그인 화면으로 돌아와 한 번 더 누름), 개인정보 동의(홍보 메일 칸은 안 누름), 알림은 허락 안 함 | **됨** | 게임의 첫 질문 "Have you played UNO before?"(답하지 않음, 실측 몫). 처음 여는 상태는 아님 |
-| PokéRogue(웹) | 아이디·비밀번호를 하나씩 받아 `/Users/jimni/AgenticFW/game-lab/.env`의 `POKEROGUE_USERNAME`·`POKEROGUE_PASSWORD`에만 넣음. Playwright로 로그인 창에 넣고 보냄 | **안 됨.** 서버 답 "The provided password does not match"(받은 값을 그대로 보냄, 6자). 잠길까 봐 다시 시도하지 않고 사용자에게 넘김. 화면의 Google·Discord 로그인 길도 있음 | 로그인 전 |
+| PokéRogue(웹) | 아이디·비밀번호를 하나씩 받아 `/Users/jimni/AgenticFW/game-lab/.env`의 `POKEROGUE_USERNAME`·`POKEROGUE_PASSWORD`에만 넣음. Playwright로 로그인 창에 넣고 보냄 | **됨**(두 번째). 첫 시도는 "The provided password does not match": 계정이 아직 등록되지 않았던 것. 사용자가 등록한 뒤 아이디를 바꿔 다시 넣자 로그인됨 | 게임 첫 안내 "Welcome to PokéRogue! …"(넘기지 않음). 웹이라 세션은 브라우저를 닫으면 끝남, 실측 때 `.env`의 값으로 다시 로그인해야 함 |
 
 ### 세션 E7b 기록 (2026-11-24, 브랜치 `e7b-card-looks`. 코드 `3f5642c` 위의 이 세션의 고침, 1판 뒤와 2판 뒤에 사용자가 더한 것 하나씩. 주 모델 `gpt-6.1-terra`, 경량 `gpt-6-luna`. Android `game-lab2` 3판. Fable 5.2)
 
