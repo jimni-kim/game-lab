@@ -413,3 +413,53 @@ async def test_a_surface_that_never_takes_an_input_ends_the_game_with_a_record(m
     monkeypatch.setattr(agent, "SEND_TIMEOUT_S", 0.05)
     played, made = await play(Stuck(), Player([PRESS]), None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60))
     assert ending(played) == ("needs_recovery", "surface_unresponsive")
+
+
+async def test_a_screen_with_a_timer_comes_to_rest_from_frames_as_they_are(monkeypatch):
+    # PLAN §36, 강제 대기 검토: what keeps moving is left out where it was last found, not drawn through anew at
+    # every look (five frames and their middle a look: 2.0 to 2.6 s on a phone)
+    from gamelab import motion
+
+    monkeypatch.setattr(direct, "SETTLE_S", 0.0)
+    monkeypatch.setattr(direct, "STILL_GAP_S", 0.0)
+
+    class Timer:
+        name, reads_dom, kinds = "fake", False, frozenset({"tap"})
+
+        def __init__(self):
+            self.taken = 0
+
+        async def capture(self, region=None):
+            self.taken += 1
+            image = Image.new("RGB", (400, 600), (20, 90, 40))
+            # a timer bar a quarter of the screen across, redrawn at every capture
+            ImageDraw.Draw(image).rectangle((0, 0, 399, 140), fill=(250, (self.taken * 61) % 256, 0))
+            out = BytesIO()
+            image.save(out, format="PNG")
+            return out.getvalue()
+
+    surface = Timer()
+    seen = motion.Steady(surface)
+    await seen.capture()
+    assert seen.moving
+    before = surface.taken
+    await direct.settled(seen)
+    # two frames as they are, the bar left out: at rest
+    assert surface.taken - before == 2
+
+
+def test_a_coarse_comparison_finds_a_change_where_it_is_on_the_whole_screen():
+    from gamelab import carry
+
+    def png(box=None):
+        image = Image.new("RGB", (800, 400), (10, 10, 10))
+        if box:
+            ImageDraw.Draw(image).rectangle(box, fill=(250, 250, 250))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+    assert carry.coarse_boxes(png(), png()) == []
+    (left, top, width, height), = carry.coarse_boxes(png(), png((400, 200, 479, 259)))
+    assert abs(left - 400) <= carry.COARSE and abs(top - 200) <= carry.COARSE
+    assert abs(width - 80) <= 2 * carry.COARSE and abs(height - 60) <= 2 * carry.COARSE

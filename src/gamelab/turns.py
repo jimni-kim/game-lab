@@ -25,11 +25,11 @@ import os
 import time
 from typing import Any, Awaitable, Callable
 
-from . import carry, checker, motion, recovery
+from . import checker, recovery
 
-# how often the screen is looked at while waiting, how soon after handing over the judge is first asked, and how
-# often it is asked at most (a screen it said no to is asked again once it changed, or after `AGAIN_S` as it is)
-LOOK_S, FIRST_S, ASK_EVERY_S, AGAIN_S = 0.4, 0.0, 1.0, 3.0
+# the screen is put to the judges as it is, one frame after another with no wait between (PLAN §36, 강제 대기
+# 검토: the judges were shown a screen every 3.6 to 3.9 s, and the turn of a game that allows 10 s was found
+# late). The next frame is taken while the judges look at the one before
 # a judge's probability of yes at or above this is a yes, at or below the other a no; between, the next judge is
 # asked
 SURE_YES, SURE_NO = 0.7, 0.3
@@ -38,8 +38,11 @@ VIEW_SIDE, CUE_MOST = 768, 200
 # the wait has no time of its own (2026-11-24, the person: a fixed limit is a number no game agrees on). It ends at
 # the judges' yes, and after this many noes in a row the main model is asked as before: if the judges were wrong it
 # plays its turn, if not it answers `wait` and the judges watch again. A judge that cannot see the turn costs a main
-# question every few noes, not the whole turn timer (UNO!, 2026-11-24: two waits of 30 s ran past it)
-NOES_MOST = 5
+# question every few noes, not the whole turn timer (UNO!, 2026-11-24: two waits of 30 s ran past it). Each time
+# the main model only waited after such noes, the noes it takes are twice as many, up to NOES_MOST_TOP: with the
+# judges asked back to back, five noes are a few seconds of the other side's turn. A turn the judges missed (the
+# main model played at once) puts it back to NOES_MOST
+NOES_MOST, NOES_MOST_TOP = 5, 40
 CONTEXT = ("A game played in turns. The player handed the turn to the other side and is waiting for it to come back. "
            "Judge the picture of the game's screen as it is now.")
 QUESTION = ("{image} is the game's screen now. Is it the player's own turn now, so that the player can act? It is the "
@@ -60,42 +63,48 @@ def cue(said: Any) -> str | None:
 
 
 def fresh_account() -> dict[str, Any]:
-    # `noes_out`: waits that ended on `NOES_MOST` noes; of those, `false_no`: the main model played at once (the
+    # `noes_out`: waits that ended on `noes_most` noes; of those, `false_no`: the main model played at once (the
     # turn was there); `false_yes`: a yes the main model only waited at; `notice`: waits that ended on a window
-    # waiting for the player (`NOTICE`)
+    # waiting for the player (`NOTICE`); `noes_most`: the noes a wait now takes before the main model is asked
     return {"waits": 0, "asked": 0, "yes": 0, "noes_out": 0, "false_yes": 0, "false_no": 0, "notice": 0,
-            "seconds": 0.0, "by": {}}
+            "seconds": 0.0, "by": {}, "noes_most": NOES_MOST}
+
+
+def waited_for_nothing(account: dict[str, Any]) -> None:
+    """The main model, asked after the judges' noes, only waited: they were right, and the next wait takes twice
+    as many noes before it asks again."""
+    account["noes_most"] = min(NOES_MOST_TOP, 2 * account.get("noes_most", NOES_MOST))
 
 
 async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any], said: str,
-                     moving: Callable[[], list[list[int]]], account: dict[str, Any]) -> bytes:
-    """The screen once a judge said it is the player's turn as `said` describes it, or as it is after `NOES_MOST`
-    noes in a row (the main model then looks). A screen is put to the judges once it changed since the last they
-    were shown (what keeps moving left out), or `AGAIN_S` after, at most every `ASK_EVERY_S`. With
-    GAMELAB_TURN_DUMP set, each picture judged is saved there with what the judges said."""
+                     account: dict[str, Any]) -> bytes:
+    """The screen once a judge said it is the player's turn as `said` describes it, or as it is after
+    `noes_most` noes in a row (the main model then looks). Each frame is put to the judges as it was taken; the
+    next is taken meanwhile. With GAMELAB_TURN_DUMP set, each picture judged is saved there with what the judges
+    said."""
     started = time.monotonic()
     account["waits"] += 1
-    asked_on: bytes | None = None
-    last_ask = started - ASK_EVERY_S + FIRST_S
     noes = 0
     png = await capture()
     try:
         while True:
-            now = time.monotonic()
-            changed = asked_on is None or now - last_ask >= AGAIN_S \
-                or bool(motion.outside(carry._boxes(asked_on, png), moving()))
-            if changed and now - last_ask >= ASK_EVERY_S:
-                last_ask, asked_on = now, png
+            # the next frame is taken while the judges look at this one: it is there when they say no
+            following = asyncio.ensure_future(capture())
+            try:
                 judged = await _judged(judges, png, said, account)
-                if judged:
-                    account["notice" if judged == NOTICED else "yes"] += 1
-                    return png
-                noes += 1
-                if noes >= NOES_MOST:
-                    account["noes_out"] += 1
-                    return png
-            await asyncio.sleep(LOOK_S)
-            png = await capture()
+            finally:
+                # a capture is let finish, not cut off (an adb command cut off is left running)
+                taken = await asyncio.gather(following, return_exceptions=True)
+            if judged:
+                account["notice" if judged == NOTICED else "yes"] += 1
+                return png
+            noes += 1
+            if noes >= account.get("noes_most", NOES_MOST):
+                account["noes_out"] += 1
+                return png
+            if isinstance(taken[0], BaseException):
+                raise taken[0]
+            png = taken[0]
     finally:
         account["seconds"] = round(account["seconds"] + time.monotonic() - started, 1)
 
@@ -141,6 +150,9 @@ async def _asked(judges: list[Any], checks: list[Any], account: dict[str, Any], 
             continue
         if p >= SURE_YES:
             return True
-        if p <= SURE_NO:
+        # a sure no to the turn is a no only when the judge was sure of the window too: one it was unsure of goes to
+        # the next judge (UNO!, 2026-11-24: "Played by computer" judged 0.45 to 0.62 four times in a row, about
+        # 14 s, while the turn was a sure no each time)
+        if p <= SURE_NO and (notice is None or notice <= SURE_NO):
             return False
     return False

@@ -24,7 +24,7 @@ movement, aimed by what the last measured carry showed.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 from io import BytesIO
 import time
 from typing import Any
@@ -35,6 +35,8 @@ from .surface import HOLD
 # the picture the change is looked for in is this many times smaller a side; a change smaller than this many
 # of 255 in every channel is none (a gradient redrawn, compression)
 REDUCE, CHANGED = 4, 28
+# a wait for a screen to settle compares it this many times smaller a side first (`coarse_boxes`)
+COARSE = 4
 # changed spots this near (reduced pixels) are one thing: a piece's blocks have gaps between them
 JOIN = 3
 # a held drawing is the same shape as what was picked up: its width and height grew by the same factor, within this
@@ -115,12 +117,51 @@ ARRANGED_ALIKE, ARRANGED_NEAR, ARRANGED_LEAST, ARRANGED_MOST = 0.2, 0.25, 0.5, 1
 def _boxes(before: bytes, after: bytes, ignore: list[list[int]] | None = None) -> list[list[int]]:
     """The things that changed between two captures, each as the box [left, top, width, height] around it.
     `ignore`: places whose changes are left out (what keeps moving there all the time)."""
-    from PIL import Image, ImageChops, ImageDraw
+    from PIL import Image, ImageChops
 
     with Image.open(BytesIO(before)) as one, Image.open(BytesIO(after)) as other:
         if one.size != other.size:
             return []
         changed = ImageChops.difference(one.convert("RGB"), other.convert("RGB"))
+    return _found(changed, ignore)
+
+
+def coarse_boxes(before: bytes, after: bytes) -> list[list[int]]:
+    """`_boxes` on the two captures made COARSE times smaller a side first, its boxes given on the whole screen:
+    whether a screen still changes, and where, for a wait on it to end (PLAN §36, 강제 대기 검토: a whole
+    phone screen took 88 ms to compare, made smaller 9 ms). A change smaller than a few pixels is lost in the
+    averaging, and changes near one another come out as one box: such a wait may end later, never earlier."""
+    from PIL import ImageChops
+
+    one, other = _coarse(before), _coarse(after)
+    if one.size != other.size:
+        return []
+    return [[value * COARSE for value in box] for box in _found(ImageChops.difference(one, other))]
+
+
+# the captures last made smaller, by their bytes: a wait compares each frame with the one before and the one after,
+# and taking a phone's whole screen out of its PNG is most of what a comparison costs (about 21 ms of 25)
+_COARSE_KEPT: "OrderedDict[bytes, Any]" = OrderedDict()
+
+
+def _coarse(png: bytes) -> Any:
+    from PIL import Image
+
+    if (kept := _COARSE_KEPT.get(png)) is not None:
+        _COARSE_KEPT.move_to_end(png)
+        return kept
+    with Image.open(BytesIO(png)) as image:
+        small = image.convert("RGB").reduce(COARSE)
+    _COARSE_KEPT[png] = small
+    while len(_COARSE_KEPT) > 4:
+        _COARSE_KEPT.popitem(last=False)
+    return small
+
+
+def _found(changed: Any, ignore: list[list[int]] | None = None) -> list[list[int]]:
+    """The boxes around what changed in a picture of the differences between two captures."""
+    from PIL import ImageChops, ImageDraw
+
     bands = [band.point(lambda value: 255 if value > CHANGED else 0) for band in changed.split()]
     full = ImageChops.lighter(ImageChops.lighter(bands[0], bands[1]), bands[2])
     if ignore:

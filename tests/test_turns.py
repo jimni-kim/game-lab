@@ -1,5 +1,6 @@
 """Waiting for the player's turn by a light judge's yes or no (`turns`, 2026-11-24): a toy game played in turns
 whose screen never comes to rest (a timer ticks at every look), where the other side takes a while."""
+import asyncio
 from io import BytesIO
 import json
 import time
@@ -23,9 +24,6 @@ def quick(monkeypatch):
     monkeypatch.setattr(direct, "CHANGE_LOOK_S", 0.02)
     monkeypatch.setattr(direct, "REST_S", 0.3)
     monkeypatch.setattr(recovery, "SETTLE_S", 0.0)
-    monkeypatch.setattr(turns, "LOOK_S", 0.02)
-    monkeypatch.setattr(turns, "FIRST_S", 0.0)
-    monkeypatch.setattr(turns, "ASK_EVERY_S", 0.05)
 
 
 class Table:
@@ -69,14 +67,17 @@ class Table:
 
 
 class Judge:
-    """Says yes when the hand in the picture is lit; counts what it was asked."""
+    """Says yes when the hand in the picture is lit; counts what it was asked. It takes a while to answer, as a
+    judge does (Jev about 0.5 s): the judges are asked one frame after another with no wait of their own."""
     name = "judge"
+    TAKES_S = 0.2
 
     def __init__(self, p_yes=0.95):
         self.asked, self.p_yes = 0, p_yes
 
     async def ask(self, checks, context):
         self.asked += 1
+        await asyncio.sleep(self.TAKES_S)
         image = Image.open(BytesIO(checks[0].image)).convert("RGB")
         x, y = image.width // 2, round(image.height * 450 / SIZE[1])
         lit = image.getpixel((x, y))[0] > 200
@@ -231,6 +232,7 @@ async def test_a_window_waiting_for_the_player_ends_the_wait_and_its_screen_is_a
     class Seer(Judge):
         async def ask(self, checks, context):
             self.asked += 1
+            await asyncio.sleep(self.TAKES_S)
             image = Image.open(BytesIO(checks[0].image)).convert("RGB")
             w = image.getpixel((image.width // 2, round(image.height * 300 / SIZE[1])))
             lit = image.getpixel((image.width // 2, round(image.height * 450 / SIZE[1])))[0] > 200
@@ -254,3 +256,56 @@ async def test_a_window_waiting_for_the_player_ends_the_wait_and_its_screen_is_a
     assert played.record["outcome"] == "goal_reached"
     # the window was seen at once, not after the other side's 5 s, and the model closed it
     assert made["turns"]["notice"] >= 1 and "window" in model.plays and model.plays.index("window") == 1
+
+
+class Frames:
+    """Pictures of the table one after another, the hand lit from the `lit_at`th on; counts the captures."""
+
+    def __init__(self, lit_at=3):
+        self.lit_at, self.taken = lit_at, 0
+
+    async def capture(self):
+        self.taken += 1
+        image = Image.new("RGB", SIZE, (20, 90, 40))
+        ImageDraw.Draw(image).rectangle((150, 400, 250, 500), fill=(250, 220, 0) if self.taken >= self.lit_at else (90, 90, 90))
+        out = BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def test_the_judges_are_shown_one_frame_after_another_the_next_taken_while_they_look():
+    # PLAN §36, 강제 대기 검토: no wait of the program's own between two judgings, and no look of its own first
+    frames, judge = Frames(lit_at=3), Judge()
+    account = turns.fresh_account()
+    started = time.monotonic()
+    png = await turns.until_turn(frames.capture, [judge], "your hand is lit yellow", account)
+    took = time.monotonic() - started
+    assert account["yes"] == 1 and judge.asked == 3 and png
+    # the third frame was judged, and the fourth was taken while it was
+    assert frames.taken == 4
+    assert took < 3 * Judge.TAKES_S + 0.15
+
+
+async def test_a_window_the_first_judge_is_unsure_of_goes_to_the_next_though_the_turn_is_a_sure_no():
+    class Unsure(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            return {"turn": {"p": 0.05}, "notice": {"p": 0.5}}
+
+    class Sure(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            return {"turn": {"p": 0.05}, "notice": {"p": 0.9}}
+
+    unsure, sure = Unsure(), Sure()
+    account = turns.fresh_account()
+    await turns.until_turn(Frames(lit_at=99).capture, [unsure, sure], "your hand is lit yellow", account)
+    assert account["notice"] == 1 and unsure.asked == 1 and sure.asked == 1
+
+
+def test_the_noes_a_wait_takes_grow_while_the_model_only_waits_after_them():
+    account = turns.fresh_account()
+    assert account["noes_most"] == turns.NOES_MOST
+    for _ in range(10):
+        turns.waited_for_nothing(account)
+    assert account["noes_most"] == turns.NOES_MOST_TOP

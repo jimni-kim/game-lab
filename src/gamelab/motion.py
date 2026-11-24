@@ -87,6 +87,17 @@ def outside(boxes: list[list[int]], moving: list[list[int]]) -> list[list[int]]:
     return [box for box in boxes if not inside(box, moving)]
 
 
+def uncovered(boxes: list[list[int]], moving: list[list[int]]) -> list[list[int]]:
+    """The changed places not mostly under the places that were moving, taken together: a change found on a picture
+    made smaller (`carry.coarse_boxes`) comes as one box over two moving things near one another, which no one
+    of them holds most of."""
+    def covered(box: list[int]) -> int:
+        return sum(max(0, min(box[0] + box[2], other[0] + other[2]) - max(box[0], other[0]))
+                   * max(0, min(box[1] + box[3], other[1] + other[3]) - max(box[1], other[1])) for other in moving)
+
+    return [box for box in boxes if covered(box) < max(1, box[2] * box[3]) / 2]
+
+
 def _area(png: bytes) -> int:
     from PIL import Image
 

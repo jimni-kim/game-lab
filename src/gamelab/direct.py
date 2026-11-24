@@ -502,7 +502,7 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None, before
         while time.monotonic() < deadline:
             previous = await look(previous.at + CHANGE_LOOK_S)
             moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-            if motion.outside(carry._boxes(before.png, previous.png), moving):
+            if motion.uncovered(carry.coarse_boxes(before.png, previous.png), moving):
                 return None
     elif kind == WAIT:
         await asyncio.sleep(action["ms"] / 1000)
@@ -510,10 +510,11 @@ async def send(surface: Any, action: dict[str, Any], carrier: Any = None, before
 
 
 def _looker(surface: Any) -> Any:
-    """How the screen is looked at no earlier than a time: drawn through what keeps moving on it when the surface
-    can (`motion.Steady`), else a frame as it is."""
-    steady = getattr(surface, "steady", None)
-    return steady if callable(steady) else frames.source_of(surface).frame
+    """How the screen is looked at no earlier than a time while it is waited on: a frame as it is. What keeps
+    moving on it is left out by where the surface last found it (`motion.Steady.moving`), not by drawing through
+    frames at every look (PLAN §36, 강제 대기 검토: five frames and their middle took 2.0 to 2.6 s a look on a
+    phone, so a wait on a screen with a turn timer ran 5.6 to 8 s)."""
+    return frames.source_of(surface).frame
 
 
 async def settled(surface: Any) -> bytes:
@@ -526,7 +527,7 @@ async def settled(surface: Any) -> bytes:
     while time.monotonic() < deadline:
         seen = await look(previous.at + STILL_GAP_S)
         moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-        if not motion.outside(carry._boxes(previous.png, seen.png), moving):
+        if not motion.uncovered(carry.coarse_boxes(previous.png, seen.png), moving):
             return seen.png
         previous = seen
     return previous.png
@@ -543,7 +544,7 @@ async def rested(surface: Any, ms: int) -> bytes:
     while time.monotonic() < deadline and time.monotonic() - still_since < REST_S:
         seen = await look(previous.at + CHANGE_LOOK_S)
         moving = motion.joined(moving + list(getattr(surface, "moving", [])))
-        if motion.outside(carry._boxes(previous.png, seen.png), moving):
+        if motion.uncovered(carry.coarse_boxes(previous.png, seen.png), moving):
             still_since = time.monotonic()
         previous = seen
     return previous.png

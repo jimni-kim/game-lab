@@ -157,8 +157,11 @@ class AndroidSurface:
         handle, path = tempfile.mkstemp(suffix=".png")
         os.close(handle)
         try:
-            turned = _ROTATION.search((await self.run(["shell", "dumpsys", "window", "displays"])).decode(errors="replace"))
-            said = await self.run(["emu", "screenrecord", "screenshot", path])
+            # the display's turn is read while the picture is taken, not before it: two adb round trips at once
+            # (PLAN §36, 강제 대기 검토: a frame took 0.28 s)
+            shown, said = await asyncio.gather(self.run(["shell", "dumpsys", "window", "displays"]),
+                                               self.run(["emu", "screenrecord", "screenshot", path]))
+            turned = _ROTATION.search(shown.decode(errors="replace"))
             raw = Path(path).read_bytes()
         except (RuntimeError, OSError):
             return None

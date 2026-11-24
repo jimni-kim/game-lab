@@ -394,8 +394,11 @@ class Agent:
         self.turn_judges: list[Any] = list(turn or [])
         self.turn_account = turn_wait.fresh_account()
         self.turn_said: bool | None = None
-        # the screen the judge said yes on, for the next question to be about
+        # in a game whose turn the judges watch, the screen last waited on after an input (the judges' last, or the
+        # one the input came to rest on), for the next question to be about
         self.turn_screen: bytes | None = None
+        # the inputs sent when it was kept
+        self.turn_screen_at = 0
         # the questions put to it, the cells its answers named, and the answers the rules did not take
         self.light_told = {"questions": 0, "named": 0, "refused": 0}
         # a reader by samples and the one result the rules say a move has (`_teach`): the screen's unread cells kept
@@ -2897,7 +2900,9 @@ class Agent:
             self._check_stops()
             # the screen the turn judge just said shows the player's turn is the one asked about: not looked at
             # again (2026-11-24: 3.4 s between the judge's yes and the question, in a turn of 10 s)
-            before, self.turn_screen = (self.turn_screen or await self.seen.capture()), None
+            # (only while no input was sent since it was kept: a family or the falling loop may have played between)
+            kept = self.turn_screen if self.turn_screen is not None and self.turn_screen_at == self.used else None
+            before, self.turn_screen = (kept or await self.seen.capture()), None
             moving = list(self.seen.moving)
             looked, looked_at = time.monotonic(), time.time()
             self.shots += 1
@@ -2952,8 +2957,13 @@ class Agent:
                 # the judge said the turn had come back and the model only waits: that yes was wrong
                 self.turn_account["false_yes"] += 1
             elif self.turn_said is False and scene in (None, scenes.BOARD) and action["kind"] != direct.WAIT:
-                # the judges kept saying no and the model played at once: the turn was there
+                # the judges kept saying no and the model played at once: the turn was there, and the next wait
+                # takes no more of their noes than at first
                 self.turn_account["false_no"] += 1
+                self.turn_account["noes_most"] = turn_wait.NOES_MOST
+            elif self.turn_said is False and action["kind"] == direct.WAIT:
+                # they were right: the next wait takes more of their noes before the model is asked
+                turn_wait.waited_for_nothing(self.turn_account)
             self.turn_said = None
             self._after_pick(answer.get("pick"))
             if self.counting is not None and answer.get("progress", 0) > self.counting:
@@ -3145,10 +3155,13 @@ class Agent:
                 self.profiles.append({"made": answer["profile"], "situation": player.situation})
             if self.watch is not None:
                 await self.watch.sent()
-            # a turn handed over and waited for by the turn judge is not first waited for to rest: the judge looks
-            # at once (2026-11-24: the rest ran its 3 s every time on a screen whose timer never stops)
+            # a turn handed over and waited for by the turn judge is not first waited for to rest, nor looked at
+            # before the judge looks: the judge's first frame is the screen after it (2026-11-24: the rest ran its 3 s
+            # every time on a screen whose timer never stops; then a look of its own put the first judging 5.8 s
+            # after the card was played, PLAN §36 강제 대기 검토)
             judged = bool(rest and cue and self.turn_judges and not queue)
-            after = await (self.seen.capture() if judged else self._settled())
+            # `before` stands in for the screen after until the judges give it, below: no queue follows
+            after = before if judged else await self._settled()
             moving = motion.joined(moving + self.seen.moving)
             repeated, sent_on = None, before
             # the screen each input of this answer was sent on
@@ -3212,12 +3225,14 @@ class Agent:
                     # the model said what its turn looks like: a light judge says when the screen shows it
                     # (`turn_wait`), in place of waiting for a screen that may never rest
                     yes, notices = self.turn_account["yes"], self.turn_account["notice"]
-                    after = await turn_wait.until_turn(self.seen.capture, self.turn_judges, cue,
-                                                       lambda: self.seen.moving, self.turn_account)
+                    # frames as they are, not drawn through what keeps moving: that took 2.0 to 2.6 s a look on a
+                    # phone (PLAN §36, 강제 대기 검토)
+                    after = await turn_wait.until_turn(self.seen.snap, self.turn_judges, cue, self.turn_account)
                     noticed = self.turn_account["notice"] > notices
-                    # a yes or a notice: the model is asked about this very screen; a notice is not held against it
+                    # the model is asked about this very screen, a moment old, whatever the judges said; a notice is
+                    # not held against them
                     self.turn_said = None if noticed else self.turn_account["yes"] > yes
-                    self.turn_screen = after if noticed or self.turn_said else None
+                    self.turn_screen, self.turn_screen_at = after, self.used
                     self.found["turns"] = self.turn_account
                 else:
                     after = await self._rested(rest)
@@ -3226,6 +3241,11 @@ class Agent:
                 turns["times"], turns["seconds"] = turns["times"] + 1, round(turns["seconds"] + time.monotonic() - waited, 1)
                 repeated = {**(repeated or {"sent": 1, "stopped": "count"}),
                             "waited_ms": round((time.monotonic() - waited) * 1000)}
+            if cue and self.turn_judges and level and self.turn_screen is None:
+                # a game played in turns whose turn the judges watch: the screen the input was last waited on is
+                # the one asked about, not looked at again drawn through what keeps moving (PLAN §36, 강제 대기
+                # 검토: 2.1 to 2.4 s on a screen with a turn timer, within a turn of 10 s)
+                self.turn_screen, self.turn_screen_at = after, self.used
             # whether the last input sent changed anything
             tail = bool(self._share(sent_on, after, moving)) if moves else None
             if moves:
