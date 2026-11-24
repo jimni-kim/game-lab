@@ -2675,3 +2675,5 @@ R1·P2·D2를 main에 합친 뒤, 세션 기록이 사용자에게 넘긴 것 �
 **캔디크러쉬에 남은 문제(고치지 않음).** 고친 뒤 2판의 레벨 9에서 키트가 33수 중 28수를 헛뒀고, `fruitless`로 세 번 놓은 뒤 레벨은 직접 두기가 깼다. 레벨 9의 주 모델 판독은 25번이었다.
 1. **종류 모를 특수 조각과의 맞바꿈에서 배우지 않음.** 물고기 사탕을 종류 모를 힘(`POWER`)으로 읽었다(505). `rules.match3.learned`는 `POWER`가 낀 수에서 `swap_power`를 배우지 않으므로, 거절돼도 같은 맞바꿈이 계속 후보에 남는다. 장애물·특수 조각의 규칙이라 방향을 정한 뒤 고친다.
 2. **거절된 수를 빼 두는 장치가 판독 흔들림에 풀림.** `_spent`가 상태 전체의 해시(`state_id`)로 묶이는데, 머랭 밑 젤리(`under`)의 판독이 흔들려 같은 조각 배치가 다른 판이 되었다. 그래서 거절된 수를 연달아 다시 보냈다(9·10번째 수). 수가 되는지는 조각 배치(`grid`)로만 정해지므로, 조각 배치로 묶는 것이 안이다(게임 무관).
+
+**앱 정리(2026-11-24, 사용자 지시: "블록 게임은 다른 게임으로 했으니 삭제").** `game-lab`에서 Block Bloom(`com.nebula.blockbloom`), Block Night(`pt.tiago.blocknight`), Block Crush!(`com.wood.block.sudoku.puzzle.bm`), Color Block(`com.puzzlegames.puzzlebrickslegend`)을 `adb uninstall`로 지웠다. 블록 놓기는 Block Game, 떨어지는 블록은 Tetris®로 잰다. 그래서 위 6번의 "실측에 쓴 게임은 지우지 않는다"의 예외다. 남은 게임: 로얄 매치, 꿈의 집, 캔디크러쉬 사가·소다, 2048, Puzzles, Block Game, 1010!, Block Bash, Tetris®, 창고지기 Touch, Rogue Adventure.
