@@ -394,6 +394,8 @@ class Agent:
         self.turn_judges: list[Any] = list(turn or [])
         self.turn_account = turn_wait.fresh_account()
         self.turn_said: bool | None = None
+        # the screen the judge said yes on, for the next question to be about
+        self.turn_screen: bytes | None = None
         # the questions put to it, the cells its answers named, and the answers the rules did not take
         self.light_told = {"questions": 0, "named": 0, "refused": 0}
         # a reader by samples and the one result the rules say a move has (`_teach`): the screen's unread cells kept
@@ -2893,7 +2895,9 @@ class Agent:
                     and player.score >= self.goal.target_value:
                 raise _End(Outcome.GOAL_REACHED, objective)
             self._check_stops()
-            before = await self.seen.capture()
+            # the screen the turn judge just said shows the player's turn is the one asked about: not looked at
+            # again (2026-11-24: 3.4 s between the judge's yes and the question, in a turn of 10 s)
+            before, self.turn_screen = (self.turn_screen or await self.seen.capture()), None
             moving = list(self.seen.moving)
             looked, looked_at = time.monotonic(), time.time()
             self.shots += 1
@@ -3141,7 +3145,10 @@ class Agent:
                 self.profiles.append({"made": answer["profile"], "situation": player.situation})
             if self.watch is not None:
                 await self.watch.sent()
-            after = await self._settled()
+            # a turn handed over and waited for by the turn judge is not first waited for to rest: the judge looks
+            # at once (2026-11-24: the rest ran its 3 s every time on a screen whose timer never stops)
+            judged = bool(rest and cue and self.turn_judges and not queue)
+            after = await (self.seen.capture() if judged else self._settled())
             moving = motion.joined(moving + self.seen.moving)
             repeated, sent_on = None, before
             # the screen each input of this answer was sent on
@@ -3204,10 +3211,13 @@ class Agent:
                 if cue and self.turn_judges:
                     # the model said what its turn looks like: a light judge says when the screen shows it
                     # (`turn_wait`), in place of waiting for a screen that may never rest
-                    yes = self.turn_account["yes"]
+                    yes, notices = self.turn_account["yes"], self.turn_account["notice"]
                     after = await turn_wait.until_turn(self.seen.capture, self.turn_judges, cue,
                                                        lambda: self.seen.moving, self.turn_account)
-                    self.turn_said = self.turn_account["yes"] > yes
+                    noticed = self.turn_account["notice"] > notices
+                    # a yes or a notice: the model is asked about this very screen; a notice is not held against it
+                    self.turn_said = None if noticed else self.turn_account["yes"] > yes
+                    self.turn_screen = after if noticed or self.turn_said else None
                     self.found["turns"] = self.turn_account
                 else:
                     after = await self._rested(rest)

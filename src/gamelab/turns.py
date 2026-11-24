@@ -29,7 +29,7 @@ from . import carry, checker, motion, recovery
 
 # how often the screen is looked at while waiting, how soon after handing over the judge is first asked, and how
 # often it is asked at most (a screen it said no to is asked again once it changed, or after `AGAIN_S` as it is)
-LOOK_S, FIRST_S, ASK_EVERY_S, AGAIN_S = 0.4, 0.8, 1.0, 3.0
+LOOK_S, FIRST_S, ASK_EVERY_S, AGAIN_S = 0.4, 0.0, 1.0, 3.0
 # a judge's probability of yes at or above this is a yes, at or below the other a no; between, the next judge is
 # asked
 SURE_YES, SURE_NO = 0.7, 0.3
@@ -45,6 +45,13 @@ CONTEXT = ("A game played in turns. The player handed the turn to the other side
 QUESTION = ("{image} is the game's screen now. Is it the player's own turn now, so that the player can act? It is the "
             "player's turn when the screen shows this: {cue}. Answer yes only when the screen shows it now, not while "
             "the other side is still acting.")
+# asked beside it: a window, banner or message over the game waiting for the player to act on it. The game may have
+# taken the player's turns over after a timeout and keep playing them until told to stop (UNO!, 2026-11-24: "Played
+# by computer" with a Cancel button stood 24 to 36 s each time, the judge rightly saying it was no turn of the
+# player's); the main model is asked at once
+NOTICE = ("Over the game in {image}, is there a window, banner or message addressed to the player that waits for them "
+          "to act on it: something to confirm, cancel or choose, or a notice that the game now plays for them? The "
+          "game's usual table, its usual buttons and the other side's moves do not count.")
 
 
 def cue(said: Any) -> str | None:
@@ -54,8 +61,10 @@ def cue(said: Any) -> str | None:
 
 def fresh_account() -> dict[str, Any]:
     # `noes_out`: waits that ended on `NOES_MOST` noes; of those, `false_no`: the main model played at once (the
-    # turn was there); `false_yes`: a yes the main model only waited at
-    return {"waits": 0, "asked": 0, "yes": 0, "noes_out": 0, "false_yes": 0, "false_no": 0, "seconds": 0.0, "by": {}}
+    # turn was there); `false_yes`: a yes the main model only waited at; `notice`: waits that ended on a window
+    # waiting for the player (`NOTICE`)
+    return {"waits": 0, "asked": 0, "yes": 0, "noes_out": 0, "false_yes": 0, "false_no": 0, "notice": 0,
+            "seconds": 0.0, "by": {}}
 
 
 async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any], said: str,
@@ -77,8 +86,9 @@ async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any],
                 or bool(motion.outside(carry._boxes(asked_on, png), moving()))
             if changed and now - last_ask >= ASK_EVERY_S:
                 last_ask, asked_on = now, png
-                if await _judged(judges, png, said, account):
-                    account["yes"] += 1
+                judged = await _judged(judges, png, said, account)
+                if judged:
+                    account["notice" if judged == NOTICED else "yes"] += 1
                     return png
                 noes += 1
                 if noes >= NOES_MOST:
@@ -90,14 +100,18 @@ async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any],
         account["seconds"] = round(account["seconds"] + time.monotonic() - started, 1)
 
 
-async def _judged(judges: list[Any], png: bytes, said: str, account: dict[str, Any]) -> bool:
-    """Whether the judges say the screen shows the player's turn: the first sure answer stands; one no judge was
-    sure of is a no."""
+NOTICED = "notice"
+
+
+async def _judged(judges: list[Any], png: bytes, said: str, account: dict[str, Any]) -> bool | str:
+    """Whether the judges say the screen shows the player's turn (True), or a window waiting for the player
+    (`NOTICED`): the first sure answer stands; one no judge was sure of is a no."""
     shown = recovery.view(png, VIEW_SIDE)[0]
-    check = checker.Check("turn", checker.NOUL, QUESTION.format(image=checker.IMAGE, cue=said), shown)
+    checks = [checker.Check("turn", checker.NOUL, QUESTION.format(image=checker.IMAGE, cue=said), shown),
+              checker.Check("notice", checker.NOUL, NOTICE.format(image=checker.IMAGE), shown)]
     said_by: dict[str, Any] = {}
     try:
-        return await _asked(judges, check, account, said_by)
+        return await _asked(judges, checks, account, said_by)
     finally:
         if os.environ.get("GAMELAB_TURN_DUMP"):
             folder = os.environ["GAMELAB_TURN_DUMP"]
@@ -109,17 +123,20 @@ async def _judged(judges: list[Any], png: bytes, said: str, account: dict[str, A
                 json.dump({"cue": said, "said": said_by}, out, ensure_ascii=False)
 
 
-async def _asked(judges: list[Any], check: Any, account: dict[str, Any], said_by: dict[str, Any]) -> bool:
+async def _asked(judges: list[Any], checks: list[Any], account: dict[str, Any], said_by: dict[str, Any]) -> bool | str:
     for judge in judges:
         account["asked"] += 1
         name = getattr(judge, "name", "judge")
         account["by"][name] = account["by"].get(name, 0) + 1
         try:
-            answer = (await judge.ask([check], CONTEXT)).get("turn")
+            answers = await judge.ask(checks, CONTEXT)
         except Exception:
             continue
-        p = answer.get("p") if answer else None
-        said_by[name] = p
+        p = (answers.get("turn") or {}).get("p")
+        notice = (answers.get("notice") or {}).get("p")
+        said_by[name] = {"turn": p, "notice": notice}
+        if notice is not None and notice >= SURE_YES:
+            return NOTICED
         if p is None:
             continue
         if p >= SURE_YES:

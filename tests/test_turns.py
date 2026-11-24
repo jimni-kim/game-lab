@@ -199,3 +199,58 @@ async def test_judges_that_never_see_the_turn_hand_it_to_the_model_after_a_few_n
     # no time of its own: each wait ended on the noes, and the model played the turn the judge missed
     assert waited["noes_out"] >= 1 and waited["yes"] == 0 and waited["false_no"] >= 1
     assert blind.asked >= turns.NOES_MOST and time.monotonic() - started < 10
+
+
+async def test_a_window_waiting_for_the_player_ends_the_wait_and_its_screen_is_asked_about(monkeypatch):
+    class Popup(Table):
+        """After the first card the game puts up a window over the table (the turn played for the player) until it
+        is tapped away; the turn itself comes back only once it is gone."""
+        def __init__(self):
+            super().__init__()
+            self.window = False
+
+        async def capture(self, region=None):
+            png = await super().capture(region)
+            if not self.window:
+                return png
+            image = Image.open(BytesIO(png)).convert("RGB")
+            ImageDraw.Draw(image).rectangle((100, 250, 300, 350), fill=(250, 0, 250))
+            out = BytesIO()
+            image.save(out, format="PNG")
+            return out.getvalue()
+
+        async def tap(self, x, y, duration_ms):
+            if self.window and 100 <= x <= 300 and 250 <= y <= 350:
+                self.window = False
+                return
+            before = self.played
+            await super().tap(x, y, duration_ms)
+            if self.played == 1 and before == 0:
+                self.window = True
+
+    class Seer(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            image = Image.open(BytesIO(checks[0].image)).convert("RGB")
+            w = image.getpixel((image.width // 2, round(image.height * 300 / SIZE[1])))
+            lit = image.getpixel((image.width // 2, round(image.height * 450 / SIZE[1])))[0] > 200
+            assert [check.key for check in checks] == ["turn", "notice"]
+            return {"turn": {"p": 0.95 if lit else 0.05}, "notice": {"p": 0.95 if w == (250, 0, 250) else 0.02}}
+
+    class Closer(Model):
+        async def complete(self, request):
+            context = json.loads(request.messages[0].content[0]["text"])
+            if context.get("play") and self.game.window:
+                self.plays.append("window")
+                return TurnResult(text=json.dumps({"situation": "a window", "scene": "popup", "expect": "it closes",
+                                                   "action": {"kind": "tap", "at": [200, 300]}}))
+            return await super().complete(request)
+
+    game, judge = Popup(), Seer()
+    game.OTHER_S = 5.0
+    started = time.monotonic()
+    model = Closer(game, once=True, rounds=2)
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(30, 1, 60), turn=[judge])
+    assert played.record["outcome"] == "goal_reached"
+    # the window was seen at once, not after the other side's 5 s, and the model closed it
+    assert made["turns"]["notice"] >= 1 and "window" in model.plays and model.plays.index("window") == 1
