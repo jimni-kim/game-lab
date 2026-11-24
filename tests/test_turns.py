@@ -300,7 +300,7 @@ async def test_a_window_the_first_judge_is_unsure_of_goes_to_the_next_though_the
     unsure, sure = Unsure(), Sure()
     account = turns.fresh_account()
     await turns.until_turn(Frames(lit_at=99).capture, [unsure, sure], "your hand is lit yellow", account)
-    assert account["notice"] == 1 and unsure.asked == 1 and sure.asked == 1
+    assert account["notice"] == 1 and unsure.asked >= 1 and sure.asked == 1
 
 
 def test_the_noes_a_wait_takes_grow_while_the_model_only_waits_after_them():
@@ -309,3 +309,56 @@ def test_the_noes_a_wait_takes_grow_while_the_model_only_waits_after_them():
     for _ in range(10):
         turns.waited_for_nothing(account)
     assert account["noes_most"] == turns.NOES_MOST_TOP
+
+
+async def test_the_fast_judge_goes_on_while_the_careful_one_looks_at_a_frame_it_was_unsure_of():
+    # UNO!, 2026-11-24: waiting for the careful judge took 11 to 12 s, and the turn went by meanwhile
+    class Fast(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            await asyncio.sleep(self.TAKES_S)
+            # unsure of the first frames, sure of the turn once the hand is lit
+            image = Image.open(BytesIO(checks[0].image)).convert("RGB")
+            lit = image.getpixel((image.width // 2, round(image.height * 450 / SIZE[1])))[0] > 200
+            return {"turn": {"p": 0.95 if lit else 0.5}, "notice": {"p": 0.05}}
+
+    class Slow(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            await asyncio.sleep(5.0)
+            return {"turn": {"p": 0.05}, "notice": {"p": 0.05}}
+
+    fast, slow = Fast(), Slow()
+    account = turns.fresh_account()
+    started = time.monotonic()
+    await turns.until_turn(Frames(lit_at=3).capture, [fast, slow], "your hand is lit yellow", account)
+    # the fast judge's yes of the third frame ended it, long before the careful one answered
+    assert account["yes"] == 1 and fast.asked == 3 and slow.asked == 1
+    assert time.monotonic() - started < 2.0
+
+
+async def test_the_careful_judges_yes_of_a_frame_a_moment_old_stands_while_the_fast_one_is_unsure():
+    class Fast(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            await asyncio.sleep(self.TAKES_S)
+            return {"turn": {"p": 0.5}, "notice": {"p": 0.05}}
+
+    class Careful(Judge):
+        async def ask(self, checks, context):
+            self.asked += 1
+            await asyncio.sleep(0.5)
+            return {"turn": {"p": 0.95}, "notice": {"p": 0.05}}
+
+    fast, careful = Fast(), Careful()
+    account = turns.fresh_account()
+    await turns.until_turn(Frames(lit_at=99).capture, [fast, careful], "your hand is lit yellow", account)
+    # the fast judge went on meanwhile, and no unsure answer counted as a no
+    assert account["yes"] == 1 and careful.asked == 1 and fast.asked >= 3 and account["noes_out"] == 0
+
+
+async def test_a_lone_judge_that_is_never_sure_ends_on_its_noes():
+    account = turns.fresh_account()
+    # the hand lit at every frame and the judge unsure of it each time
+    await turns.until_turn(Frames(lit_at=1).capture, [Judge(p_yes=0.5)], "your hand is lit yellow", account)
+    assert account["noes_out"] == 1 and account["asked"] == turns.NOES_MOST

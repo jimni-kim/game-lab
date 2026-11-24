@@ -20,6 +20,7 @@ Whether a yes was right is seen at the next question: a model that answers `wait
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import os
 import time
@@ -79,26 +80,45 @@ def waited_for_nothing(account: dict[str, Any]) -> None:
 async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any], said: str,
                      account: dict[str, Any]) -> bytes:
     """The screen once a judge said it is the player's turn as `said` describes it, or as it is after
-    `noes_most` noes in a row (the main model then looks). Each frame is put to the judges as it was taken; the
-    next is taken meanwhile. With GAMELAB_TURN_DUMP set, each picture judged is saved there with what the judges
-    said."""
+    `noes_most` noes in a row (the main model then looks). Each frame is put to the fast judge (the first) as it
+    was taken; the next is taken meanwhile. A frame the fast judge is unsure of is put to the careful ones (the
+    rest) beside it, and the fast judge goes on with the frames after: whichever is first sure of a yes ends the
+    wait (UNO!, 2026-11-24: waiting for the careful judge took 11 to 12 s, and the turn went by meanwhile). With
+    GAMELAB_TURN_DUMP set, each picture judged is saved there with what the judges said."""
     started = time.monotonic()
     account["waits"] += 1
+    fast, careful = judges[:1], judges[1:]
     noes = 0
+    # the careful judges at a frame the fast one was unsure of, while it goes on
+    behind: asyncio.Future[Any] | None = None
     png = await capture()
     try:
         while True:
-            # the next frame is taken while the judges look at this one: it is there when they say no
+            # the next frame is taken while the judge looks at this one: it is there when it says no
             following = asyncio.ensure_future(capture())
             try:
-                judged = await _judged(judges, png, said, account)
+                judged = await _judged(fast, png, said, account)
             finally:
                 # a capture is let finish, not cut off (an adb command cut off is left running)
                 taken = await asyncio.gather(following, return_exceptions=True)
-            if judged:
+            if behind is not None and behind.done():
+                late = None if behind.cancelled() or behind.exception() is not None else behind.result()
+                behind = None
+                if late in (True, NOTICED) and judged == UNSURE:
+                    # the careful judges' yes of a frame a moment old stands while the fast one is still unsure of
+                    # the screen; a sure no of it now does not let it
+                    judged = late
+                elif late not in (True, NOTICED):
+                    noes += 1
+            if judged in (True, NOTICED):
                 account["notice" if judged == NOTICED else "yes"] += 1
                 return png
-            noes += 1
+            if judged == UNSURE and careful:
+                if behind is None:
+                    behind = asyncio.ensure_future(_judged(careful, png, said, account))
+            else:
+                # a sure no, or unsure with no one more careful to ask
+                noes += 1
             if noes >= account.get("noes_most", NOES_MOST):
                 account["noes_out"] += 1
                 return png
@@ -106,15 +126,21 @@ async def until_turn(capture: Callable[[], Awaitable[bytes]], judges: list[Any],
                 raise taken[0]
             png = taken[0]
     finally:
+        if behind is not None and not behind.done():
+            behind.cancel()
         account["seconds"] = round(account["seconds"] + time.monotonic() - started, 1)
 
 
 NOTICED = "notice"
+# what judges none of which was sure either way said
+UNSURE = "unsure"
+# the pictures saved for looking into the judges (GAMELAB_TURN_DUMP), numbered in turn
+_DUMPED = itertools.count(1)
 
 
 async def _judged(judges: list[Any], png: bytes, said: str, account: dict[str, Any]) -> bool | str:
-    """Whether the judges say the screen shows the player's turn (True), or a window waiting for the player
-    (`NOTICED`): the first sure answer stands; one no judge was sure of is a no."""
+    """Whether the judges say the screen shows the player's turn (True), a window waiting for the player
+    (`NOTICED`), or neither (False): the first sure answer stands. `UNSURE` when none was sure."""
     shown = recovery.view(png, VIEW_SIDE)[0]
     checks = [checker.Check("turn", checker.NOUL, QUESTION.format(image=checker.IMAGE, cue=said), shown),
               checker.Check("notice", checker.NOUL, NOTICE.format(image=checker.IMAGE), shown)]
@@ -125,7 +151,7 @@ async def _judged(judges: list[Any], png: bytes, said: str, account: dict[str, A
         if os.environ.get("GAMELAB_TURN_DUMP"):
             folder = os.environ["GAMELAB_TURN_DUMP"]
             os.makedirs(folder, exist_ok=True)
-            stem = os.path.join(folder, f"turn-{os.getpid()}-{account['asked']:03d}")
+            stem = os.path.join(folder, f"turn-{os.getpid()}-{next(_DUMPED):03d}")
             with open(stem + ".png", "wb") as out:
                 out.write(shown)
             with open(stem + ".json", "w", encoding="utf-8") as out:
@@ -133,6 +159,8 @@ async def _judged(judges: list[Any], png: bytes, said: str, account: dict[str, A
 
 
 async def _asked(judges: list[Any], checks: list[Any], account: dict[str, Any], said_by: dict[str, Any]) -> bool | str:
+    # a judge that answered and was sure of nothing: the answer is UNSURE, not a no, when none after it was sure
+    unsure = False
     for judge in judges:
         account["asked"] += 1
         name = getattr(judge, "name", "judge")
@@ -155,4 +183,5 @@ async def _asked(judges: list[Any], checks: list[Any], account: dict[str, Any], 
         # 14 s, while the turn was a sure no each time)
         if p <= SURE_NO and (notice is None or notice <= SURE_NO):
             return False
-    return False
+        unsure = True
+    return UNSURE if unsure else False
