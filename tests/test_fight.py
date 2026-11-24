@@ -1,6 +1,7 @@
 """A turn of a card fight read once by a model and searched by code (PLAN §27 M10, §36 E7). The game here is a toy
 fight: cards dragged from a hand onto an enemy (or up, played on no one), the hand closing up as cards leave it, an
-end-turn button after which the enemies hit for what they showed and a new hand is dealt."""
+end-turn button after which the enemies hit for what they showed and a new hand is dealt. The cards are pictures
+with no names (§36 E7b): a model may call one otherwise at every reading, and may know no rule for any."""
 from io import BytesIO
 import json
 
@@ -17,8 +18,11 @@ SIZE = (600, 800)
 END = [520, 760]
 CARDS = {"Strike": {"damage": 6, "target": "enemy", "shade": 40},
          "Defend": {"block": 5, "target": "none", "shade": 200},
-         "Cleave": {"damage": 4, "target": "all", "shade": 120}}
-CARDS_RIGHT = {name: {"cost": 1, **{k: v for k, v in card.items() if k != "shade"}} for name, card in CARDS.items()}
+         "Cleave": {"damage": 4, "target": "all", "shade": 120},
+         # 4 for each card played this turn, itself too
+         "Knight": {"damage_each": 4, "target": "enemy", "shade": 80}}
+CARDS_RIGHT = {name: {"cost": 1, **{k: v for k, v in card.items() if k not in ("shade", "damage_each")}}
+               for name, card in CARDS.items() if name != "Knight"}
 DEAL = ["Defend", "Strike", "Cleave", "Strike"]
 
 
@@ -40,9 +44,10 @@ class Duel:
     reads_dom = False
     kinds = frozenset({"tap", "drag"})
 
-    def __init__(self, enemies):
+    def __init__(self, enemies, deal=DEAL):
         self.enemies = [dict(enemy) for enemy in enemies]
-        self.hp, self.block, self.energy, self.hand = 50, 0, 3, list(DEAL)
+        self.deal, self.turn_played = list(deal), 0
+        self.hp, self.block, self.energy, self.hand = 50, 0, 3, list(deal)
         self.played: list[str] = []
 
     async def size(self):
@@ -87,17 +92,18 @@ class Duel:
         if card["target"] == "enemy" and target is None or card["target"] != "enemy" and to_y > 500:
             return
         self.energy -= 1
+        self.turn_played += 1
         self.played.append(self.hand.pop(index))
         for enemy in [target] if card["target"] == "enemy" else [e for e in self.enemies if e["hp"] > 0] \
                 if card["target"] == "all" else []:
-            enemy["hp"] = max(0, enemy["hp"] - card["damage"])
+            enemy["hp"] = max(0, enemy["hp"] - card.get("damage", 0) - card.get("damage_each", 0) * self.turn_played)
         self.block += card.get("block", 0)
 
     async def tap(self, x, y, duration_ms):
         if abs(x - END[0]) <= 40 and abs(y - END[1]) <= 20 and any(e["hp"] > 0 for e in self.enemies):
             incoming = sum(e["intent"] for e in self.enemies if e["hp"] > 0)
             self.hp -= max(0, incoming - self.block)
-            self.block, self.energy, self.hand = 0, 3, list(DEAL)
+            self.block, self.energy, self.hand, self.turn_played = 0, 3, list(self.deal), 0
 
     async def release(self):
         pass
@@ -107,9 +113,10 @@ class Model:
     """Reads the toy fight off the game itself; writes `rules` for the cards (the right ones unless told), and
     plays as `direct` says when it is asked to."""
 
-    def __init__(self, game, rules=None, direct_answers=None):
-        self.game, self.rules = game, rules or {name: {"cost": 1, **{k: v for k, v in card.items() if k != "shade"}}
-                                                for name, card in CARDS.items()}
+    def __init__(self, game, rules=None, direct_answers=None, names=None):
+        self.game, self.rules = game, CARDS_RIGHT if rules is None else rules
+        # what a card is called at a reading (the number of the reading given): its own name unless told
+        self.names = names or (lambda name, reading: name)
         self.direct = list(direct_answers or [])
         self.asked: list[str] = []
         self.reads: list[dict] = []
@@ -140,10 +147,11 @@ class Model:
                 "me": {"hp": game.hp, "hp_most": 50, "block": game.block},
                 "enemies": [{"name": e["name"], "hp": e["hp"], "block": 0, "at": [e["x"] + 75, 200],
                              "intent": {"damage": e["intent"], "hits": 1}} for e in alive],
-                "hand": [{"name": name, "at": [slot(i)[0] + 60, 640], "box": slot(i)} for i, name in enumerate(game.hand)],
+                "hand": [{"name": self.names(name, len(self.reads)), "at": [slot(i)[0] + 60, 640], "box": slot(i)}
+                         for i, name in enumerate(game.hand)],
                 "end_turn": END, "play": "drag", "drop": [300, 420],
-                "rules": {name: CARDS_RIGHT[name] if name in context.get("rules_off", {}) else self.rules[name]
-                          for name in set(game.hand) if name not in context["cards_known"]}}
+                "rules": {self.names(name, len(self.reads)): self.rules.get(name) for name in set(game.hand)
+                          if self.names(name, len(self.reads)) not in context["cards_known"]}}
 
 
 def test_the_search_kills_what_it_can_and_blocks_what_it_cannot():
@@ -185,26 +193,68 @@ async def test_a_turn_is_read_once_and_its_cards_are_found_where_they_moved(tmp_
     assert set(kept["card_rules"]) == {"Strike", "Defend", "Cleave"}
 
 
-async def test_a_rule_the_screen_does_not_bear_out_is_dropped_and_the_turn_is_the_models():
+async def test_rules_the_screen_does_not_bear_out_are_written_again_from_what_is_seen():
     game = Duel([{"name": "ogre", "hp": 60, "intent": 2, "x": 200}])
-    wrong = {name: {"cost": 1, **{k: v for k, v in card.items() if k != "shade"}} for name, card in CARDS.items()}
-    wrong["Strike"] = {"cost": 1, "target": "enemy", "damage": 9}
-    end = {"action": {"kind": "tap", "at": END, "then_wait_ms": 1000}}
-    model = Model(game, rules=wrong, direct_answers=[{"action": {"kind": "wait", "ms": 100}}, end, end, end, end, end])
-    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(40, 1, 60))
+    wrong = {**CARDS_RIGHT, "Strike": {"cost": 1, "target": "enemy", "damage": 9}}
+    model = Model(game, rules=wrong)
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(80, 1, 60))
     fought = made["direct"]["fight"]
-    # the first turn foresaw the ogre at less health than it had: Strike lost its rule, and the turn was the model's
-    assert fought["dropped"] and fought["dropped"][0]["cards"] == ["Strike"]
-    assert fought["fell_back"].get("rule_off") == 1
-    # the next reading was told what was off, and the rule written then is right: the fight goes on by code
-    told = [read for read in model.reads if "rules_off" in read]
-    assert told and "Strike" in told[0]["rules_off"] and fought["turns"] >= 2
-    # one dropped as often as that is played by the search no more, and nor asked about
+    # the first turn foresaw the ogre at less health than it had, and one card alone could account for it: its
+    # rule was written from what the screen showed. No rule was dropped and no turn was the model's
+    assert not fought["dropped"]
+    assert not fought["fell_back"].get("rule_off") and not fought["fell_back"].get("no_rule")
+    assert [one["is"] for one in fought["learned"] if one["card"] == "Strike"] == [{"damage": 6, "damage_per_card": 0}]
+    assert played.record["outcome"] == "goal_reached" and model.asked.count("play_direct") <= 2
+    # one dropped twice gets no rule again: it is played with what energy is left, after the cards that have rules
     again = fight.Fight({"Defend": CARDS_RIGHT["Defend"]})
     again.off["Strike"] = ["x", "y"]
     read = {"energy": 3, "hp": 9, "block": 0, "hand": [{"name": "Strike"}, {"name": "Defend"}],
             "enemies": [{"name": "o", "hp": 9, "block": 0, "damage": 3, "hits": 1, "at": [0, 0]}]}
-    assert again.plan(read)["steps"] == [[1, None]]
+    assert again.plan(read)["steps"] == [[1, None], [0, 0]]
+
+
+async def test_cards_are_told_by_their_pictures_whatever_they_are_called(tmp_path):
+    game = Duel([{"name": "rat", "hp": 30, "intent": 4, "x": 40}, {"name": "ogre", "hp": 40, "intent": 3, "x": 380}])
+    # every reading calls every card something else, and the model knows no rule for any
+    model = Model(game, rules={}, names=lambda name, reading: f"{name[0]} picture {reading}")
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(120, 1, 60),
+                              store=Store(tmp_path))
+    fought = made["direct"]["fight"]
+    assert played.record["outcome"] == "goal_reached"
+    # three pictures, three cards, under the names they were first given; later names were only kept beside them
+    assert fought["told_apart"] == 3 and fought["looks"] == 3 and fought["renamed"] > 3
+    kept = Store(tmp_path).memory("https://cards.example/")
+    assert set(kept["card_looks"]) == set(kept["card_rules"]) == {"S picture 1", "D picture 1", "C picture 1"}
+    assert len(kept["card_looks"]["S picture 1"]["said"]) > 1
+    # each was played once with no rule and got its rule from what the next reading showed
+    rules = kept["card_rules"]
+    assert rules["S picture 1"]["damage"] == 6 and rules["C picture 1"]["damage"] == 4 and rules["D picture 1"]["block"] == 5
+    assert not fought["fell_back"].get("no_rule") and model.asked.count("play_direct") <= 2
+    # the next work on the game knows the cards from its first reading
+    again = Duel([{"name": "rat", "hp": 12, "intent": 4, "x": 40}])
+    model = Model(again, rules={}, names=lambda name, reading: f"card {reading}")
+    played, made = await play(again, model, None, goal=GoalSpec("play_until_end"), budget=Budget(40, 1, 60),
+                              store=Store(tmp_path))
+    assert made["direct"]["fight"]["told_apart"] == 0 and made["direct"]["fight"]["reads"] <= 2
+    assert played.record["outcome"] == "goal_reached"
+
+
+async def test_what_grows_with_each_card_is_counted_as_the_screen_shows():
+    # the model's rule counts the cards before the Knight; the game counts the Knight too
+    game = Duel([{"name": "ogre", "hp": 90, "intent": 0, "x": 200}], deal=["Strike", "Knight", "Strike", "Defend"])
+    said = {**CARDS_RIGHT, "Knight": {"cost": 1, "target": "enemy", "damage_per_card": 4}}
+    model = Model(game, rules=said)
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(80, 1, 60))
+    fought = made["direct"]["fight"]
+    # the Knight and the Strikes were in doubt together when the ogre lost more than foreseen: played apart in
+    # the next turn (read again in its middle), the Knight alone was off
+    assert played.record["outcome"] == "goal_reached" and not fought["fell_back"]
+    assert fought["apart"][0]["cards"] == ["Knight", "Strike"] and fought["mid_reads"] >= 1
+    learned = [one for one in fought["learned"] if one["card"] == "Knight"]
+    assert learned and learned[-1]["is"] == {"damage": 4, "damage_per_card": 4}
+    # seen after one number of cards, the share for each card stays as said; after two, the line through them
+    assert fight.fit([[2, 12]], 4) == (4, 4) and fight.fit([[2, 12]]) == (12, 0)
+    assert fight.fit([[2, 12], [0, 4]]) == (4, 4) and fight.fit([[1, 6], [2, 6]]) == (6, 0)
 
 
 def test_a_card_is_found_again_where_it_is_drawn():
@@ -219,19 +269,31 @@ def test_a_card_is_found_again_where_it_is_drawn():
     assert fight.locate(first, slot(2), asyncio.run(game.capture())) is None
 
 
-def test_a_card_with_no_rule_is_left_out_and_the_rest_of_the_turn_is_the_models():
-    rules = {"Strike": fight.rule({"cost": 1, "target": "enemy", "damage": 6})}
+def test_a_card_with_no_rule_is_played_where_what_it_does_will_show():
     read = {"energy": 3, "hp": 30, "block": 0, "hand": [{"name": "Strike"}, {"name": "Mystery"}, {"name": "Strike"}],
             "enemies": [{"name": "ogre", "hp": 40, "block": 0, "damage": 3, "hits": 1, "at": [0, 0]}]}
+    after = {**read, "energy": 0, "hand": [], "enemies": [{**read["enemies"][0], "hp": 23}]}
     fighting = fight.Fight({"Strike": {"cost": 1, "target": "enemy", "damage": 6}})
+    # the Strikes are in doubt themselves: the card with no rule waits, and the turn is not ended but read again
     found = fighting.plan(read)
-    assert sorted(index for index, _ in found["steps"]) == [0, 2] and found["leave"] is True
-    # when the known cards use up the energy, the turn is the program's to end
-    found = fighting.plan({**read, "energy": 2})
-    assert found["leave"] is False and len(found["steps"]) == 2
-    # with no card it can play, the turn is the model's from the start
-    assert fighting.plan({**read, "hand": [{"name": "Mystery"}]}) is None
-    assert rules["Strike"]["damage"] == 6
+    assert sorted(index for index, _ in found["steps"]) == [0, 2] and found["more"] is True and found["filled"] == 0
+    # once a turn bore the Strikes out, it goes on the ogre after them, and the turn is ended
+    fighting.borne["Strike"] = 1
+    found = fighting.plan(read)
+    assert found["steps"][-1] == [1, 0] and found["more"] is True and found["filled"] == 1
+    # the ogre lost 5 more than the Strikes take: that is the card's rule from now on
+    fighting.predicted = found["predicted"]
+    found = fighting.plan(after)
+    assert fighting.rules["Mystery"] == {"cost": 1, "target": "enemy", "damage": 5, "hits": 1}
+    assert found["steps"] == [] and found["more"] is False
+    # with no enemy that tells them apart, two cards with no rule are played one reading apart
+    fighting = fight.Fight()
+    found = fighting.plan({**read, "hand": [{"name": "Mystery"}, {"name": "Riddle"}]})
+    assert found["steps"] == [[0, 0]] and found["more"] is True
+    # in the middle of a turn the block read is what the card gave
+    fighting.predicted = found["predicted"]
+    fighting.plan({**read, "block": 7, "energy": 2, "hand": [{"name": "Riddle"}]})
+    assert fighting.rules["Mystery"] == {"cost": 1, "target": "enemy", "block": 7, "hits": 1}
 
 
 async def test_a_reading_that_finds_no_turn_once_does_not_end_the_fight():

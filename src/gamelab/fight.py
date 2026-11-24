@@ -16,15 +16,26 @@ player's that is not what the block should have kept, throws out the rules of th
 Those cards are written again at the next reading, and the turn is played by the model's own inputs
 (`direct.Direct`), as is any turn with a card the model cannot say a rule for. Nothing here knows a game: a fight
 of cards is the model's word for the screen (`fight_turn` in `play_direct.md`), and every number is read.
+
+A card is told by how it looks, not by what the model calls it (PLAN §36 E7b): a hand of pictures with no names was
+named anew at every reading, and a rule kept by a name that changes is kept for nothing. The middle of each card's
+box is made a small picture (`look`), and a card that looks like one seen before is that card, whatever it is
+called this time (`Fight._tell`); the model's names are kept beside it. And a rule is held against what the
+screen then shows card by card (`Fight._bear`): when one card alone can account for what was off, its rule is
+written again from what was seen (`fit`: so much at the first card, so much more for each card before it), and a
+card with no rule at all is played with the energy the search leaves, on an enemy of its own, and gets its rule
+from what that did. No turn goes to the model for a rule.
 """
 from __future__ import annotations
 
 import base64
 import json
+import os
 from io import BytesIO
 from typing import Any
 
 from . import recovery, resources
+from .kits import grid
 from .model import Model, Msg, TurnRequest
 
 # what a rule may say of a card, as whole numbers from 0 to this; who a card is played on
@@ -50,6 +61,14 @@ TOLERANCE = 1
 # this wide, looked for in a band this many card heights about where it was, found when the mean difference of its
 # pixels' colours is no more than this (of 255)
 FINGERPRINT_W, BAND, FOUND_MOST = 24, 0.75, 16.0
+# how a card is told from another: the middle of its box (this share in from each side) made this many pixels a
+# side; two looks are one card when their colours differ by no more than this on average (of 255; 2026-11-24, a
+# game's pixel-art cards: the same card 0 to 7 with the box read a few pixels off, another card 66 or more); a
+# card keeps this many looks, a game this many cards, a card this many of the names it was called
+LOOK_INSET, LOOK_SIDE, LOOK_NEAR, LOOKS_MOST, CARDS_MOST, SAID_MOST = 0.2, 12, 18.0, 3, 80, 6
+# what was seen of a card's damage or block, kept at most; a card with no rule that showed neither this many times
+# is taken to do something the program cannot count
+SEEN_MOST, TRIES_MOST = 6, 2
 # a card is dragged this long and held this long before it moves
 DRAG_MS, HOLD_MS = 700, 200
 
@@ -81,6 +100,25 @@ def counted(card: dict[str, Any]) -> bool:
     """Whether a rule says anything the search can count."""
     return not card.get("unplayable") and any(card.get(key) for key in
                                               ("damage", "block", "draw", "energy", "damage_per_card", "block_per_card"))
+
+
+def look(image: Any, box: list[float]) -> bytes:
+    """How the card drawn in `box` looks: the middle of its picture, small."""
+    return grid.look(image, box, LOOK_INSET, LOOK_SIDE)
+
+
+def fit(seen: list[list[int]], per_card: int = 0) -> tuple[int, int]:
+    """What a card does at the first card of a turn and what it adds for each card played before it, from what
+    was seen of it (`[cards played before it, what it did]`). Seen after different numbers of cards, the line
+    through them; seen after one number only, what it adds for each card is as it was said (`per_card`)."""
+    counts = sorted({n for n, _ in seen})
+    if len(counts) > 1:
+        mean_n, mean_v = sum(n for n, _ in seen) / len(seen), sum(v for _, v in seen) / len(seen)
+        slope = sum((n - mean_n) * (v - mean_v) for n, v in seen) / sum((n - mean_n) ** 2 for n, _ in seen)
+        each = max(0, round(slope))
+        return max(0, round(mean_v - each * mean_n)), each
+    n, value = seen[-1]
+    return (value - per_card * n, per_card) if value - per_card * n >= 0 else (value, 0)
 
 
 def _point(value: Any, size: tuple[int, int], scale: float) -> list[float] | None:
@@ -133,14 +171,23 @@ def _hit(hp: int, block: int, damage: int) -> tuple[int, int]:
     return hp - (damage - taken), block - taken
 
 
-def search(read: dict[str, Any], rules: dict[str, dict[str, Any]], nodes: int = NODES_MOST) -> dict[str, Any]:
+def search(read: dict[str, Any], rules: dict[str, dict[str, Any]], nodes: int = NODES_MOST,
+           doubt: dict[str, int] | None = None) -> dict[str, Any]:
     """The best turn the rules foresee for the reading: `steps` (each `[card, enemy]`, indexes into the hand and
     the enemies; enemy None for a card on no one), its `value` and what it leaves (`predicted`). A card with no
-    rule, or one that says nothing countable, is not played."""
+    rule, or one that says nothing countable, is not played. `doubt` names the cards whose rules no turn bore out
+    yet (1) and of those the ones to be told apart (2): such a one goes on no enemy with another card in doubt, and
+    gives block in no turn with another's block in doubt, so that what is off afterwards is its own."""
+    doubt = doubt or {}
+
+    def apart(name: str, others: list[list[Any]]) -> bool:
+        return bool(doubt.get(name)) and any(other != name and doubt.get(other) and 2 in (doubt[name], doubt[other])
+                                             for other, _, _ in others)
+
     hand, enemies = read["hand"], read["enemies"]
     playable = [index for index, card in enumerate(hand) if card["name"] in rules and counted(rules[card["name"]])]
     start = {"energy": read["energy"], "hp": [enemy["hp"] for enemy in enemies], "eb": [enemy["block"] for enemy in enemies],
-             "block": read["block"], "played": 0, "drawn": 0, "steps": [], "by": {}, "blockers": []}
+             "block": read["block"], "played": read.get("played", 0), "drawn": 0, "steps": [], "by": {}, "blockers": []}
     best = {"value": _value(start, read), "state": start}
     seen = 0
 
@@ -153,16 +200,20 @@ def search(read: dict[str, Any], rules: dict[str, dict[str, Any]], nodes: int = 
         damage = card.get("damage", 0) + card.get("damage_per_card", 0) * state["played"]
         aimed = [target] if card["target"] == "enemy" else [i for i in range(len(hp)) if hp[i] > 0] \
             if card["target"] == "all" else []
+        name = hand[index]["name"]
+        if damage and any(apart(name, by.get(one, [])) for one in aimed) \
+                or (card.get("block") or card.get("block_per_card")) and apart(name, state["blockers"]):
+            return None
         for one in aimed if damage else []:
             for _ in range(card["hits"]):
                 if hp[one] > 0:
                     hp[one], eb[one] = _hit(hp[one], eb[one], damage)
-            by.setdefault(one, []).append(hand[index]["name"])
+            by.setdefault(one, []).append([hand[index]["name"], state["played"], damage * card["hits"]])
         block = card.get("block", 0) + card.get("block_per_card", 0) * state["played"]
         return {"energy": state["energy"] - cost + card.get("energy", 0), "hp": hp, "eb": eb,
                 "block": state["block"] + block, "played": state["played"] + 1,
                 "drawn": state["drawn"] + card.get("draw", 0), "steps": state["steps"] + [[index, target]], "by": by,
-                "blockers": state["blockers"] + ([hand[index]["name"]] if block else [])}
+                "blockers": state["blockers"] + ([[hand[index]["name"], state["played"], block]] if block else [])}
 
     def walk(state: dict[str, Any]) -> None:
         nonlocal seen
@@ -189,8 +240,11 @@ def search(read: dict[str, Any], rules: dict[str, dict[str, Any]], nodes: int = 
     lost = max(0, incoming - state["block"])
     return {"steps": state["steps"], "value": round(best["value"], 2), "searched": seen,
             "predicted": {"enemies": [{"name": enemy["name"], "hp": state["hp"][i], "x": enemy["at"][0],
-                                       "by": state["by"].get(i, [])} for i, enemy in enumerate(enemies)],
-                          "hp": read["hp"] - lost, "lost": lost, "incoming": incoming,
+                                       "by": state["by"].get(i, []), "fills": [], "hp0": enemy["hp"],
+                                       "eb0": enemy["block"], "hit": enemy["damage"] * enemy["hits"]}
+                                      for i, enemy in enumerate(enemies)],
+                          "hp": read["hp"] - lost, "lost": lost, "incoming": incoming, "hp0": read["hp"],
+                          "block": state["block"], "played": state["played"],
                           "blockers": state["blockers"], "energy": state["energy"]}}
 
 
@@ -204,31 +258,16 @@ def _value(state: dict[str, Any], read: dict[str, Any]) -> float:
     return KILL * kills - LOST * lost + DEALT * dealt + SHARE * share + DRAWN * state["drawn"] - INPUT * len(state["steps"])
 
 
-def held(predicted: dict[str, Any] | None, now: dict[str, Any]) -> tuple[set[str], list[str]]:
-    """The cards whose rules the reading `now` does not bear out, against what the turn before foresaw, and what
-    was off: an enemy's health not what the cards played on it left (one foreseen dead and still there too), the
-    player's health not what the block kept, when cards gave block."""
-    if predicted is None:
-        return set(), []
-    wrong: set[str] = set()
-    off: list[str] = []
-    left = list(now["enemies"])
+def _matched(predicted: dict[str, Any], now: dict[str, Any]) -> list[dict[str, Any] | None]:
+    """The enemy of the reading `now` that each enemy foreseen is: of the same name, the nearest."""
+    left, out = list(now["enemies"]), []
     for enemy in predicted["enemies"]:
-        if not enemy["by"]:
-            continue
         same = [one for one in left if one["name"] == enemy["name"]]
         match = min(same, key=lambda one: abs(one["at"][0] - enemy["x"])) if same else None
         if match is not None:
             left.remove(match)
-        if enemy["hp"] <= 0 and match is None:
-            continue
-        if match is None or abs(match["hp"] - enemy["hp"]) > TOLERANCE:
-            wrong.update(enemy["by"])
-            off.append(f"{enemy['name']}: foreseen {max(0, enemy['hp'])}, read {match['hp'] if match else 'gone'}")
-    if predicted["blockers"] and predicted["incoming"] and abs(now["hp"] - predicted["hp"]) > TOLERANCE:
-        wrong.update(predicted["blockers"])
-        off.append(f"own health: foreseen {predicted['hp']}, read {now['hp']}")
-    return wrong, off
+        out.append(match)
+    return out
 
 
 def _gray(png: bytes, factor: float) -> Any:
@@ -281,39 +320,108 @@ def action(read: dict[str, Any], at: list[float], target: int | None) -> dict[st
 
 
 class Fight:
-    """The rules of a game's cards as the model wrote them, and the turn of a fight read and searched."""
+    """The cards of a game as they look and the rules of each, and the turn of a fight read and searched."""
 
-    def __init__(self, kept: Any = None) -> None:
+    def __init__(self, kept: Any = None, looks: Any = None) -> None:
         self.rules: dict[str, dict[str, Any]] = {}
         for name, said in (kept.items() if isinstance(kept, dict) else []):
             if (checked := rule(said)) is not None and _name(name):
                 self.rules[_name(name)] = checked
+        # each card by the name it was first called: how it looks, what it was called and how often, how many
+        # turns bore its rule out, what was seen of its damage and block (`[cards before it, what it did]`), and
+        # how often it was played with no rule and showed nothing
+        self.looks: dict[str, list[bytes]] = {}
+        self.said: dict[str, dict[str, int]] = {}
+        self.borne: dict[str, int] = {}
+        self.seen: dict[str, dict[str, list[list[int]]]] = {}
+        self.tries: dict[str, int] = {}
+        for name, card in (looks.items() if isinstance(looks, dict) else []):
+            try:
+                found = [bytes.fromhex(one) for one in card["looks"]][:LOOKS_MOST]
+                if not _name(name) or not found or any(len(one) != 3 * LOOK_SIDE * LOOK_SIDE for one in found):
+                    continue
+                self.looks[_name(name)] = found
+                self.said[_name(name)] = {str(k)[:NAME_MOST]: int(v) for k, v in (card.get("said") or {}).items()}
+                self.borne[_name(name)] = int(card.get("borne") or 0)
+                self.tries[_name(name)] = int(card.get("tries") or 0)
+                self.seen[_name(name)] = {part: [[int(n), int(v)] for n, v in (card.get("seen") or {}).get(part, [])]
+                                          for part in ("damage", "block")}
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
         # whether the model said the screen is a turn of a card fight, and the turns read since
         self.on = False
-        # what was off for each card whose rule was dropped, told to the next reading; a card dropped this many times
-        # is played by the search no more (it is left in hand) and not asked about again
+        # what was off for each card whose rule was dropped; a card dropped this many times gets no rule again
+        # (it is played with what energy is left, and nothing is learned of it)
         self.off: dict[str, list[str]] = {}
         # a turn left to the model's own inputs: not read again until the model hands the turn over
         self.paused = False
+        # cards in doubt to be told apart (`_apart`)
+        self.apart: set[str] = set()
+        self.so_far = 0
         self.misses = 0
         self.predicted: dict[str, Any] | None = None
         self.account: dict[str, Any] = {"reads": 0, "tokens": 0, "turns": 0, "searched": 0, "cards": 0,
-                                        "ended": 0, "fell_back": {}, "dropped": [], "hp": [], "written": 0}
+                                        "ended": 0, "fell_back": {}, "dropped": [], "hp": [], "written": 0,
+                                        "learned": [], "apart": [], "tried": 0, "mid_reads": 0, "told_apart": 0, "renamed": 0}
 
     def _fell(self, why: str) -> None:
         self.account["fell_back"][why] = self.account["fell_back"].get(why, 0) + 1
         self.paused = self.on and why != "no_turn"
 
+    def _tell(self, png: bytes, read: dict[str, Any], written: dict[str, Any]) -> None:
+        """Each card of the hand read is named by how it looks: the card seen before that it looks like, or a
+        new one under the name the model gave (`said` keeps what it was called this time). A card with no rule
+        takes the rule of the name it is called now, when that name has one or the model wrote one."""
+        image = grid.open_picture(png)
+        for card in read["hand"]:
+            said = card["said"] = card["name"]
+            if "box" in card:
+                seen = look(image, card["box"])
+                near = min(self.looks, key=lambda key: min(grid.distance(seen, one) for one in self.looks[key]), default=None)
+                far = min(grid.distance(seen, one) for one in self.looks[near]) if near is not None else None
+                if far is not None and far <= LOOK_NEAR:
+                    if far > LOOK_NEAR / 3 and len(self.looks[near]) < LOOKS_MOST:
+                        self.looks[near].append(seen)
+                    self.account["renamed"] += said != near
+                    card["name"] = near
+                else:
+                    key, number = said, 1
+                    while key in self.looks:
+                        number += 1
+                        key = f"{said[:NAME_MOST - 4]} #{number}"
+                    self.looks[key] = [seen]
+                    self.account["told_apart"] += 1
+                    card["name"] = key
+                    while len(self.looks) > CARDS_MOST:
+                        self._forget(next(key for key in self.looks if key != card["name"]))
+            key = card["name"]
+            names = self.said.setdefault(key, {})
+            if said in names or len(names) < SAID_MOST:
+                names[said] = names.get(said, 0) + 1
+            if key in self.rules or self.off.get(key):
+                continue
+            # the model's word for what a card is counts until the screen says otherwise: its rule for the name
+            # it gave, or the rule that name already has
+            checked = rule(written.get(said)) if said in written else None
+            if checked is None and said != key and said in self.rules:
+                checked = dict(self.rules[said])
+            if checked is not None:
+                self.rules[key] = checked
+                self.borne[key] = 0
+                self.account["written"] += 1
+
+    def _forget(self, key: str) -> None:
+        for kept in (self.looks, self.said, self.borne, self.seen, self.tries, self.rules, self.off):
+            kept.pop(key, None)
+
     async def read(self, model: Model, png: bytes, *, known: dict[str, str] | None = None, memory: dict[str, str] | None = None,
                    research: dict[str, Any] | None = None, history: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
-        """The model's reading of the screen as a turn (`turn`), the rules it wrote for cards that had none taken
-        in; None, and the fight is off until the model says again that one stands, when it is no such turn."""
+        """The model's reading of the screen as a turn (`turn`), its cards named by how they look and the rules
+        it wrote for cards that had none taken in; None, and the fight is off until the model says again that one
+        stands, when it is no such turn."""
         shown, scale = recovery.view(png)
         size = recovery._size(shown)
-        given_up = sorted(name for name, offs in self.off.items() if len(offs) >= DROPS_MOST)
-        asked = {"screen": list(size), "cards_known": sorted(self.rules) + given_up,
-                 **({"rules_off": {name: offs[-1] for name, offs in self.off.items() if name not in self.rules
-                                   and len(offs) < DROPS_MOST}} if self.off else {}),
+        asked = {"screen": list(size), "cards_known": sorted(self.rules),
                  **({"known": known} if known else {}), **({"memory": memory} if memory else {}),
                  **({"research": research} if research else {}), **({"history": history} if history else {})}
         image = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
@@ -329,6 +437,14 @@ class Fight:
         except ValueError:
             said = None
         read = turn(said, size, scale)
+        if os.environ.get("GAMELAB_FIGHT_DUMP"):
+            # for looking into a measured run: every screen read and what was read of it
+            folder = os.environ["GAMELAB_FIGHT_DUMP"]
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, f"read-{os.getpid()}-{self.account['reads']:03d}.png"), "wb") as out:
+                out.write(png)
+            with open(os.path.join(folder, f"read-{os.getpid()}-{self.account['reads']:03d}.json"), "w", encoding="utf-8") as out:
+                json.dump({"said": said, "scale": scale}, out, ensure_ascii=False)
         if read is None:
             self.misses += 1
             if self.misses >= MISSES_MOST:
@@ -336,56 +452,250 @@ class Fight:
             self._fell("no_turn")
             return None
         self.misses = 0
-        for name, written in (said.get("rules") or {}).items() if isinstance(said.get("rules"), dict) else []:
-            if _name(name) and _name(name) not in self.rules and (checked := rule(written)) is not None:
-                self.rules[_name(name)] = checked
-                self.account["written"] += 1
+        self._tell(png, read, said["rules"] if isinstance(said.get("rules"), dict) else {})
         while len(self.rules) > RULES_MOST:
             del self.rules[next(iter(self.rules))]
+        self.account["mid_reads"] += bool(self.predicted and self.predicted.get("mid"))
         self.account["hp"].append({"turn": self.account["reads"], "hp": read["hp"], "block": read["block"],
                                    "enemies": [enemy["hp"] for enemy in read["enemies"]]})
         return read
 
+    def _saw(self, key: str, part: str, n: int, value: int, why: str) -> None:
+        """What a card was seen to do (`part`: damage of one hit, or block) after `n` cards, and its rule written
+        again from all that was seen of it."""
+        seen = self.seen.setdefault(key, {"damage": [], "block": []})[part]
+        seen.append([n, value])
+        del seen[:-SEEN_MOST]
+        card = self.rules.get(key)
+        if card is None:
+            return
+        was = {name: card.get(name, 0) for name in (part, f"{part}_per_card")}
+        first, each = fit(seen, card.get(f"{part}_per_card", 0))
+        for name, number in ((part, first), (f"{part}_per_card", each)):
+            card.pop(name, None)
+            if number:
+                card[name] = min(NUMBER_MOST, number)
+        if part == "damage" and (first or each) and card["target"] == "none":
+            card["target"] = "enemy"
+        now = {name: card.get(name, 0) for name in was}
+        if now != was:
+            self.borne[key] = 0
+            self.account["learned"].append({"card": key, "was": was, "is": now, "seen": why})
+
+    def _bear(self, now: dict[str, Any]) -> None:
+        """The reading `now` held against what the turn before foresaw (`predicted`), enemy by enemy and then the
+        player's own health. What was foreseen and came bears out the cards behind it. What did not is laid on a
+        card when one alone can account for it (the one whose rule no turn bore out yet, or the one played with no
+        rule): what it was seen to do is kept and its rule written from that. When two or more could, they are
+        played apart from then on. An enemy that had block, or was given a card of a rule the
+        program cannot count, says nothing."""
+        predicted, self.predicted = self.predicted, None
+        # the cards played so far this turn, when it is read again in its middle
+        self.so_far = predicted["played_all"] if predicted is not None and predicted.get("mid") else 0
+        if predicted is None:
+            return
+        struck: set[str] = set()
+        matches = _matched(predicted, now)
+        tried = {entry[0] for enemy in predicted["enemies"] for entry in enemy["fills"] if entry[2] == "new"}
+        for enemy, match in zip(predicted["enemies"], matches):
+            if not enemy["by"] and not enemy["fills"]:
+                continue
+            fog = enemy["eb0"] or any(kind != "new" for _, _, kind in enemy["fills"])
+            new = [entry for entry in enemy["fills"] if entry[2] == "new"]
+            if match is None:
+                # gone: what killed one foreseen alive did at least what was left of it
+                if enemy["hp"] > 0 and len(new) == 1 and not fog:
+                    self._saw(new[0][0], "damage", new[0][1], enemy["hp"], f"{enemy['name']} foreseen {enemy['hp']}, gone")
+                continue
+            more = enemy["hp"] - match["hp"]
+            if abs(more) <= TOLERANCE:
+                for name, _, _ in enemy["by"]:
+                    self.borne[name] = self.borne.get(name, 0) + 1
+                for name, n, _ in new if not fog else []:
+                    self._saw(name, "damage", n, 0, f"{enemy['name']} as foreseen")
+                continue
+            if fog:
+                continue
+            off = f"{enemy['name']}: foreseen {max(0, enemy['hp'])}, read {match['hp']}"
+            doubted = [entry for entry in enemy["by"] if not self.borne.get(entry[0])]
+            could = doubted + [[name, n, 0] for name, n, _ in new]
+            if could and len({name for name, _, _ in could}) == 1:
+                # one card, or copies of one: each did its share of what was off
+                hits = self.rules[could[0][0]]["hits"] if could[0][0] in self.rules else 1
+                did = [round((foreseen + more / len(could)) / hits) for _, _, foreseen in could]
+                if min(did) >= 0:
+                    for (name, n, _), value in zip(could, did):
+                        self._saw(name, "damage", n, value, off)
+                    struck |= {name for name, _, _ in new}
+                    continue
+            if not doubted:
+                # cards borne out before, and off now: once more and they are doubted again
+                for name, _, _ in enemy["by"]:
+                    self.borne[name] = max(0, self.borne.get(name, 0) - 1)
+                continue
+            self._apart({name for name, _, _ in doubted}, off)
+        # the player's own health: what the enemies still standing meant to do, less the block foreseen
+        mid = predicted.get("mid")
+        coming = sum(enemy["hit"] for enemy, match in zip(predicted["enemies"], matches) if match is not None)
+        fills = [entry for enemy in predicted["enemies"] for entry in enemy["fills"]]
+        if (mid or coming) and not any(kind != "new" for _, _, kind in fills):
+            # in the middle of a turn the block stands as it was given; after the enemies' turn it shows in the
+            # health they did not take
+            foreseen_own = predicted["block"] if mid else predicted["hp0"] - max(0, coming - predicted["block"])
+            more = (now["block"] if mid else now["hp"]) - foreseen_own
+            new = [entry for entry in fills if entry[2] == "new"]
+            doubted = [entry for entry in predicted["blockers"] if not self.borne.get(entry[0])]
+            off = f"own {'block' if mid else 'health'}: foreseen {foreseen_own}, read {now['block'] if mid else now['hp']}"
+            # of the cards with no rule, one that took an enemy's health is not looked to for block first
+            quiet = [entry for entry in new if entry[0] not in struck] or new
+            could = doubted + [[name, n, 0] for name, n, _ in (quiet if more > 0 else [])]
+            if abs(more) <= TOLERANCE:
+                for name, _, _ in predicted["blockers"]:
+                    self.borne[name] = self.borne.get(name, 0) + 1
+                # a card with no rule gave no block when more block would have shown
+                for name, n, _ in new if mid or coming > predicted["block"] else []:
+                    self._saw(name, "block", n, 0, "own block as foreseen")
+            elif could and len({name for name, _, _ in could}) == 1:
+                for name, n, foreseen in could:
+                    self._saw(name, "block", n, max(0, round(foreseen + more / len(could))), off)
+            elif len(doubted) > 1:
+                self._apart({name for name, _, _ in doubted}, off)
+        # a card played with no rule gets one from what it was seen to do, or is tried again
+        for name in tried:
+            seen = self.seen.get(name, {})
+            if name in self.rules or not (seen.get("damage") or seen.get("block")):
+                continue
+            damage, block = (fit(seen[part]) if seen.get(part) else (0, 0) for part in ("damage", "block"))
+            made = rule({"cost": predicted["costs"].get(name, 1), "target": "enemy", "damage": damage[0],
+                         "damage_per_card": damage[1], "block": block[0], "block_per_card": block[1]})
+            made = {key: value for key, value in made.items() if value or key == "cost"}
+            if not counted(made):
+                self.tries[name] = self.tries.get(name, 0) + 1
+                if self.tries[name] < TRIES_MOST:
+                    continue
+                made["other"] = "played by the program, it showed no damage and no block"
+            self.rules[name] = {**made, "hits": 1}
+            self.borne[name] = 1
+            self.account["learned"].append({"card": name, "is": made, "seen": "played with no rule"})
+
+    def _apart(self, names: set[str], why: str) -> None:
+        """Cards in doubt that were played together when something was off: from now on each is played where
+        what is off is its own (`search`'s `doubt`), until a turn bears it out."""
+        self.apart |= names
+        self.account["apart"].append({"cards": sorted(names), "off": why})
+
+    def _drop(self, names: set[str], why: str) -> None:
+        for name in names:
+            if self.rules.pop(name, None) is not None:
+                self.off.setdefault(name, []).append(why[:200])
+        self.account["dropped"].append({"cards": sorted(names), "off": [why]})
+
     def plan(self, read: dict[str, Any]) -> dict[str, Any] | None:
-        """The turn to play, or None when the model is to play it: the reading did not bear out the rules of the
-        turn before (those cards' rules are dropped), or a card in hand has no rule the search can go by."""
-        wrong, off = held(self.predicted, read)
-        self.predicted = None
-        if wrong:
-            for name in wrong:
-                self.rules.pop(name, None)
-                self.off.setdefault(name, []).append("; ".join(off)[:200])
-            self.account["dropped"].append({"cards": sorted(wrong), "off": off})
-            self._fell("rule_off")
-            return None
-        # a card with no rule is left out of the search; when the energy the searched cards leave could still
-        # play one, the rest of the turn is the model's (2026-11-24: one starting card the model never read made
-        # ten of twelve turns the model's)
-        unruled = [card["name"] for card in read["hand"] if card["name"] not in self.rules
-                   and len(self.off.get(card["name"], ())) < DROPS_MOST]
-        found = search(read, self.rules)
+        """The turn to play: the cards the search chose by their rules, then, with the energy that leaves, the
+        cards it has no rule to count, each on an enemy still standing. One with no rule at all goes on an enemy
+        that no other card in doubt goes on, so that what it does shows at the next reading; when there is no such
+        enemy left for one, the turn is not ended (`more`): the screen is read again after these cards and the
+        turn planned on from there. None when there is nothing to play at all: the model looks."""
+        self._bear(read)
+        hand = read["hand"]
+        self.apart = {name for name in self.apart if name in self.rules and not self.borne.get(name)}
+        doubt = {name: 2 if name in self.apart else 1 for name in self.rules if not self.borne.get(name)}
+        costs = [rules["cost"] for rules in self.rules.values()]
+        usual = max(set(costs), key=costs.count) if costs else 1
+        found = search({**read, "played": self.so_far}, self.rules, doubt=doubt)
         self.account["searched"] += found["searched"]
-        left = found["predicted"]["energy"]
-        found["leave"] = bool(unruled) and left > 0 and any(card.get("cost", 1) <= left for card in read["hand"]
-                                                             if card["name"] in unruled)
-        if not found["steps"] and (found["leave"] or read["energy"] and any(
-                counted(self.rules[c["name"]]) for c in read["hand"] if c["name"] in self.rules)):
-            # nothing the search can play, or cards it could play and none was worth it: the model looks
-            self._fell("no_rule" if found["leave"] else "nothing_found")
+        unknown = [card.get("cost", usual) for card in hand if card["name"] not in self.rules
+                   and len(self.off.get(card["name"], ())) < DROPS_MOST]
+        spare = 0
+        if unknown and min(unknown) <= read["energy"] and any(enemy["hp"] > 0 for enemy in found["predicted"]["enemies"]):
+            # a card with no rule gets its rule by being played: unless the turn wins the fight without it, the
+            # energy for one such card is kept from the search
+            spare = min(unknown)
+            found = search({**read, "played": self.so_far, "energy": read["energy"] - spare}, self.rules, doubt=doubt)
+            self.account["searched"] += found["searched"]
+        predicted = found["predicted"]
+        used = {index for index, _ in found["steps"]}
+        rest = [index for index, card in enumerate(hand) if index not in used
+                and not self.rules.get(card["name"], {}).get("unplayable")
+                and not (card["name"] in self.rules and counted(self.rules[card["name"]]))]
+        new = [index for index in rest if hand[index]["name"] not in self.rules
+               and len(self.off.get(hand[index]["name"], ())) < DROPS_MOST]
+        rest = sorted(new, key=lambda index: self.tries.get(hand[index]["name"], 0)) + [i for i in rest if i not in new]
+        standing = [i for i, enemy in enumerate(predicted["enemies"]) if enemy["hp"] > 0]
+        left, played, predicted["costs"] = predicted["energy"] + spare, predicted["played"], {}
+        found["more"] = False
+        for index in rest if standing else []:
+            card = hand[index]
+            cost = card.get("cost", self.rules.get(card["name"], {}).get("cost", usual))
+            if cost > left:
+                continue
+            kind = "new" if index in new else "other"
+            # an enemy that no card in doubt went on (but copies of this one), the one the fewest cards went on
+            free = [i for i in standing if all(name == card["name"] for name, _, k in predicted["enemies"][i]["fills"] if k == "new")
+                    and all(name == card["name"] or self.borne.get(name) for name, _, _ in predicted["enemies"][i]["by"])
+                    and not predicted["enemies"][i]["eb0"]]
+            # one that showed nothing when it was tried is tried alone
+            alone = kind == "new" and any(k == "new" and (self.tries.get(name) or self.tries.get(card["name"])) and name != card["name"]
+                                          for enemy in predicted["enemies"] for name, _, k in enemy["fills"])
+            # and one whose rule the program cannot count waits for the reading after a card with no rule, so that
+            # what that one did is not mixed with it
+            if kind == "new" and (not free or alone) or kind == "other" and predicted["costs"] and any(
+                    k == "new" for enemy in predicted["enemies"] for _, _, k in enemy["fills"]):
+                found["more"] = True
+                continue
+            target = min(free if kind == "new" else standing,
+                         key=lambda i: (len(predicted["enemies"][i]["by"]) + len(predicted["enemies"][i]["fills"]),
+                                        predicted["enemies"][i]["hp"]))
+            if kind == "other" and self.rules.get(card["name"], {}).get("target") in ("none", "all"):
+                found["steps"].append([index, None])
+                # what it does is not counted: the player's health says nothing of the others this turn
+                predicted["enemies"][standing[0]]["fills"].append([card["name"], played, kind])
+            else:
+                found["steps"].append([index, target])
+                predicted["enemies"][target]["fills"].append([card["name"], played, kind])
+            predicted["costs"][card["name"]] = cost
+            left, played = left - cost, played + 1
+            self.account["tried"] += 1
+        found["filled"] = len(found["steps"]) - len(used)
+        # the turn is not ended yet when a card with no rule was played (what it did, its block too, is read off
+        # the screen before the enemies act), or one was held back, or cards in doubt wait to be played apart
+        waits = any(index not in {i for i, _ in found["steps"]} and card["name"] in self.apart and counted(self.rules[card["name"]])
+                    and card.get("cost", self.rules[card["name"]]["cost"]) <= left for index, card in enumerate(hand))
+        tried = any(kind == "new" for enemy in predicted["enemies"] for _, _, kind in enemy["fills"])
+        found["more"] = (found["more"] or waits or tried) and bool(found["steps"])
+        predicted["mid"], predicted["played_all"] = found["more"], played
+        if not found["steps"] and read["energy"] and hand and not self.so_far:
+            # cards in hand, energy to play them, and nothing the program would play all turn: the model looks
+            self._fell("nothing_found")
             return None
-        if found["leave"]:
-            self.account["left_to_model"] = self.account.get("left_to_model", 0) + 1
         return found
 
+    def failed(self, name: str, predicted: dict[str, Any]) -> None:
+        """A card played with what energy was left changed nothing: it is not counted among what was played, and
+        one with no rule that does so again is taken for a card that cannot be played."""
+        for enemy in predicted["enemies"]:
+            for entry in enemy["fills"]:
+                if entry[0] == name:
+                    enemy["fills"].remove(entry)
+                    break
+        if name not in self.rules:
+            self.tries[name] = self.tries.get(name, 0) + 1
+            if self.tries[name] >= TRIES_MOST:
+                self.rules[name] = {"cost": predicted["costs"].get(name, 1), "hits": 1, "target": "none", "unplayable": True}
+
     def drop(self, name: str, why: str) -> None:
-        if self.rules.pop(name, None) is not None:
-            self.off.setdefault(name, []).append(why)
-            self.account["dropped"].append({"cards": [name], "off": [why]})
+        if name in self.rules:
+            self._drop({name}, why)
 
     def kept(self) -> dict[str, dict[str, Any]]:
         return {name: dict(card) for name, card in self.rules.items()}
 
+    def kept_looks(self) -> dict[str, dict[str, Any]]:
+        """The cards as they look, with what was learned of each, for the next work on the game."""
+        return {name: {"looks": [one.hex() for one in looks], "said": dict(self.said.get(name, {})),
+                       "borne": self.borne.get(name, 0), "tries": self.tries.get(name, 0),
+                       "seen": self.seen.get(name, {})} for name, looks in self.looks.items()}
+
     def summary(self) -> dict[str, Any]:
         lost = sum(max(0, one["hp"] - other["hp"]) for one, other in zip(self.account["hp"], self.account["hp"][1:]))
-        return {**self.account, "hp_lost_between_reads": lost, "rules": len(self.rules)}
-
+        return {**self.account, "hp_lost_between_reads": lost, "rules": len(self.rules), "looks": len(self.looks)}

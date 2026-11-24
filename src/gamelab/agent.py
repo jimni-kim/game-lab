@@ -184,6 +184,9 @@ NOT_YET = "not_yet"
 # why the work is handed back where a story asks for a choice that cannot be taken back and the person did not say
 # how such choices are to be made (PLAN §27, session T)
 CHOICE = "choice"
+# how long the person is waited for when asked which of several things offered to take, before the model's own pick
+# is sent
+PICK_WAIT_S = 45.0
 # why a level of levels counted up to one ended without a result screen: the model read a number past the one the
 # part began at (a floor, a day; `Agent.counting`)
 COUNTED = "counted_on"
@@ -457,6 +460,8 @@ class Agent:
         self.reasked = 0
         # whether a turn of a card fight the model names is read once and searched by code (PLAN §27 M10, §36 E7)
         self.searching = True
+        # whether the person was already asked about the things offered on the screens now shown (`pick`)
+        self.picking = False
         # where the last move's time went (`_remember`), and what its result's reading by code took (`_read_code`)
         self.timing: dict[str, Any] | None = None
         self.timing_from = 0.0
@@ -3023,6 +3028,23 @@ class Agent:
                         "Nothing was chosen: the choice cannot be taken back and the request does not say how such "
                         "choices are to be made")[:500])
                 self.found.setdefault("choices", []).append(made)
+            pick = answer.get("pick")
+            if pick is None:
+                self.picking, player.person_said = False, None
+            elif not self.picking and pick["taking"]:
+                # several things are offered and the model is about to take one (2026-11-24, the person): the
+                # person is asked where someone watches the work, once for the screens of one offer; with no answer
+                # in time, or no one to ask, the model's own pick is sent
+                self.picking = True
+                said = await self._ask_person(pick)
+                self.found.setdefault("picks", []).append({**pick, "at_input": self.used + 1,
+                                                           **({"person_said": said} if said else {})})
+                if said:
+                    player.person_said = {"asked": pick["asks"], "options": pick["options"], "answer": said}
+                    player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program", "not_taken": (
+                        "the person was asked which to take and answered (`person_said`): your input was not sent, "
+                        "take what they said")})
+                    continue
             # an input that only moves a story on a line: sent again by the loop for as long as the screen stays one
             advance = bool(action.pop("advance", False)) and not level and not answer["uses"] and choice is None
             shown = action.pop("lines", None)
@@ -3217,12 +3239,26 @@ class Agent:
             if scene is None and changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
 
+    async def _ask_person(self, pick: dict[str, Any]) -> str | None:
+        """What the person answers when asked which of the things offered to take; None when no one watches the
+        work in a way that can be asked (`Watch` with `pick`), or no answer came in `PICK_WAIT_S`."""
+        ask = getattr(self.watch, "pick", None)
+        if ask is None:
+            return None
+        try:
+            said = await asyncio.wait_for(ask(pick), PICK_WAIT_S)
+        except Exception as error:
+            log.info("the person gave no answer on what to take: %s", type(error).__name__)
+            return None
+        return said.strip()[:300] if isinstance(said, str) and said.strip() else None
+
     async def _fight_turn(self, before: bytes, moving: list[list[int]], looked: float) -> bool:
         """A turn of a card fight (PLAN §27 M10, §36 E7): read by the model in one question (`fight.Fight.read`),
         its cards chosen by the search (`fight.search`) and sent, each found again where it is drawn after the
-        ones before (`fight.locate`), then the turn ended and waited out. False when nothing was sent: the screen is
-        no such turn, or the turn is the model's to play (a card with no rule, rules the screen did not bear out).
-        A card whose input changed nothing loses its rule and the rest of the turn is the model's."""
+        ones before (`fight.locate`), then the turn ended and waited out. Cards the search has no rule to count
+        are played after its own with the energy left (§36 E7b), and one of those that changes nothing is passed
+        over. False when nothing was sent: the screen is no such turn, or there was nothing to play. A card of
+        the search's own whose input changed nothing loses its rule and the rest of the turn is the model's."""
         player = self.player
         fighting = player.fight
         self._afford()
@@ -3254,9 +3290,13 @@ class Agent:
         fighting.account["turns"] += 1
         names = [read["hand"][index]["name"] for index, _ in plan["steps"]]
         now, played, stopped = before, [], None
+        searched = len(plan["steps"]) - plan["filled"]
         for number, (index, target) in enumerate(plan["steps"]):
             card = read["hand"][index]
-            at = card["at"] if number == 0 else fight.locate(before, card["box"], now) if "box" in card else None
+            at = card["at"] if now is before else fight.locate(before, card["box"], now) if "box" in card else None
+            if at is None and number >= searched:
+                fighting.failed(card["name"], plan["predicted"])
+                continue
             if at is None:
                 stopped = "card_not_found"
                 break
@@ -3269,6 +3309,9 @@ class Agent:
                 sent["hold_ms"] = max(sent["hold_ms"], player.hold_ms)
             changed = await self._fight_send(sent, now, moving, looked, f"{card['name']} on "
                                              f"{read['enemies'][target]['name'] if target is not None else 'no one'}")
+            if not changed[0] and number >= searched:
+                fighting.failed(card["name"], plan["predicted"])
+                continue
             if not changed[0]:
                 fighting.drop(card["name"], "playing it changed nothing")
                 stopped = "no_change"
@@ -3276,21 +3319,23 @@ class Agent:
             now = changed[1]
             played.append(card["name"])
         fighting.account["cards"] += len(played)
-        ended = stopped is None and not plan["leave"] and self.used < self.budget.max_actions
+        if stopped:
+            fighting.account.setdefault("stopped", {})[stopped] = fighting.account.get("stopped", {}).get(stopped, 0) + 1
+        # cards with no rule were held back for want of an enemy to show what they do: the screen is read again
+        # after these, and the turn goes on from that reading
+        more = plan["more"] and stopped is None and bool(played)
+        ended = stopped is None and not more and self.used < self.budget.max_actions
         if ended:
             changed, now = await self._fight_send({"kind": direct.TAP, "at": read["end_turn"]}, now, moving, looked,
                                                   "end of turn", rest=direct.REST_MS_RANGE[1])
             ended = changed
         fighting.account["ended"] += ended
-        fighting.predicted = plan["predicted"] if ended else None
-        if not ended:
+        fighting.predicted = plan["predicted"] if ended or more else None
+        if not ended and not more:
             fighting.paused = True
         player.history.append({"action": {"kind": direct.SEQUENCE, "inputs": len(played) + ended}, "sent_by": "program",
                                "fight": {"read": read["situation"], "planned": names, "played": played,
                                          "ended_turn": ended, **({"stopped": stopped} if stopped else {}),
-                                         **({"left_to_you": "cards the program has no rule for may still be played: "
-                                             "the rest of this turn is yours, end it with then_wait_ms"}
-                                            if plan["leave"] and stopped is None else {}),
                                          "foreseen": {"own_hp": plan["predicted"]["hp"],
                                                       "enemies_hp": [max(0, e["hp"]) for e in plan["predicted"]["enemies"]]}},
                                "screen_changed": bool(played) or ended})

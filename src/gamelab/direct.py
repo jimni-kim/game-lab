@@ -151,7 +151,18 @@ MEMORY = {
            "built, the stage reached, what is held) and what you are building toward",
     PLAN: "what you are doing now and mean to do next",
 }
+# how many characters a part may be: what is beyond is cut, so the model is told the lengths (`memory_most`) and
+# told when a part it wrote was cut (`memory_cut`). The rules of a game with many of them did not fit the length
+# the other parts have (2026-11-24: a card game's rules stood at exactly 400, cut in the middle of a sentence, and
+# the model was never told)
 MEMORY_MOST = 400
+MEMORY_LONGER = {"rules": 1200}
+
+
+def memory_most(part: str) -> int:
+    return MEMORY_LONGER.get(part, MEMORY_MOST)
+
+
 # what a named thing of the game does, kept once read (PLAN §36, E3): this many things, each name and text this long
 KNOWN_MOST, KNOWN_NAME, KNOWN_TEXT = 40, 40, 120
 # an input that hands the turn over (`then_wait_ms`): how long the screen may be waited for, and how long it must
@@ -276,6 +287,18 @@ def _choice(value: Any) -> dict[str, Any] | None:
             "picked": picked.strip()[:OPTION_MOST] if isinstance(picked, str) and picked.strip() else None,
             # anything but a plain "it can be taken back" is a choice that lasts
             "lasting": value.get("lasting") is not False}
+
+
+def _pick(value: Any) -> dict[str, Any] | None:
+    """A model's account of a screen that offers several things of which one is taken (rewards after a fight, a
+    card, an item, a perk): what is offered, the one it would take and why. None when it gave none with at least
+    two options. `taking`: its input takes the one picked now (it has seen what is offered)."""
+    chosen = _choice(value)
+    if chosen is None:
+        return None
+    why = value.get("why")
+    return {"asks": chosen["asks"], "options": chosen["options"], "picked": chosen["picked"],
+            "why": why.strip()[:200] if isinstance(why, str) else "", "taking": value.get("taking") is True}
 
 
 def can(kind: Any, kinds: frozenset[str]) -> bool:
@@ -522,6 +545,12 @@ class Direct:
         # what the model wants kept from one question to the next (`MEMORY`; a plain text is its plan), and what
         # it last said the screen shows
         self.memory: dict[str, str] = {}
+        # the parts the model wrote longer than a part may be: how often for each, and those of its last answer
+        self.cut: dict[str, int] = {}
+        # what the person answered when asked which of several things offered to take (`agent`), until that screen
+        # is passed
+        self.person_said: dict[str, Any] | None = None
+        self.cut_last: dict[str, str] = {}
         # what named things of the game do, as the model read it of them (`KNOWN_MOST`; the last read kept longest),
         # and how many of them were read in this work
         self.known: dict[str, str] = {}
@@ -534,6 +563,8 @@ class Direct:
         # what the model said the screen shows, each time it said otherwise than before (for the review)
         self.situations: list[str] = []
         self._remember(notes if isinstance(notes, dict) else {PLAN: notes} if isinstance(notes, str) else {})
+        # what was kept before is not this work's writing
+        self.cut, self.cut_last = {}, {}
         self._learn(notes.get("known") if isinstance(notes, dict) else None)
         # whether the memory given came from an earlier work (its `run` is then to be held against the screen)
         self.earlier = bool(self.memory.get("run"))
@@ -562,7 +593,7 @@ class Direct:
         # game's own account when it gives one)
         self.refused: dict[str, int] = refused if refused is not None else {}
         # the rules of the game's cards and the turn of a fight read and searched by code (PLAN §27 M10, §36 E7)
-        self.fight = fight.Fight(notes.get("card_rules") if isinstance(notes, dict) else None)
+        self.fight = fight.Fight(*((notes.get("card_rules"), notes.get("card_looks")) if isinstance(notes, dict) else ()))
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
@@ -621,6 +652,9 @@ class Direct:
                  **({"errand": errand} if errand else {}),
                  **({"began": "second image"} if began else {}),
                  **({"been_here": been_here} if been_here else {}), "memory": self.memory, "memory_parts": MEMORY,
+                 "memory_most": {part: memory_most(part) for part in MEMORY},
+                 **({"person_said": self.person_said} if self.person_said else {}),
+                 **({"memory_cut": dict(self.cut_last)} if self.cut_last else {}),
                  **({"known": self.known} if self.known else {}),
                  **({"lessons": [{"number": number, "lesson": text} for number, text in enumerate(self.lessons, 1)]}
                     if self.lessons else {}),
@@ -702,12 +736,14 @@ class Direct:
         because = answer["action"].get("because") if action["kind"] == STOP else None
         made = recovery.profile(answer["action"]) if action["kind"] in (TAP, TEXT, KEY, SEQUENCE) else None
         chosen = _choice(answer.get("choice")) if action["kind"] in NEEDS or action["kind"] == STOP else None
+        picked = _pick(answer.get("pick")) if action["kind"] in NEEDS else None
         progress = answer.get("progress")
         self.looked["inputs"] += researched
         return {**({"fight": True} if answer.get("fight_turn") is True and self.scene == scenes.BOARD else {}),
                 **({"lesson": followed} if followed else {}),
                 **({"research": True} if researched else {}), **({"progress": progress} if type(progress) is int and progress >= 1 else {}),
-                **({"choice": chosen} if chosen is not None else {}), "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
+                **({"choice": chosen} if chosen is not None else {}), **({"pick": picked} if picked is not None else {}),
+                "action": action, "told": told, "expect": expect, "scale": scale, "uses": used + (["forced_free"] if forced else []),
                 "scene": self.scene, "guided": self.guided,
                 **({"because": because[:200]} if isinstance(because, str) else {}),
                 **({"profile": made} if made is not None else {})}
@@ -790,9 +826,15 @@ class Direct:
 
     def _remember(self, said: dict[str, Any]) -> None:
         """The parts of the memory the model gave take the place of what they held; a part it left out stays."""
+        self.cut_last = {}
         for part in MEMORY:
             if isinstance(said.get(part), str):
-                self.memory[part] = said[part].strip()[:MEMORY_MOST]
+                text = said[part].strip()
+                self.memory[part] = text[:memory_most(part)]
+                if len(text) > memory_most(part):
+                    # told at the next question, and counted for the record
+                    self.cut_last[part] = f"you wrote {len(text)} characters, the last {len(text) - memory_most(part)} were cut"
+                    self.cut[part] = self.cut.get(part, 0) + 1
         self.memory = {part: text for part, text in self.memory.items() if text}
 
     def _learn(self, said: Any) -> int:
@@ -819,6 +861,7 @@ class Direct:
         return {**{part: text for part, text in self.memory.items() if part != PLAN},
                 **({"known": dict(self.known)} if self.known else {}),
                 **({"card_rules": self.fight.kept()} if self.fight.rules else {}),
+                **({"card_looks": self.fight.kept_looks()} if self.fight.looks else {}),
                 **({"lessons": list(self.lessons)} if self.lessons else {}),
                 **({"reviews": list(self.reviews)} if self.reviews else {}),
                 **({"grid": self.lattice.kept()} if self.lattice is not None and self.lattice.names else {})}
@@ -834,6 +877,7 @@ class Direct:
                 "notes": self.notes, "memory": {**self.memory, **({"known": dict(self.known)} if self.known else {}),
                            **({"lessons": list(self.lessons), "reviews": list(self.reviews)} if self.lessons else {})},
                 **({"learned": self.learned} if self.learned else {}),
+                **({"memory_cut": dict(self.cut)} if self.cut else {}),
                 **({"lessons": {"given": len(self.lessons), "followed": {str(n): c for n, c in sorted(self.followed.items())}}}
                    if self.lessons else {}),
                 **({"lattice": {**self.lattice.summary(), "told": self.texted, "plain": self.plain}}

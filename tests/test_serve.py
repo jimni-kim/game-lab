@@ -1318,3 +1318,22 @@ def test_a_level_won_on_the_way_up_to_one_whose_count_is_not_known_yet_is_said(t
     demo.progressed({"what": "part", "number": 2, "outcome": "goal_reached", "reason": "won", "won": 2, "lost": 0,
                      "wanted": 2, "until": 10, "through": 10})
     assert demo.chat_log[-1]["text"] == "레벨 하나를 깼습니다: 2/2개 깸, 0개 짐."
+
+
+async def test_what_a_game_offers_is_asked_in_the_chat_and_the_next_words_are_the_answer(tmp_path):
+    demo = serve.Demo(options(tmp_path), Recorded(Asked({})), token=TOKEN, emulator=Running(), chat=Talker())
+    told = []
+    demo.tell = told.append
+    asked = {"asks": "Which reward?", "options": ["Sword", "Shield"], "picked": "Sword", "why": "more damage"}
+    waiting = asyncio.get_running_loop().create_task(demo.pick(asked))
+    await asyncio.sleep(0)
+    # the chat says what is offered and what would be taken with no answer
+    assert told[-1]["about"] == "pick" and "Sword / Shield" in told[-1]["text"] and "'Sword'" in told[-1]["text"]
+    # the next words typed go to the game, not to the sorter
+    assert demo.say("방패로") is None and await waiting == "방패로" and demo.picking is None
+    # an agent that stops waiting leaves nothing behind
+    waiting = asyncio.get_running_loop().create_task(demo.pick(asked))
+    await asyncio.sleep(0)
+    waiting.cancel()
+    await asyncio.gather(waiting, return_exceptions=True)
+    assert demo.picking is None

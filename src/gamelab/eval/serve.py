@@ -183,8 +183,12 @@ class Watched:
     progress (`agent.progress`) to `progressed`."""
 
     def __init__(self, recorder: measure.Recorder, tell: Callable[[dict[str, Any]], None],
-                 progressed: Callable[[dict[str, Any]], None] | None = None) -> None:
-        self.recorder, self.tell, self.progressed = recorder, tell, progressed
+                 progressed: Callable[[dict[str, Any]], None] | None = None, asker: Any = None) -> None:
+        self.recorder, self.tell, self.progressed, self.asker = recorder, tell, progressed, asker
+
+    async def pick(self, asked: dict[str, Any]) -> str | None:
+        """The person is asked in the chat which of the things a game offers to take (`agent.Agent._ask_person`)."""
+        return await self.asker(asked) if self.asker is not None else None
 
     def progress(self, event: dict[str, Any]) -> None:
         if self.progressed is not None:
@@ -355,6 +359,10 @@ class Demo:
         # person's answer (`{"words", "question"}`)
         self.previous: dict[str, Any] | None = None
         self.pending: dict[str, str] | None = None
+        # the answer waited for when a game offers several things and the person is asked which to take (`pick`),
+        # and whether the request being played was in Korean
+        self.picking: asyncio.Future | None = None
+        self.asked_ko = True
         # what `ask` took over from the game before, given back when the request is asked back instead of played
         self.before: dict[str, Any] | None = None
         self.progress: list[dict[str, Any]] = []
@@ -456,6 +464,10 @@ class Demo:
             return "chat_limit"
         self.chats += 1
         self.tell({"kind": "said", "words": words})
+        if self.picking is not None and not self.picking.done():
+            # the answer to what the game offers: it goes to the game, not to the sorter
+            self.picking.set_result(words)
+            return None
         asyncio.get_running_loop().create_task(self.talk(words))
         return None
 
@@ -667,6 +679,7 @@ class Demo:
         self.tell(self.status())
         stamp = time.strftime("%Y%m%d-%H%M%S")
         ko = talk.korean(words)
+        self.asked_ko = ko
         try:
             asked = await request.understand(self.model, words, last=self.previous)
             if self.clarify(asked, words, clarified):
@@ -742,7 +755,24 @@ class Demo:
             self.tell(self.status())
 
     def watching(self, recorder: measure.Recorder) -> Watched:
-        return Watched(recorder, self.tell, self.progressed)
+        return Watched(recorder, self.tell, self.progressed, self.pick)
+
+    async def pick(self, asked: dict[str, Any]) -> str | None:
+        """The game offers several things and one is taken: the chat says what is offered and what the agent
+        would take, and the next words typed are the answer. The agent waits only so long (it cancels this), and
+        then takes its own."""
+        ko = self.asked_ko
+        options = " / ".join(asked["options"])
+        mine = asked.get("picked") or "?"
+        self.picking = asyncio.get_running_loop().create_future()
+        self.say_back((f"{asked['asks'] or '무엇을 가질까요?'} {options}. 답이 없으면 '{mine}'을(를) 고릅니다"
+                       + (f" ({asked['why']})" if asked.get("why") else "") + ".") if ko else
+                      (f"{asked['asks'] or 'Which one?'} {options}. With no answer I take '{mine}'"
+                       + (f" ({asked['why']})" if asked.get("why") else "") + "."), "pick", options=asked["options"])
+        try:
+            return await self.picking
+        finally:
+            self.picking = None
 
     async def web_game(self, asked: dict[str, Any], name: str, cancel: asyncio.Event) -> dict[str, Any]:
         args = self.game_args(web.configure, asked)

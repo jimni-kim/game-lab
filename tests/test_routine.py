@@ -236,6 +236,13 @@ async def test_what_the_model_noted_of_a_game_is_kept_by_its_parts_and_given_to_
     player.questions = 1
     player._remember({"plan": "", "ways": "the right button"})
     assert player.lasting() == {"rules": "match three", "ways": "the right button"} and "plan" not in player.memory
+    # a part longer than it may be is cut, counted, and said at the next question; the rules may be longer than the rest
+    assert player.cut == {} and direct.memory_most("rules") > direct.memory_most("ways") == direct.MEMORY_MOST
+    player._remember({"rules": "r" * 1000, "ways": "w" * 450})
+    assert len(player.memory["rules"]) == 1000 and len(player.memory["ways"]) == direct.MEMORY_MOST
+    assert player.cut == {"ways": 1} and "50 were cut" in player.cut_last["ways"] and player.summary()["memory_cut"] == {"ways": 1}
+    player._remember({"ways": "short"})
+    assert player.cut_last == {} and player.cut == {"ways": 1}
 
 
 async def test_things_are_kept_by_the_one_game_of_several_an_app_holds(tmp_path):
