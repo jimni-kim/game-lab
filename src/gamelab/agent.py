@@ -108,6 +108,11 @@ SAME_READS, REFUSED_S, ABSENT_S = 3, 1.5, 3.0
 # a board at rest that shows looks not learned is looked at again this long after: a look that changed meanwhile
 # is still moving, and is not asked about
 UNSTABLE_GAP_S = 0.4
+# a board at rest that shows at least this many kinds of look not learned is read whole by the main model, which
+# names them all against the pieces it already knows, before any is shown to the light model one cell at a time
+# (2026-11-24, Candy Crush level 9: a first board of two colours, the other four named by the light model cell
+# by cell, two of them wrongly; the moves that followed were refused and those colours learned as fixed)
+NEW_KINDS_READ = 2
 # moves whose lines hit things fixed, none of which looked otherwise after, before such things are taken not to
 # break beside a line
 BESIDE_UNMOVED = 3
@@ -1273,6 +1278,8 @@ class Agent:
             self.light_told["unstable"] = self.light_told.get("unstable", 0) + sum(
                 len(cells) for cells, _ in asked) - sum(len(cells) for cells, _ in steady)
             asked = steady
+        if len(asked) >= NEW_KINDS_READ and await self._settle_whole(after, expect):
+            return
         kit, answers = self.adapter.kit, {}
         if asked and self.light is not None and len(asked) <= kit.KINDS_MOST:
             checks = [Check(f"k{index}-{shown}", CHOICE, LIGHT_QUESTION, picture, kit.asked())
@@ -1293,6 +1300,25 @@ class Agent:
         state, _ = self._observe(after.png)
         if state is not None:
             after.state = state.payload
+
+    async def _settle_whole(self, after: Reading, expect: tuple[Reading, dict[str, Any]]) -> bool:
+        """Several looks not learned on one board at rest: the main model reads the whole board as the move's
+        result, and the family's reader learns the looks it left unread from that reading. Pieces seen together
+        are named against one another and against those already known, where a light model shown one cell alone
+        names each by itself. True when the reader learned from it; else the light model is asked as before."""
+        if not self._affordable():
+            return False
+        said = await self._read_model(expect, None)
+        self._reread("new_looks")
+        if said is None:
+            return False
+        learned = self.adapter.teach(said.png, said.state, "model")
+        self.light_told["by_model"] = self.light_told.get("by_model", 0) + learned
+        if not learned:
+            return False
+        state, _ = self._observe(said.png)
+        after.state = state.payload if state is not None else said.state
+        return True
 
     def _blind_to_goals(self) -> str | None:
         """Why the code's own choice of move is not to be trusted with this level (PLAN §31, L3), or None: the

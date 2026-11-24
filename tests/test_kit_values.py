@@ -755,3 +755,53 @@ async def test_a_power_the_reading_model_put_no_kind_to_is_named_by_the_light_mo
     other["grid"][2][3] = 1
     assert not kit.same(state, other)
 
+
+
+class Uncovered(gems.Gems):
+    """A game whose first board shows two colours only (green and blue, two by two so none line up) and whose
+    first move brings three colours nobody has seen onto it at once, where the cleared pieces are refilled."""
+    FIRST = [[4, 4, 5, 5, 4, 4, 5, 5] if r % 2 == 0 else [5, 5, 4, 4, 5, 5, 4, 4] for r in range(8)]
+    NEW = (1, 2, 6)
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self.state["grid"] = [list(row) for row in self.FIRST]
+
+    def _play(self, action):
+        first = not self.swaps
+        before = self.state
+        super()._play(action)
+        if first and self.swaps:
+            # what the rules leave unread of the move (the refilled cells) is drawn from the new colours
+            left = self.family.model.apply(before, self.family.rules, action)["state"]["grid"]
+            colours = iter(self.NEW * 8)
+            self.state["grid"] = [[next(colours) if value is None else value for value in row] for row in left]
+
+
+async def test_several_new_looks_at_once_are_read_by_the_main_model_on_the_whole_board_not_named_one_by_one():
+    """2026-11-24, Candy Crush level 9: the light model shown one new cell at a time called a green piece orange;
+    the moves that followed were refused, and the colours were learned as things fixed. Several new kinds on one
+    board at rest are now read by the main model, whole, and the reader learns them from that reading."""
+    fake = Uncovered()
+    model = gems.Jeweller(fake)
+    light = Light({ink: value for value, ink in gems.INKS.items()}, wrong=Uncovered.NEW)
+    played, made = await agent.play(fake, model, "match3", goal=GoalSpec("actions", 8), budget=Budget(20, 200, 120),
+                                    light=light, policy="greedy")
+    assert played.record["outcome"] == "goal_reached", (played.record, made)
+    # the main model read the board the new colours came onto; the light model, which would have named them
+    # wrongly, was never shown one of them (a colour that came in later on its own is still its to name), and the
+    # game refused no move made from what the reader learned
+    from io import BytesIO
+    from PIL import Image
+
+    assert made["rereads"]["by_why"].get("new_looks") == 1, made["rereads"]
+    assert [kind for kind, _ in model.asked].count("label") == 2, model.asked
+    shown = [Image.open(BytesIO(check.image)).convert("RGB") for checks in light.asked for check in checks]
+    middles = {image.getpixel((image.width // 2, image.height // 2)) for image in shown}
+    assert not middles & {gems.INKS[value] for value in Uncovered.NEW}, middles
+    assert made["kit"]["taught"].get("model", 0) >= 3 and made["kit"]["light"].get("by_model", 0) >= 3, made["kit"]
+    # no move on a colour the main model named was refused, and none was learned to be something fixed (the fake
+    # light model here answers by number, which the reader takes for "nobody knows": that one is a power until
+    # the game refuses it)
+    assert made["kit"]["taught"].get("rules", 0) == 0, made["kit"]["taught"]
+    assert all(move["effect"] == "confirmed" for move in played.moves[:2]), played.moves
