@@ -187,6 +187,10 @@ CHOICE = "choice"
 # how long the person is waited for when asked which of several things offered to take, before the model's own pick
 # is sent
 PICK_WAIT_S = 45.0
+# the kinds of such a choice (`direct.PICK_KINDS`) the person is asked of: an offer of rewards. A way on a map or a
+# shop's goods come up too often to wait for an answer at each; they are kept with the record all the same. How
+# much of where the run stood is kept with a choice, and how many of the screens after it
+PICKS_ASKED, PICK_STANDING, PICK_THEN = frozenset({"reward"}), 240, 3
 # why a level of levels counted up to one ended without a result screen: the model read a number past the one the
 # part began at (a floor, a day; `Agent.counting`)
 COUNTED = "counted_on"
@@ -462,6 +466,7 @@ class Agent:
         self.searching = True
         # whether the person was already asked about the things offered on the screens now shown (`pick`)
         self.picking = False
+        self.picked: tuple[str, str | None] | None = None
         # where the last move's time went (`_remember`), and what its result's reading by code took (`_read_code`)
         self.timing: dict[str, Any] | None = None
         self.timing_from = 0.0
@@ -2904,6 +2909,10 @@ class Agent:
             if did == AGAIN:
                 continue
             self._afford()
+            if self.searching and player.fight.sight(before):
+                # cards known by their look stand where a hand was read before: the code tries the screen as a
+                # turn itself, once for each time they come up (PLAN §36 M11b)
+                player.fight.paused = False
             if self.searching and player.fight.on and not player.fight.paused and await self._fight_turn(before, moving, looked):
                 continue
             # what the page under the picture says stands in view, where there is a page (PLAN §27, M2)
@@ -2928,6 +2937,7 @@ class Agent:
                 continue
             silent = 0
             action, scene = answer["action"], answer["scene"]
+            self._after_pick(answer.get("pick"))
             if self.counting is not None and answer.get("progress", 0) > self.counting:
                 # the game shows a number past the one this part began at: the work counts it (`work`)
                 self.found["counted"] = {"from": self.counting, "to": answer["progress"]}
@@ -3031,14 +3041,24 @@ class Agent:
             pick = answer.get("pick")
             if pick is None:
                 self.picking, player.person_said = False, None
-            elif not self.picking and pick["taking"]:
-                # several things are offered and the model is about to take one (2026-11-24, the person): the
-                # person is asked where someone watches the work, once for the screens of one offer; with no answer
-                # in time, or no one to ask, the model's own pick is sent
-                self.picking = True
-                said = await self._ask_person(pick)
-                self.found.setdefault("picks", []).append({**pick, "at_input": self.used + 1,
-                                                           **({"person_said": said} if said else {})})
+            elif pick["taking"] and self.picking and player.person_said and player.picks:
+                # the answer after the person's word: what was then taken is kept with what was asked
+                player.picks[-1]["taken"] = pick["picked"]
+            elif pick["taking"] and (not self.picking or (pick["kind"], pick["picked"]) != self.picked):
+                # one of several things is about to be taken and cannot be given back (PLAN §27 M11): what stood
+                # to choose from and what each was foreseen to lead to is kept with the work's record. Where it is
+                # a reward and someone watches the work, the person is asked (2026-11-24, the person), once for
+                # the screens of one offer; with no answer in time, or no one to ask, the model's own pick is sent
+                first, self.picking, self.picked = not self.picking, True, (pick["kind"], pick["picked"])
+                said = await self._ask_person(pick) if first and pick["kind"] in PICKS_ASKED else None
+                read = player.fight.account["hp"]
+                self.found["picks"] = player.picks
+                player.picks.append({**pick, "at_input": self.used + 1, "question": player.questions,
+                                     **({"standing": player.memory["run"][:PICK_STANDING]} if player.memory.get("run") else {}),
+                                     **({"hp_last_read": read[-1]["hp"], "fight_reads": len(read)} if read else {}),
+                                     **({"lesson": answer["lesson"]} if answer.get("lesson") else {}),
+                                     **({"person_said": said} if said else {}), "then": []})
+                del player.picks[:-direct.PICKS_MOST]
                 if said:
                     player.person_said = {"asked": pick["asks"], "options": pick["options"], "answer": said}
                     player.history.append({"action": {"kind": direct.WAIT}, "sent_by": "program", "not_taken": (
@@ -3239,6 +3259,17 @@ class Agent:
             if scene is None and changed and (self._new_scene(before, after, moving) or self._due()) and await self._resume():
                 return
 
+    def _after_pick(self, pick: dict[str, Any] | None) -> None:
+        """What the screen showed after the last choice that cannot be taken back, as the model said it at its next
+        questions (`PICK_THEN` of them): kept with that choice, for the record to show what came of it."""
+        player = self.player
+        if not player.picks:
+            return
+        then = player.picks[-1]["then"]
+        if len(then) < PICK_THEN and player.situation and player.situation not in then \
+                and player.questions > player.picks[-1]["question"]:
+            then.append(player.situation)
+
     async def _ask_person(self, pick: dict[str, Any]) -> str | None:
         """What the person answers when asked which of the things offered to take; None when no one watches the
         work in a way that can be asked (`Watch` with `pick`), or no answer came in `PICK_WAIT_S`."""
@@ -3262,6 +3293,22 @@ class Agent:
         player = self.player
         fighting = player.fight
         self._afford()
+        if fighting.on and fighting.awaited and not fighting.sighted(before):
+            # the turn was handed over and the hand, known by its cards' looks, is not back: the other side is
+            # still at it though the screen rested. It is waited for by looking, not by asking (PLAN §36 M11b:
+            # 9 of 21 readings of a measured work found the enemies' turn)
+            fighting.account["hand_waits"] += 1
+            deadline = time.monotonic() + fight.HAND_WAIT_S
+            while time.monotonic() < deadline:
+                await asyncio.sleep(fight.HAND_LOOK_S)
+                if fighting.sighted(await self.seen.capture()):
+                    before = await self._settled()
+                    break
+            else:
+                # it did not come back: one reading says whether the fight is over
+                fighting.account["hand_gone"] += 1
+                fighting.misses = max(fighting.misses, fight.MISSES_MOST - 1)
+        fighting.awaited = False
         given = research.told(self.researched) if self.researched else None
         history = [{key: value for key, value in entry.items() if key in ("action", "sent_by", "screen_changed", "fight")}
                    for entry in player.history[-4:]]
@@ -3330,6 +3377,8 @@ class Agent:
                                                   "end of turn", rest=direct.REST_MS_RANGE[1])
             ended = changed
         fighting.account["ended"] += ended
+        # the next turn's hand is waited for where this one's cards were known by their looks
+        fighting.awaited = bool(ended) and fighting.hand_known
         fighting.predicted = plan["predicted"] if ended or more else None
         if not ended and not more:
             fighting.paused = True

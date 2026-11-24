@@ -25,6 +25,11 @@ screen then shows card by card (`Fight._bear`): when one card alone can account 
 written again from what was seen (`fit`: so much at the first card, so much more for each card before it), and a
 card with no rule at all is played with the energy the search leaves, on an enemy of its own, and gets its rule
 from what that did. No turn goes to the model for a rule.
+
+A fight is also seen by the code itself (PLAN §36 M11b): the boxes a hand's cards were read in are kept
+(`Fight.places`), and a screen that shows cards known by their look in two of them is read as a turn without the
+model first saying one stands there (`Fight.sighted`). That is tried once for each time such cards come up
+(`Fight.blind`), so a screen that shows the hand but is no turn costs one reading and no more.
 """
 from __future__ import annotations
 
@@ -71,6 +76,12 @@ LOOK_INSET, LOOK_SIDE, LOOK_NEAR, LOOKS_MOST, CARDS_MOST, SAID_MOST = 0.2, 12, 1
 SEEN_MOST, TRIES_MOST = 6, 2
 # a card is dragged this long and held this long before it moves
 DRAG_MS, HOLD_MS = 700, 200
+# where a hand's cards were read (PLAN §36 M11b): this many boxes kept, two within this many pixels being one; a
+# screen that shows a known card in this many of them is taken for a fight's turn without the model saying so
+PLACES_MOST, PLACE_SAME, SIGHTED_LEAST = 24, 8, 2
+# after a turn was ended, how long the hand is waited for to show known cards again before the screen is read, and
+# how often it is looked at
+HAND_WAIT_S, HAND_LOOK_S = 8.0, 0.5
 
 
 def _int(value: Any, least: int = 0, most: int = NUMBER_MOST) -> int | None:
@@ -322,8 +333,22 @@ def action(read: dict[str, Any], at: list[float], target: int | None) -> dict[st
 class Fight:
     """The cards of a game as they look and the rules of each, and the turn of a fight read and searched."""
 
-    def __init__(self, kept: Any = None, looks: Any = None) -> None:
+    def __init__(self, kept: Any = None, looks: Any = None, places: Any = None) -> None:
         self.rules: dict[str, dict[str, Any]] = {}
+        # where the cards of a hand were read, on a screen of which size (`sighted`); and whether the cards now
+        # showing there were already tried as a turn
+        self.places: list[list[int]] = []
+        self.screen: list[int] | None = None
+        self.blind = False
+        # whether the hand last read showed cards known by their looks, and whether a turn was just ended there
+        # (`agent.Agent._fight_turn` then waits for such a hand before it reads)
+        self.hand_known = self.awaited = False
+        try:
+            if isinstance(places, dict) and len(places["screen"]) == 2:
+                self.screen = [int(part) for part in places["screen"]]
+                self.places = [[int(part) for part in box] for box in places["boxes"] if len(box) == 4][-PLACES_MOST:]
+        except (KeyError, TypeError, ValueError):
+            self.places, self.screen = [], None
         for name, said in (kept.items() if isinstance(kept, dict) else []):
             if (checked := rule(said)) is not None and _name(name):
                 self.rules[_name(name)] = checked
@@ -359,10 +384,14 @@ class Fight:
         self.apart: set[str] = set()
         self.so_far = 0
         self.misses = 0
+        # the reading under way was begun by the code's own sighting of the hand
+        self.sighting = False
         self.predicted: dict[str, Any] | None = None
         self.account: dict[str, Any] = {"reads": 0, "tokens": 0, "turns": 0, "searched": 0, "cards": 0,
                                         "ended": 0, "fell_back": {}, "dropped": [], "hp": [], "written": 0,
-                                        "learned": [], "apart": [], "tried": 0, "mid_reads": 0, "told_apart": 0, "renamed": 0}
+                                        "learned": [], "apart": [], "tried": 0, "mid_reads": 0, "told_apart": 0, "renamed": 0,
+                                        "sighted": 0, "sighted_no_turn": 0,
+                                        "hand_waits": 0, "hand_gone": 0}
 
     def _fell(self, why: str) -> None:
         self.account["fell_back"][why] = self.account["fell_back"].get(why, 0) + 1
@@ -373,9 +402,12 @@ class Fight:
         new one under the name the model gave (`said` keeps what it was called this time). A card with no rule
         takes the rule of the name it is called now, when that name has one or the model wrote one."""
         image = grid.open_picture(png)
+        if self.screen != list(image.size):
+            self.places, self.screen = [], list(image.size)
         for card in read["hand"]:
             said = card["said"] = card["name"]
             if "box" in card:
+                self._place(card["box"])
                 seen = look(image, card["box"])
                 near = min(self.looks, key=lambda key: min(grid.distance(seen, one) for one in self.looks[key]), default=None)
                 far = min(grid.distance(seen, one) for one in self.looks[near]) if near is not None else None
@@ -409,6 +441,48 @@ class Fight:
                 self.rules[key] = checked
                 self.borne[key] = 0
                 self.account["written"] += 1
+
+    def _place(self, box: list[float]) -> None:
+        """A box a card of the hand was read in is kept, the newest last."""
+        place = [round(part) for part in box]
+        self.places = [old for old in self.places if any(abs(a - b) > PLACE_SAME for a, b in zip(old, place))]
+        self.places.append(place)
+        del self.places[:-PLACES_MOST]
+
+    def sighted(self, png: bytes) -> bool:
+        """Whether the screen shows cards known by their look where a hand's cards were read before: a turn of a
+        fight may stand there though no one said so."""
+        if not self.places or not self.looks:
+            return False
+        image = grid.open_picture(png)
+        if list(image.size) != self.screen:
+            return False
+        known = [one for looks in self.looks.values() for one in looks]
+        found: list[list[int]] = []
+        for place in self.places:
+            # two boxes over one card are one card seen
+            if any(abs(place[0] - other[0]) < other[2] / 2 and abs(place[1] - other[1]) < other[3] / 2 for other in found):
+                continue
+            seen = look(image, place)
+            if any(grid.distance(seen, one) <= LOOK_NEAR for one in known):
+                found.append(place)
+        return len(found) >= SIGHTED_LEAST
+
+    def sight(self, png: bytes) -> bool:
+        """Whether the code is to try this screen as a turn by itself: known cards show in the hand's places and
+        were not tried since they came up. The try is then spent until they are gone again, and one reading that
+        finds no turn ends it."""
+        if self.on:
+            return False
+        if not self.sighted(png):
+            self.blind = False
+            return False
+        if self.blind:
+            return False
+        self.blind, self.on, self.misses = True, True, MISSES_MOST - 1
+        self.sighting = True
+        self.account["sighted"] += 1
+        return True
 
     def _forget(self, key: str) -> None:
         for kept in (self.looks, self.said, self.borne, self.seen, self.tries, self.rules, self.off):
@@ -446,15 +520,18 @@ class Fight:
             with open(os.path.join(folder, f"read-{os.getpid()}-{self.account['reads']:03d}.json"), "w", encoding="utf-8") as out:
                 json.dump({"said": said, "scale": scale}, out, ensure_ascii=False)
         if read is None:
+            self.account["sighted_no_turn"] += self.sighting
+            self.sighting = False
             self.misses += 1
             if self.misses >= MISSES_MOST:
-                self.on, self.predicted, self.misses = False, None, 0
+                self.on, self.predicted, self.misses, self.hand_known = False, None, 0, False
             self._fell("no_turn")
             return None
-        self.misses = 0
+        self.misses, self.sighting = 0, False
         self._tell(png, read, said["rules"] if isinstance(said.get("rules"), dict) else {})
         while len(self.rules) > RULES_MOST:
             del self.rules[next(iter(self.rules))]
+        self.hand_known = self.sighted(png)
         self.account["mid_reads"] += bool(self.predicted and self.predicted.get("mid"))
         self.account["hp"].append({"turn": self.account["reads"], "hp": read["hp"], "block": read["block"],
                                    "enemies": [enemy["hp"] for enemy in read["enemies"]]})
@@ -695,6 +772,9 @@ class Fight:
         return {name: {"looks": [one.hex() for one in looks], "said": dict(self.said.get(name, {})),
                        "borne": self.borne.get(name, 0), "tries": self.tries.get(name, 0),
                        "seen": self.seen.get(name, {})} for name, looks in self.looks.items()}
+
+    def kept_places(self) -> dict[str, Any]:
+        return {"screen": list(self.screen or []), "boxes": [list(box) for box in self.places]}
 
     def summary(self) -> dict[str, Any]:
         lost = sum(max(0, one["hp"] - other["hp"]) for one, other in zip(self.account["hp"], self.account["hp"][1:]))

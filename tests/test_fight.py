@@ -4,6 +4,7 @@ end-turn button after which the enemies hit for what they showed and a new hand 
 with no names (§36 E7b): a model may call one otherwise at every reading, and may know no rule for any."""
 from io import BytesIO
 import json
+import time
 
 import pytest
 from PIL import Image, ImageDraw
@@ -113,8 +114,8 @@ class Model:
     """Reads the toy fight off the game itself; writes `rules` for the cards (the right ones unless told), and
     plays as `direct` says when it is asked to."""
 
-    def __init__(self, game, rules=None, direct_answers=None, names=None):
-        self.game, self.rules = game, CARDS_RIGHT if rules is None else rules
+    def __init__(self, game, rules=None, direct_answers=None, names=None, says_fight=True):
+        self.game, self.rules, self.says_fight = game, CARDS_RIGHT if rules is None else rules, says_fight
         # what a card is called at a reading (the number of the reading given): its own name unless told
         self.names = names or (lambda name, reading: name)
         self.direct = list(direct_answers or [])
@@ -135,7 +136,7 @@ class Model:
         if not any(e["hp"] > 0 for e in game.enemies):
             return TurnResult(text=json.dumps({"situation": "won", "scene": "result", "action": {"kind": "done", "end": "won"}}))
         answer = self.direct.pop(0) if self.direct else {"action": {"kind": "wait", "ms": 100}}
-        return TurnResult(text=json.dumps({"situation": "a fight", "scene": "board", "fight_turn": True,
+        return TurnResult(text=json.dumps({"situation": "a fight", "scene": "board", "fight_turn": self.says_fight,
                                            "expect": "a card is played", **answer}), usage=Usage(input_tokens=5000))
 
     def read(self, context):
@@ -311,3 +312,81 @@ async def test_a_reading_that_finds_no_turn_once_does_not_end_the_fight():
     png = await game.capture()
     assert await fighting.read(model, png) is None and fighting.on is True
     assert await fighting.read(model, png) is None and fighting.on is False and fighting.misses == 0
+
+
+async def test_a_fight_is_seen_by_the_cards_known_in_the_hands_places(tmp_path):
+    game = Duel([{"name": "rat", "hp": 12, "intent": 4, "x": 40}])
+    played, made = await play(game, Model(game), None, goal=GoalSpec("play_until_end"), budget=Budget(60, 1, 60),
+                              store=Store(tmp_path))
+    kept = Store(tmp_path).memory("https://cards.example/")
+    assert played.record["outcome"] == "goal_reached" and len(kept["card_places"]["boxes"]) >= 3
+    assert made["direct"]["fight"]["sighted"] == 0
+    # the next work's model never says a fight stands there: the code sees the known cards and reads the turn
+    again = Duel([{"name": "rat", "hp": 12, "intent": 4, "x": 40}, {"name": "ogre", "hp": 20, "intent": 3, "x": 380}])
+    model = Model(again, says_fight=False)
+    played, made = await play(again, model, None, goal=GoalSpec("play_until_end"), budget=Budget(60, 1, 60),
+                              store=Store(tmp_path))
+    fought = made["direct"]["fight"]
+    assert played.record["outcome"] == "goal_reached" and fought["sighted"] == 1 and fought["sighted_no_turn"] == 0
+    # the model's own questions: only the one that saw the fight won
+    assert model.asked.count("play_direct") == 1 and fought["turns"] >= 2
+
+
+async def test_cards_that_show_where_no_turn_stands_cost_one_reading():
+    class Says:
+        def __init__(self):
+            self.times = 0
+
+        async def complete(self, request):
+            self.times += 1
+            return TurnResult(text=json.dumps({"fight_turn": False}), usage=Usage(input_tokens=10))
+
+    game = Duel([{"name": "ogre", "hp": 30, "intent": 0, "x": 200}])
+    png = await game.capture()
+    known = fight.Fight()
+    known._tell(png, {"hand": [{"name": name, "box": slot(index)} for index, name in enumerate(game.hand)]}, {})
+    fighting, model = fight.Fight(None, known.kept_looks(), known.kept_places()), Says()
+    assert fighting.sighted(png) and fighting.sight(png) and fighting.on
+    # one reading that finds no turn ends it, and the same cards are not tried again while they stay
+    assert await fighting.read(model, png) is None and fighting.on is False
+    assert fighting.sight(png) is False and fighting.account["sighted_no_turn"] == 1
+    # once they are gone and come up again, they are tried again
+    game.hand = []
+    assert fighting.sight(await game.capture()) is False
+    game.hand = list(DEAL)
+    assert fighting.sight(await game.capture()) is True
+    # a screen of another size, or a hand of cards never seen, is no sighting
+    game.hand = ["Knight", "Knight"]
+    fighting.on = False
+    assert fighting.sighted(await game.capture()) is False
+
+
+async def test_the_next_hand_is_waited_for_by_looking_not_by_asking(tmp_path, monkeypatch):
+    class Slow(Duel):
+        """The enemies take a while over their turn: the hand is not drawn again until some time after it ended,
+        longer than the screen is waited for to rest."""
+        until = 0.0
+
+        async def tap(self, x, y, duration_ms):
+            before = self.hp, len(self.hand), self.energy
+            await super().tap(x, y, duration_ms)
+            if (self.hp, len(self.hand), self.energy) != before:
+                self.until = time.monotonic() + 0.5
+
+        async def capture(self, region=None):
+            hand = self.hand
+            self.hand = [] if time.monotonic() < self.until else hand
+            try:
+                return await super().capture(region)
+            finally:
+                self.hand = hand
+
+    monkeypatch.setattr(fight, "HAND_LOOK_S", 0.01)
+    monkeypatch.setattr(fight, "MISS_WAIT_MS", 500)
+    game = Slow([{"name": "ogre", "hp": 40, "intent": 2, "x": 200}])
+    model = Model(game)
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(80, 1, 60))
+    fought = made["direct"]["fight"]
+    assert played.record["outcome"] == "goal_reached" and fought["turns"] >= 3
+    # no reading was spent on a screen without the hand while the fight went on
+    assert fought["hand_waits"] >= 2 and fought["fell_back"].get("no_turn", 0) <= 2

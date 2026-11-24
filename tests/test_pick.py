@@ -90,3 +90,61 @@ async def test_with_no_answer_in_time_the_models_own_pick_is_sent():
     played, made = await play(game, Model(game), None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60), watch=watcher)
     assert played.record["outcome"] == "goal_reached" and game.hp == 20 - 9
     assert len(watcher.asked) == 1 and "person_said" not in made["picks"][0]
+
+
+class Wayfinder:
+    """Every floor is a fork of a map: it says what each way is foreseen to cost and takes the left one on even
+    floors, the right one on odd ones. Looks back when asked."""
+
+    def __init__(self, game):
+        self.game, self.reviews = game, []
+
+    async def complete(self, request):
+        context = json.loads(request.messages[0].content[0]["text"])
+        if "families" in context:
+            return TurnResult(text=json.dumps({"screen": "game", "families": [], "situation": "a fork"}))
+        if request.name == "review_work":
+            self.reviews.append(context)
+            return TurnResult(text=json.dumps({"went": "climbed", "cost": "the left way", "lessons": ["Go right at a fork"]}))
+        if not context.get("play"):
+            return TurnResult(text=json.dumps({"screen": "other", "fits": False}))
+        if self.game.floor >= 4:
+            return TurnResult(text=json.dumps({"situation": "the top", "scene": "result", "action": {"kind": "done", "end": "won"}}))
+        left = self.game.floor % 2 == 0
+        return TurnResult(text=json.dumps({
+            "situation": f"a fork at floor {self.game.floor}", "scene": "map", "expect": "a floor up",
+            "memory": {"run": f"floor {self.game.floor}, health {self.game.hp}"},
+            "action": {"kind": "tap", "at": [90, 375] if left else [310, 375]},
+            "pick": {"kind": "path", "asks": "Which way?", "taking": True,
+                     "options": [{"name": "left: an elite", "foresee": "about 3 health lost, a relic"},
+                                 {"name": "right: a shop", "foresee": "1 health lost, coins can be spent"}],
+                     "picked": "left: an elite" if left else "right: a shop", "why": "health is high" if left else "health is low"}}),
+            usage=Usage(input_tokens=100))
+
+
+async def test_a_way_on_a_map_is_kept_with_what_was_foreseen_and_what_came_after():
+    game, watcher = Tower(), Watcher("the right door please")
+    model = Wayfinder(game)
+    played, made = await play(game, model, None, goal=GoalSpec("play_until_end"), budget=Budget(20, 1, 60),
+                              watch=watcher, review=True)
+    assert played.record["outcome"] == "goal_reached"
+    # a way on a map is no offer of rewards: no one is asked, and each fork is kept as it was chosen
+    picks = made["picks"]
+    assert not watcher.asked and [one["picked"][:5] for one in picks] == ["left:", "right", "left:", "right"]
+    first = picks[0]
+    assert first["kind"] == "path" and first["options"] == ["left: an elite", "right: a shop"]
+    assert first["foreseen"] == ["about 3 health lost, a relic", "1 health lost, coins can be spent"]
+    assert first["why"] == "health is high" and first["standing"] == "floor 0, health 20" and first["at_input"] == 1
+    # what the screen showed after the last choice
+    assert picks[-1]["then"] == ["the top"]
+    # the review is given the choices with what was foreseen of each
+    told = model.reviews[0]["picks"]
+    assert len(told) == 4 and told[1]["foreseen"][1] == "1 health lost, coins can be spent" and "taking" not in told[0]
+
+
+def test_options_given_as_plain_texts_are_a_reward_with_nothing_foreseen():
+    picked = direct._pick({"asks": "Which?", "options": ["a sword", "a shield"], "picked": "a sword", "taking": True})
+    assert picked["kind"] == "reward" and "foreseen" not in picked and picked["options"] == ["a sword", "a shield"]
+    assert direct._pick({"options": [{"name": "only one", "foresee": "x"}]}) is None
+    assert direct._pick({"kind": "shop", "options": [{"name": "a potion", "foresee": "heals 10 for 30 coins"}, "leave"],
+                         "picked": "leave"})["foreseen"] == ["heals 10 for 30 coins", ""]

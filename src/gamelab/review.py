@@ -8,6 +8,7 @@ every work.
 Once a work ends (its goal reached, the game over, its budget spent), when the model asked enough questions in it,
 it is asked once more with the work's own record: how it ended, what the screen said as play went on, the inputs
 with what each was to do, the fights the program read and searched (health at each read, what it foresaw), the
+choices that could not be taken back with what was foreseen of each option and what came after (`picks`), the
 memory, the lessons given before and how often each was followed, and the last screen. It answers what happened,
 what it cost and why, and the game's lessons anew: at most `LESSONS_MOST` short rules, the earlier ones kept where
 the record bears them out. They are kept by the game (`memory.json`, `lessons`, beside the last reviews) and given
@@ -34,6 +35,8 @@ QUESTIONS_LEAST = 4
 LESSONS_MOST, LESSON_CHARS, REVIEWS_KEPT, SAID_CHARS = 8, 200, 6, 300
 # what of the work is told: the last inputs, the situations as they changed, the fight's reads
 TRAIL_MOST, SITUATIONS_MOST, READS_MOST = 60, 30, 30
+# and the choices that could not be taken back, with what was foreseen of each option (`direct._pick`)
+PICKS_MOST = 12
 TOKENS_MOST, ANSWER_TOKENS, TIMEOUT_S, VIEW_SIDE = 20_000, 1500, 120.0, 768
 
 
@@ -68,6 +71,8 @@ def told(player: Any, goal: dict[str, Any], outcome: str, reason: str, detail: s
             **({"fight": {"reads": fight["reads"], "turns_by_program": fight["turns"], "cards_by_program": fight["cards"],
                           "health_at_reads": fight["hp"][-READS_MOST:], "left_to_you": fight["fell_back"],
                           "rules_dropped": fight["dropped"][-8:]}} if fight["reads"] else {}),
+            **({"picks": [{key: value for key, value in pick.items() if key not in ("taking", "question", "fight_reads")}
+                          for pick in player.picks[-PICKS_MOST:]]} if player.picks else {}),
             "memory": {part: text for part, text in player.memory.items()},
             "lessons_before": [{"number": number, "lesson": text, "followed": player.followed.get(number, 0)}
                                for number, text in enumerate(player.lessons, 1)]}

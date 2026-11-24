@@ -74,6 +74,13 @@ game was not yet looked at from inside (`looking`), the model is asked to open a
 of how it is played before the first move of a level, and to say so (`research_done`) when it did or there is
 none; what it reads there it gives as `found`. The questions asked so and their tokens are counted apart
 (`looked`), for the board's budget not to bear them.
+
+Where one of several things is taken and cannot be given back (a reward after a fight, the way on over a map, a
+shop's goods, an event's options), the model says with its answer what stands to choose from and what each is
+foreseen to lead to, the one it takes and why (`pick`; PLAN §27 M11, §36 M11b). No question is added for it: the
+weighing is part of the answer that takes the thing. Each such choice is kept with the work's record (`picks`),
+with where the run stood and what the screen showed afterwards, and given to the review of the work (`review`);
+of an offer of rewards the person is asked first where someone watches (`agent`).
 """
 from __future__ import annotations
 
@@ -179,6 +186,9 @@ REPEAT_MOST, REPEAT_SHARE = 8, 0.3
 # a story's line moved on by the same input again and again without asking (`advance`; PLAN §27, session T): at most
 # this many at one answer, and how many of a choice's options and how much of each text is kept
 LINES_MOST, OPTIONS_MOST, OPTION_MOST = 60, 8, 120
+# what a choice that cannot be taken back is between (`_pick`; the first when the model names none), how much of
+# what an option is foreseen to lead to is kept, and how many such choices a work's record holds
+PICK_KINDS, FORESEE_MOST, PICKS_MOST = ("reward", "path", "shop", "event"), 160, 40
 # the tags of a page a thing to press has (`pressable`)
 PRESSED_TAGS = frozenset({"button", "a", "input", "select", "textarea", "summary"})
 # how near a change must be to where a story's lines changed before to be one more line (`within`), in pixels
@@ -290,14 +300,25 @@ def _choice(value: Any) -> dict[str, Any] | None:
 
 
 def _pick(value: Any) -> dict[str, Any] | None:
-    """A model's account of a screen that offers several things of which one is taken (rewards after a fight, a
-    card, an item, a perk): what is offered, the one it would take and why. None when it gave none with at least
-    two options. `taking`: its input takes the one picked now (it has seen what is offered)."""
-    chosen = _choice(value)
-    if chosen is None:
+    """A model's account of a screen where one of several things is taken and cannot be given back (PLAN §27 M11):
+    a reward after a fight, the way on over a map of rooms, what to buy at a shop, an event's options. What stands
+    to choose from, what each is foreseen to lead to (`foreseen`, beside `options`), the one it would take and
+    why. None when it gave none with at least two options. `taking`: its input takes the one picked now."""
+    if not isinstance(value, dict) or not isinstance(value.get("options"), list):
         return None
-    why = value.get("why")
-    return {"asks": chosen["asks"], "options": chosen["options"], "picked": chosen["picked"],
+    options, foreseen = [], []
+    for option in value["options"]:
+        name, foresee = (option.get("name"), option.get("foresee")) if isinstance(option, dict) else (option, None)
+        if isinstance(name, str) and name.strip():
+            options.append(name.strip()[:OPTION_MOST])
+            foreseen.append(foresee.strip()[:FORESEE_MOST] if isinstance(foresee, str) else "")
+    if len(options) < 2:
+        return None
+    asks, picked, why = value.get("asks"), value.get("picked"), value.get("why")
+    return {"kind": value["kind"] if value.get("kind") in PICK_KINDS else PICK_KINDS[0],
+            "asks": asks.strip()[:200] if isinstance(asks, str) else "", "options": options[:OPTIONS_MOST],
+            **({"foreseen": foreseen[:OPTIONS_MOST]} if any(foreseen) else {}),
+            "picked": picked.strip()[:OPTION_MOST] if isinstance(picked, str) and picked.strip() else None,
             "why": why.strip()[:200] if isinstance(why, str) else "", "taking": value.get("taking") is True}
 
 
@@ -593,7 +614,11 @@ class Direct:
         # game's own account when it gives one)
         self.refused: dict[str, int] = refused if refused is not None else {}
         # the rules of the game's cards and the turn of a fight read and searched by code (PLAN §27 M10, §36 E7)
-        self.fight = fight.Fight(*((notes.get("card_rules"), notes.get("card_looks")) if isinstance(notes, dict) else ()))
+        self.fight = fight.Fight(*((notes.get("card_rules"), notes.get("card_looks"), notes.get("card_places"))
+                                   if isinstance(notes, dict) else ()))
+        # the choices that cannot be taken back as they were made (`_pick`; `agent`): what stood to choose from,
+        # what each was foreseen to lead to, the one taken and why, and what the screen showed afterwards
+        self.picks: list[dict[str, Any]] = []
 
     async def ask(self, png: bytes, kinds: frozenset[str], goal: dict[str, Any], left: dict[str, Any],
                   moving: list[list[int]] | None = None, onward: bool = False,
@@ -862,6 +887,7 @@ class Direct:
                 **({"known": dict(self.known)} if self.known else {}),
                 **({"card_rules": self.fight.kept()} if self.fight.rules else {}),
                 **({"card_looks": self.fight.kept_looks()} if self.fight.looks else {}),
+                **({"card_places": self.fight.kept_places()} if self.fight.places else {}),
                 **({"lessons": list(self.lessons)} if self.lessons else {}),
                 **({"reviews": list(self.reviews)} if self.reviews else {}),
                 **({"grid": self.lattice.kept()} if self.lattice is not None and self.lattice.names else {})}

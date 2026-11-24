@@ -762,7 +762,9 @@ class Demo:
         would take, and the next words typed are the answer. The agent waits only so long (it cancels this), and
         then takes its own."""
         ko = self.asked_ko
-        options = " / ".join(asked["options"])
+        foreseen = asked.get("foreseen") or []
+        options = " / ".join(f"{name} ({foreseen[index]})" if index < len(foreseen) and foreseen[index] else name
+                             for index, name in enumerate(asked["options"]))
         mine = asked.get("picked") or "?"
         self.picking = asyncio.get_running_loop().create_future()
         self.say_back((f"{asked['asks'] or '무엇을 가질까요?'} {options}. 답이 없으면 '{mine}'을(를) 고릅니다"

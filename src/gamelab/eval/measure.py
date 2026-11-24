@@ -58,7 +58,8 @@ def game_arguments(parser: argparse.ArgumentParser) -> None:
                         help="stop and hand the work back when this is met (repeatable): 'lost' at a level or game lost, "
                              "anything else in words, told to the models that look at the screen")
     parser.add_argument("--choices", metavar="WORDS",
-                        help="how a story's choices are to be made, in words (PLAN §27); without it a choice that "
+                        help="how a story's choices are to be made, in words (PLAN §27; it allows nothing by itself: "
+                             "spending coins is `--allow currency`); without it a choice that "
                              "cannot be taken back is not made and the work is handed back there")
     parser.add_argument("--allow", action="append", default=[], choices=sorted(META_ACTIONS),
                         help="a thing beside the board the work may use (repeatable); none unless given")
