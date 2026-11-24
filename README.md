@@ -3,14 +3,15 @@
 웹과 Android 게임을 화면만 보고 두는 범용 게임 에이전트 하네스다. 사용자가 말로 맡긴 범위(한 판, 레벨 N개, 이어받기, 이름 붙인 작업)를 끝내고 결과를 돌려준다.
 규칙을 아는 계열(2048, 지뢰찾기, 블록 놓기, 3매치, 클론다이크, 떨어지는 블록, 소코반)은 모델이 첫 화면을 보정해 주면 코드가 판을 읽고 풀이기가 수를 고른다.
 처음 보는 게임은 모델이 규칙 코드를 쓰거나(만든 계열) 입력을 직접 고르고(직접 두기), 판 밖 화면은 한 번 지난 길을 코드가 다시 누른다(루틴).
+긴 게임(덱 빌딩 같은 것)에서는 직접 두기 위에 장치가 얹힌다: 두기 전의 조사(스토어 설명·게임 안 도움말), 카드 싸움의 턴을 코드가 탐색해 두기(카드는 생김새로 가름), 되돌릴 수 없는 선택의 후보와 예상(`pick`), 작업이 끝난 뒤의 복기(교훈을 다음 작업에 줌), 화면의 숫자 읽기.
 떨어지는 블록류(실시간: 모델은 우물과 조작을 한 번 말하고, 코드가 초당 몇 번 읽고 계열의 풀이기로 놓을 곳을 고름. 웹과 Android 몸짓 조작), 요청 사이에 이어지는 게임(세계 기억), 스토리형(대사는 코드, 선택지는 모델)도 뼈대가 있다.
 데모 페이지(`eval serve`)는 게임 화면 옆의 대화창에서 요청을 받고, 판이 도는 중의 "어디까지 했어?"에 코드가 센 진행으로 답한다.
 
 ARMY 게임 플러그인(`codex/game-adaptive-perception` `92ccefe5f`)에서 분리했다.
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: 요청에서 종료까지의 구조도, 경로 선택 순서, 한 수 루프, 모듈별 역할과 지원 범위(2026-11-23)
-- **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z·Z2, 2026-11-21. R1·P2·D2를 합친 뒤 고침, 2026-11-23)
-- [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§35)
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: 요청에서 종료까지의 구조도, 경로 선택 순서, 한 수 루프, 모듈별 역할과 지원 범위(2026-11-24)
+- **[docs/STATUS.md](docs/STATUS.md)**: 지금 구조, 경로마다 되는 것과 실측 숫자, 안 되는 것, 다음에 할 일(세션 Z, 2026-11-21. R1·P2·D2를 합친 뒤 고침, 2026-11-23. §36 E0~M11b를 넣음, 세션 Z2, 2026-11-24)
+- [docs/PLAN.md](docs/PLAN.md): 계획과 세션 기록(§24~§36)
 - [docs/PLAN-archive.md](docs/PLAN-archive.md): 분리 계획과 그 전의 기록(§1~§23)
 - [docs/origin/](docs/origin/2026-11-13-game-adaptive-perception.md): 처음 실험 계획과 조사, [docs/reports/](docs/reports/): 단계별 리포트
 
@@ -30,16 +31,19 @@ agent.py                    한 판의 루프: 경로를 고르고, 판을 읽�
 ├─ work.py, contracts.py    요청한 범위만큼 판을 잇고 돌려주기 (GoalSpec: 목표, 범위, 멈춤 조건, 허락한 판 밖 행동, 이야기 방침)
 ├─ request.py               말로 한 요청을 목표로
 ├─ adaptation.py            게임 식별, 계열 보정과 채택 검사, 사이트·게임별 보관 (Store)
-├─ kits/, adapters/kit.py   계열 판독 키트 (블록 놓기, 2048, 지뢰찾기, 3매치)
+├─ research.py              두기 전의 조사: 스토어 설명·위키·모델이 아는 것으로 질문 하나 (식별 앞, research.json)
+├─ kits/, adapters/kit.py   계열 판독 키트 (블록 놓기, 2048, 지뢰찾기, 3매치, 소코반)
 ├─ adapters/generated.py    모델이 쓴 판독 코드 (sandbox/에서 실행, 클론다이크)
 ├─ made.py                  등록 안 된 게임에서 모델이 쓴 규칙·풀이 모듈 (만든 계열)
-├─ direct.py                모델 직접 두기: 수 묶음, 웹 요소 글, 스토리형 줄 넘기기와 선택지, 긴 게임(턴 뒤 기다리기, 읽은 글·판 상태 보관)
+├─ direct.py                모델 직접 두기: 수 묶음, 웹 요소 글, 스토리형 줄 넘기기와 선택지, 긴 게임(턴 뒤 기다리기, 읽은 글·판 상태 보관), 고르기(pick)
+├─ fight.py                 카드 싸움: 판독 질문 하나, 카드를 생김새로 가름, 규칙(가설)을 본 값으로 고쳐 씀, 손패 탐색, 카드 끌기
+├─ review.py                작업이 끝난 뒤의 복기: 질문 하나로 교훈을 다시 씀 (memory.json의 lessons·reviews)
 ├─ lattice.py               계열 없는 격자 판을 글로: 모델이 말한 격자의 칸을 생김새로 묶어 글자 판으로(직접 두기에서 씀)
 ├─ recovery.py              판을 못 읽는 화면에서 모델이 고른 입력 하나
 ├─ routine.py               판 밖 화면의 "이 화면이면 이 입력" 보관과 재생
 ├─ realtime.py              떨어지는 블록류의 실시간 코드 루프 (우물·다음 조각 읽기, 키와 몸짓, 놓았다가 돌아오기)
 ├─ world.py                 요청 사이에 이어지는 게임의 세계 기억 (world.json)
-├─ scenes.py                화면 종류와 맴돌기
+├─ scenes.py                화면 종류와 맴돌기, 화면에서 읽는 숫자(measures)
 ├─ samples.py, carry.py     칸의 견본, 끌어 옮기기
 ├─ frames.py, motion.py     프레임, 움직이는 것을 걸러 본 화면
 └─ 계열 (catalog, families)  규칙 모델(rules/) + 풀이기(solvers/) + 기술자(blueprint/families/). 떨어지는 블록(falling)은 키트 없이 실시간 루프가 씀
@@ -73,12 +77,14 @@ eval/                       평가 CLI (policies, web, android, offline, checks,
 # 라이브는 --compute를 계열의 바닥 값(least_compute)까지 올린다: 2048 8000, 지뢰찾기 20000, 블록 놓기 1000
 .venv/bin/python -m gamelab.eval web --site march2048_4x4 --identify --games 3 --compute 500 --out out/march   # 계열도 화면에서 찾음
 
-# Android (에뮬레이터를 먼저 켠다: emulator -avd game-lab)
+# Android (에뮬레이터를 먼저 켠다: emulator -avd game-lab2)
 .venv/bin/python -m gamelab.eval android --check --out out/device        # 연결 확인과 캡처 한 장
 .venv/bin/python -m gamelab.eval android --package PKG --hint "어느 게임인지" --compute 500 --out out/app
 .venv/bin/python -m gamelab.eval android --ask "퍼즐 앱에서 Fifteen 끝까지" --compute 200 --out out/ask   # 설치된 앱 가운데서 고름
 .venv/bin/python -m gamelab.eval android --ask "꿈의 집 하던 판 이어서 레벨 3개 깨줘, 지면 멈춰" --compute 200 --out out/ask   # 범위: 이어받기, 레벨 N개, 멈춤
 .venv/bin/python -m gamelab.eval android --package PKG --resume --objective levels --target 3 --allow retry --compute 200 --out out/app
+# 긴 게임(직접 두기 + 조사·카드 싸움·고르기·복기): 이야기·지도의 방침은 --choices, 상점에서 쓰는 것은 --allow currency
+.venv/bin/python -m gamelab.eval android --package it.sharklab.rogueadventure --identify --accept-consent --resume --objective play_until_end --games 1 --compute 200 --choices "체력을 잃지 않는 안전한 쪽으로" --allow currency --out out/android/rogue
 
 .venv/bin/python -m gamelab.eval offline --vision-model MODEL --out out/offline/MODEL   # 사이트 없이 보관된 화면으로 모델을 잼
 .venv/bin/python -m gamelab.eval web --ask "https://… 에서 이 퍼즐을 끝까지 풀어줘" --compute 200 --out out/ask   # 말로 한 요청: 주소와 목표를 거기서 읽음
@@ -98,7 +104,7 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 `src/gamelab/eval/apps.json`에 손으로 적는다(`{"PKG": {"label": "부르는 이름", "clear": true}}`).
 
 게임에 대해 보관하는 것은 `--adapter-store`(기본 `out/adapters`) 아래 사이트(앱)별 폴더에 둔다: 계열별 판독기와 값,
-판 사이 화면의 루틴(`routines/`, 모델이 한 번 넘긴 화면을 다음부터 코드가 다시 누름), 모델의 기억(`memory.json`: 규칙·길·판의 상태와 한 번 읽은 카드·적의 설명), 계열 없음(`unfamiliar.json`),
+판 사이 화면의 루틴(`routines/`, 모델이 한 번 넘긴 화면을 다음부터 코드가 다시 누름), 모델의 기억(`memory.json`: 규칙·길·판의 상태와 한 번 읽은 카드·적의 설명, 카드 싸움의 규칙·그림·손패 자리 `card_rules`·`card_looks`·`card_places`, 복기의 교훈 `lessons`·`reviews`), 계열 없음(`unfamiliar.json`), 두기 전의 조사(`research.json`),
 모델이 만든 계열(`made.json`), 실시간 게임의 준비 답과 판에서 배운 것(`falling.json`: 우물, 조작, 미리보기 상자, 쓸기 감도. 층의 목표는 남기지 않음), 세계 기억(`world.json`). 한 앱에 게임이 여럿이면 요청이 고른 게임 이름(`--ask`가 스스로 읽고, 아니면
 `--game NAME`)으로 폴더를 나눈다(`…+mines`). 다시 배우게 하려면 그 폴더를 지우거나 다른 `--adapter-store`를 준다.
 
@@ -106,6 +112,8 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 
 - 사이트 설정과 정답키: `src/gamelab/eval/sites.json`. 옵션 설명은 각 명령의 `--help`.
 - 범위(PLAN §25): `--objective levels --target N`은 레벨 N개를 같은 화면에서 잇고, `--objective until_level --target N`은 화면에 보이는 레벨 번호로 세어 레벨 N까지 깬다(시작 전과 레벨을 깰 때마다 모델이 화면의 번호를 읽고, 이미 지났으면 두지 않음). `--stop`(`lost` 또는 말), `--allow`(`boosters`, `currency`, `continue`, `retry`, 기본은 없음), `--resume`(앱을 다시 띄우지 않고 지금 화면에서)을 받는다. 말로 한 요청은 이것을 말에서 읽는다.
+- 허락은 이름으로만 받는다. `--choices`의 말("돈을 쓰는 것은 괜찮다")은 선택의 방침이지 허락이 아니다: 상점에서 사게 하려면 `--allow currency`를 함께 준다.
+- 처음 보는 게임의 조사와 작업 뒤의 복기는 eval에서 기본으로 켠다(`--no-research`, `--no-review`로 끔). 조사·복기의 토큰은 판 예산 밖이다.
 - 그 밖에: `--task NAME`(이름 붙인 작업), `--game NAME`(한 앱의 여러 게임 가운데 하나), `--choices WORDS`(이야기 선택지의 방침), `--way direct|made`(방법끼리 견주기). 말로 한 요청은 앞의 셋도 말에서 읽는다.
 - `--games` 2 이상이면 결과의 `model_tokens`는 실행 전체의 누적이다. 판마다의 숫자는 `work.spent`를 본다.
 - 결과: 판마다 `NAME-NN.json`과 `NAME-NN-final.png`, 실행마다 `summary.json`. 결과의 `work`는 돌려주기(끝난 까닭, 깬 레벨, 쓴 것, 멈춘 곳)이고 `told`는 그 한 줄이다. `out/`은 git에 넣지 않는다.
@@ -121,10 +129,11 @@ Android 기기 하나는 한 실행만 움직인다(`~/.gamelab/lock`, 기기마
 주소가 있으면 웹(Chromium), 없으면 설치된 앱 가운데서 고른다.
 게임 이름이 없어도 앞 판을 이어 하라는 말("10단계까지 깨줘", "3판 더")은 앞 판의 앱·주소로 시작한다(호스트가 앱 목록과 주소를 다시 확인함).
 어디까지 할지를 셀 수 없는 말("다리까지")이나 어느 게임인지 모를 요청은 시작하지 않고 한 번 되묻고(`about: "clarify"`), 다음 답을 원래 요청과 합쳐 다시 묻지 않고 시작한다.
+여럿 가운데 하나를 고르는 보상 앞에서는 대화창에 후보와 예상을 말하고 45초까지 답을 기다린다(답이 없으면 에이전트가 고른 것을 보냄). 지도의 길·상점은 묻지 않고 결과에 기록만 남긴다.
 
-데모의 기기는 AVD `game-lab`의 에뮬레이터다(`--avd`). 세션의 실측도 같은 기기에서 한다: 게임과 진행 기록이 거기에 있다. 한쪽이 판을 돌리는 동안 다른 쪽은 기기 잠금으로 거절되고, 데모는 그동안 쉬는 화면도 찍지 않는다. 번호(`emulator-5554` 등)는
+데모의 기기는 AVD `game-lab2`의 에뮬레이터다(`--avd`). 세션의 실측도 같은 기기에서 한다: 게임과 진행 기록이 거기에 있다. 한쪽이 판을 돌리는 동안 다른 쪽은 기기 잠금으로 거절되고, 데모는 그동안 쉬는 화면도 찍지 않는다. 번호(`emulator-5554` 등)는
 켜진 순서로 정해지므로, 붙어 있는 에뮬레이터마다 `adb -s 번호 emu avd name`으로 AVD 이름을 읽어 고른다. 다른 AVD와
-실기기는 쓰지 않고, 그것들이 켜져 있어도 `game-lab`이 없으면 켠다. `--serial`은 번호로 정할 때만 쓴다(그 번호만 씀).
+실기기는 쓰지 않고, 그것들이 켜져 있어도 `game-lab2`가 없으면 켠다. `--serial`은 번호로 정할 때만 쓴다(그 번호만 씀).
 판이 돌지 않을 때 보는 사람이 있으면 1초마다 기기를 보아, 켜져 있으면 그 화면을 보이고 꺼져 있으면 "에뮬레이터 켜기"
 버튼을 보인다(`POST /emulator`). 꺼진 채로 앱 요청이 오면 서버가 켠다. 켤 때 스냅샷·GPU 옵션은 그대로이고, 서버가 켠
 것이면 서버를 내릴 때 끈다. 설치된 앱 가운데 `eval/apps.json`에서 `"hide": true`인 앱(`ai.agentic.army`)은 요청을 읽는
@@ -166,6 +175,6 @@ cloudflared tunnel --url http://127.0.0.1:8765    # 빠른 터널: 출력에 try
 ## 시험
 
 ```sh
-.venv/bin/python -m pytest                      # 전체 775개, 약 18분 (로컬 Chromium 포함)
+.venv/bin/python -m pytest                      # 전체 879개, 약 15분 (로컬 Chromium 포함)
 .venv/bin/python -m pytest tests/test_core.py   # 바꾼 영역만
 ```
