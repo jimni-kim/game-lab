@@ -119,7 +119,7 @@ function chip(s, x, y, w, t, fill, name) {
     const s = pres.addSlide({ masterName: "TITLE", sectionTitle: "인트로" });
     s.addText("게임 플러그인", { placeholder: "title" });
     s.addText("처음 보는 게임도 화면만 보고,\n말로 맡기면 끝까지 두는 에이전트", { placeholder: "body" });
-    text(s, "ARMY 신규 기능 제안  ·  [발표자]  ·  2026-11", { x: 0.8, y: 5.3, w: 6.6, h: 0.4, fontSize: 14, color: C.accent4, objectName: "byline" });
+    text(s, "ARMY 신규 기능 제안  ·  김지민  ·  2026-11-26", { x: 0.8, y: 5.3, w: 6.6, h: 0.4, fontSize: 14, color: C.accent4, objectName: "byline" });
     const ps = ["1-2048", "3-candycrush", "7-tetris", "9-rogue"];
     for (let i = 0; i < ps.length; i++) {
       const x = 7.9 + i * 1.22, y = i % 2 ? 2.35 : 1.75, w = 1.1, h = 2.44;
